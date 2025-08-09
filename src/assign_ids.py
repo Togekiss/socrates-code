@@ -96,6 +96,28 @@ def get_character_id(name):
                 return alt["id"]
     return None
 
+"""
+get_character_name(id)
+
+    Retrieves the name of a character with the given unique ID.
+
+    Args:
+        id (int): The unique identifier of the character.
+
+    Returns:
+        str or None: The name of the character, or None if not found.
+"""
+def get_character_name(id):
+
+    characters_json = t.load_from_json(c.CHARACTER_IDS)
+
+    for character in characters_json:
+        if id == character["id"]:
+            return character["names"][0]
+        for alt in character.get("other_versions", []):
+            if id == alt["id"]:
+                return alt["names"][0]
+    return None
 
 """
 get_all_character_ids(name)

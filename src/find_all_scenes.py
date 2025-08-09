@@ -4,7 +4,7 @@ import re
 import time
 import unicodedata
 import tricks as t
-from assign_ids import get_all_character_ids
+from assign_ids import get_character_name
 t.set_path()
 from res import constants as c
 from output_scene_list import output_scene_list
@@ -13,17 +13,19 @@ from output_scene_list import output_scene_list
 
 """
 
-This module finds all the scenes involving the specified character in the server backup.
+This module is intended to map all the scenes of the server backup
 
-Main function: find_scenes()
+Main function: find_all_scenes()
 
-    This function finds the specified character's ID, and creates an empty list to store scenes.
+    This module aims to create complete lists of scenes found in the whole server backup, in each category, and in each channel.
+    The fact it creates a lot of duplication is known, but it may be useful for some purposes.
+    If the intermediate files are not needed, the function can be modified to only save the final one.
 
-    Then it iterates over all JSON files in the server backup to find scenes involving the specified character.
-    For each, it stores its start and end messages.
+    To do this, the main function goes through all the categories and then through all the channels.
+    Per each channel, it finds all the characters involved, searches the scenes they appear in, and saves all the distinct scenes into a JSON.
+    Once it has searched through all the channels of a category, it aggregates all the scenes and saves them to a JSON file.
     
-    To finish, it saves the scene starts and ends to a JSON file, and calls the output_scene_list module to create a text file with scene names and URLs.
-
+    To finish, it aggregates all the scenes found in all the categories and saves them to a JSON file.
 """
 
 ################# Functions #################
@@ -118,7 +120,7 @@ find_real_start(messages, found_scene):
 def find_real_start(channel, found_scene):
 
     messages = channel["messages"]
-    t.log("debug", "\t    Looking for the real start of the scene...")
+    t.log("log", "\t\tLooking for the real start of the scene...")
 
     # first, we assume the found start is the real start
     index = found_scene["start"]["index"]
@@ -126,13 +128,13 @@ def find_real_start(channel, found_scene):
 
     characters = found_scene["characters"]
 
-    t.log("debug", f"\t\tCurrent real start is at index {index} with characters {characters}")
+    t.log("log", f"\t\t  Current real start is at index {index} with characters {characters}")
 
     while not found:
         # if the current message is a SOF, the found start is the real start
         if messages[index] == messages[0]:
             found = True
-            t.log("debug", f"\t\tReached the beginning of the channel. The real start is at index {index}")
+            t.log("log", f"\t\tReached the beginning of the channel. The real start is at index {index}")
             found_scene["start"] = message_info(messages[index], channel, index)
             return index
 
@@ -140,25 +142,25 @@ def find_real_start(channel, found_scene):
         message_content = unicodedata.normalize("NFKD", messages[index-1]["content"])
         if re.search(pattern, message_content, flags=re.I) or re.search(pattern2, message_content, flags=re.I):
             found = True
-            t.log("debug",f"\t\tFound 'End' tag in the previous message. The real start is at index {index}")
+            t.log("log",f"\t\tFound 'End' tag in the previous message. The real start is at index {index}")
             found_scene["start"] = message_info(messages[index], channel, index)
             return index
             
         # if the previous message has an character not found in 'characters', the found start is the real start
         if int(messages[index-1]["author"]["id"]) not in characters:
             found = True
-            t.log("debug", f"\t\tFound a new character in the previous message. The real start is at index {index}")
+            t.log("log", f"\t\tFound a new character in the previous message. The real start is at index {index}")
             found_scene["start"] = message_info(messages[index], channel, index)
             return index
         
         # if the previous message has an character found in 'characters', index-1 and repeat
         if int(messages[index-1]["author"]["id"]) in characters:
-            t.log("debug", "\t\tFound a known character in the previous message. Looking for the real start...")
+            t.log("log", "\t\t  Found a known character in the previous message. Looking for the real start...")
             index = index-1
  
     # this should not trigger, but just in case
     index = 0
-    t.log("debug", f"\t\t{t.YELLOW}Could not find the real start of the scene. Searched until index {index}")
+    t.log("log", f"\t\t{t.YELLOW}Could not find the real start of the scene. Searched until index {index}")
     return index
 
 """
@@ -178,7 +180,7 @@ find_real_end(messages, found_scene):
 def find_real_end(channel, found_scene):
 
     messages = channel["messages"]
-    t.log("debug", "\t    Looking for the real end of the scene...")
+    t.log("log", "\t\tLooking for the real end of the scene...")
 
     # first, we assume the found end is the real end
     index = found_scene["end"]["index"]
@@ -186,30 +188,30 @@ def find_real_end(channel, found_scene):
 
     characters = found_scene["characters"]
 
-    t.log("debug", f"\t\tCurrent real end is at index {index} with characters {characters}")
+    t.log("log", f"\t\t  Current real end is at index {index} with characters {characters}")
 
     while not found:
 
         # if the message has an author found in 'characters', the found end is the real end
         if int(messages[index]["author"]["id"]) in characters:
             found = True
-            t.log("debug", f"\t\tFound participating characters in this message. The real end is at index {index}")
+            t.log("log", f"\t\tFound participating characters in this message. The real end is at index {index}")
             found_scene["end"] = message_info(messages[index], channel, index)
             return index
 
         # if the message's author ID is over 10000 (aka not a bot), the found end is the real end
         if int(messages[index]["author"]["id"]) > 10000:
             found = True
-            t.log("debug", f"\t\tFound a message sent by a user. The real end is at index {index}")
+            t.log("log", f"\t\tFound a message sent by a user. The real end is at index {index}")
             found_scene["end"] = message_info(messages[index], channel, index)
             return index
 
-        t.log("debug", "\t\tDid not find any participating characters. Looking for the real end...")
+        t.log("log", "\t\t  Did not find any participating characters. Looking for the real end...")
         index = index-1
  
     # this should not trigger, but just in case
     index = 0
-    t.log("debug", f"\t\t{t.YELLOW}Could not find the real end of the scene. Searched until index {index}")
+    t.log("log", f"\t\t{t.YELLOW}Could not find the real end of the scene. Searched until index {index}")
     return index
 
 """
@@ -234,7 +236,7 @@ find_scenes_in_channel(channel, main_character, scene_id)
         list: A list of scene starts and ends in the channel, in the format of a JSON object.
         int: The updated scene ID.
 """
-def find_scenes_in_channel(channel, main_character_list, scene_id):
+def find_character_scenes_in_channel(channel, main_character_list, scene_id):
 
     # create arrays, in case there is more than one scene in a channel
     scenes = []
@@ -264,7 +266,7 @@ def find_scenes_in_channel(channel, main_character_list, scene_id):
                 active_scene = True
                 scene_id = scene_id + 1
 
-                t.log("info", f"\tFound a scene in the thread [{channel['channel']['category']} - {channel['channel']['name']}]")
+                t.log("log", f"{t.GRAY}\t    Found a scene!")
 
                 # get the last message and check if the thread is open or closed
                 last_message = channel["messages"][-1]
@@ -272,10 +274,10 @@ def find_scenes_in_channel(channel, main_character_list, scene_id):
                 
                 if re.search(pattern, normalized_content, flags=re.I) or re.search(pattern2, normalized_content, flags=re.I):
                     status = 'closed'
-                    t.log("info", f"\t  This scene is {t.GREEN}closed")
+                    t.log("log", f"{t.GRAY}\t      This scene is closed")
                 else:
                     status = 'open'
-                    t.log("info", f"\t  This scene is still {t.GREEN}open")
+                    t.log("log", f"{t.GRAY}\t      This scene is still open")
 
 
         # save the start and the end of the thread
@@ -302,7 +304,7 @@ def find_scenes_in_channel(channel, main_character_list, scene_id):
                 chara_search_counter = 0
                 scene_id = scene_id + 1
 
-                t.log("info", f"\n\tFound a scene in the channel [{channel['channel']['category']} - {channel['channel']['name']}]")
+                t.log("log", f"{t.GRAY}\t    Found a scene in the channel [{channel['channel']['category']} - {channel['channel']['name']}]")
 
                 found_msg = message_info(message, channel, i)
                 found_scene = scene_info(found_msg, "", scene_id, channel, 'open', characters)
@@ -335,7 +337,7 @@ def find_scenes_in_channel(channel, main_character_list, scene_id):
                     active_scene = False
                     found_scene["status"] = 'closed'
                     found_scene["characters"] = characters
-                    t.log("info", f"\t  This scene is {t.GREEN}closed")
+                    t.log("log", f"{t.GRAY}\t      This scene is closed")
 
                     found_scene["end"] = message_info(message, channel, i)
                     find_real_start(channel, found_scene)
@@ -348,7 +350,7 @@ def find_scenes_in_channel(channel, main_character_list, scene_id):
                     active_scene = False
                     found_scene["status"] = 'timeout'
                     found_scene["characters"] = characters
-                    t.log("info", f"\t  This scene has {t.YELLOW}timed out")
+                    t.log("log", f"{t.GRAY}\t      This scene has {t.CYAN}timed out")
 
                     found_scene["end"] = message_info(message, channel, i)
                     find_real_start(channel, found_scene)
@@ -359,40 +361,103 @@ def find_scenes_in_channel(channel, main_character_list, scene_id):
                 if message == channel["messages"][-1] and active_scene:
                     active_scene = False
                     found_scene["characters"] = characters
-                    t.log("info", f"\t  This scene is still {t.GREEN}open")
+                    t.log("log", f"{t.GRAY}\t      This scene is still open")
 
                     found_scene["end"] = message_info(message, channel, i)
                     find_real_start(channel, found_scene)
                     scenes.append(found_scene)
-
                     
     return scenes, scene_id
 
 
-################ Main function #################
+"""
+find_all_scenes_in_channel(channel):
 
-def find_scenes():
+    Function to find all scenes in a channel.
+
+    To do this, it first gets a list of all characters in the channel.
+    Then, for each character, it finds all scenes in the channel with that character.
+    Once it has found all scenes, it saves every distinct one to a final list.
+
+    It's a known fact that this method implies parsing the whole channel many more times than it should be necessary,
+    but this method allows us to reuse the same function to find scenes of a specific character.
+    Besides, detecting starts and ends of scenes is more robust when using a specific character as a marker.
+
+    Once all the distinct scenes in a channel are gathered, they are reordered and saved to a JSON file.
+
+    Args:
+        channel (dict): The channel in JSON format.
+
+    Returns:
+        list: A list of scenes.
+
+"""
+def find_all_scenes_in_channel(channel):
+    
+    characters_in_channel = []
+    total_scenes = []
+    scene_starts_lookup = []
+
+    t.log("info", f"\n\tFinding scenes in channel '{channel['channel']['name']}'")
+
+    # Get a list of all characters in the channel
+    for message in channel["messages"]:
+        character = int(message["author"]["id"])
+        if character < 1000 and character not in characters_in_channel:
+            characters_in_channel.append(character)
+
+    t.log("info", f"\t  Found {len(characters_in_channel)} characters in the channel\n")
+
+    # find the scenes for each character
+    for character in characters_in_channel:
+
+        t.log("debug", f"\t  Finding scenes with '{get_character_name(character)}'...")
+
+        scenes, discard_id = find_character_scenes_in_channel(channel, [character], 0)
+
+        # if a new scene was found, add it to the total list
+        for scene in scenes:
+            if scene["start"]["id"] not in scene_starts_lookup:
+                scene_starts_lookup.append(scene["start"]["id"])
+                total_scenes.append(scene)
+    
+        t.log("debug", f"\t    Found {len(scenes)} scenes with '{get_character_name(character)}', adding up to {len(total_scenes)} total scenes\n")
+
+    # sort the scenes by start time
+    total_scenes.sort(key=lambda x: x["start"]["timestamp"])
+
+    # give the scenes new IDs
+    for i, scene in enumerate(total_scenes):
+        scene["sceneId"] = i+1
+
+    return total_scenes
+
+"""
+find_scenes_in_category(folder_path):
+
+    Function to find all scenes in a category.
+
+    It first gets a list of all JSON files in the category folder and its subfolders.
+    Then, for each JSON file, it calls find_all_scenes_in_channel() to find all scenes in the file.
+
+    Once all the scenes in a category are gathered, they are reordered and saved to a JSON file.
+
+    Args:
+        folder_path (str): The path to the category folder.
+
+    Returns:
+        list: A list of scenes.
+"""
+
+def find_scenes_in_category(folder_path):
     
     start_time = time.time()
-
-    # Get the path of the "scenes" folder from the config file
-    folder_path = c.SEARCH_FOLDER
-
-    # Find main character ID (and associated versions)
-    characters_list = get_all_character_ids(c.CHARACTER)
-
-    if not characters_list:
-        t.log("base", f"{t.RED}\nERROR: Could not find any versions of {c.CHARACTER} in {c.CHARACTER_IDS}.\nPlease check the character name and try again.\n")
-        return 1
-
-    t.log("debug", f"\nFound {len(characters_list)} versions of {c.CHARACTER}: {characters_list}")
-    
-    has_versions = "" if len(characters_list) == 1 else f" and their {len(characters_list)} versions"
-    t.log("base", f"\n## Finding scenes with {c.CHARACTER}{has_versions} in {folder_path}... ##\n")
 
     # Create an empty list to store scene starts and ends
     all_scenes = []
     scene_id = -1
+
+    t.log("info", f"\n    ## Finding scenes in {folder_path}... ##")
 
     # Iterate over all JSON files in the server folder and its subfolders
     for root, dirs, files in os.walk(folder_path):
@@ -400,34 +465,78 @@ def find_scenes():
             if filename.endswith(".json") and not filename.endswith("scenes.json"):
                 
                 file_path = os.path.join(root, filename)
-                t.log("log", f"\tAnalysing {file_path}...")
+                t.log("log", f"  Analysing {file_path}...")
 
                 # Load JSON channel from file
-                with open(file_path, "r", encoding="utf-8") as file:
-                    json_data = json.load(file)
+                json_data = t.load_from_json(file_path)
 
-                    # Find scene starts and ends involving character
-                    scenes, scene_id = find_scenes_in_channel(json_data, characters_list, scene_id)
+                # Find scene starts and ends involving character
+                scenes = find_all_scenes_in_channel(json_data)
 
-                    # Add the messages to the respective lists, can be more than one per channel
-                    all_scenes.extend(scenes)
+                # save the file
+                scenes_file = f"{folder_path}/Scenes/{filename.split('.')[0]}_scenes.json"
+                t.save_to_json(scenes, scenes_file)
 
-    # Sort scenes by start timestamp
-    all_scenes = sorted(all_scenes, key=lambda x: x['start']['timestamp'])
-    # Reassign scene IDs
+                t.log("log", f"\tSaved {len(scenes)} scenes to {scenes_file}")
+
+                # Add the messages to the respective lists, can be more than one per channel
+                all_scenes.extend(scenes)
+
+                t.log("info", f"\t  Found {len(scenes)} scenes in '{scenes[0]["channel"] if len(scenes) > 0 else 'this channel'}', adding up to {len(all_scenes)} total scenes\n")
+
+    # sort the scenes by start time
+    all_scenes.sort(key=lambda x: x["start"]["timestamp"])
+
+    # give the scenes new IDs
     for i, scene in enumerate(all_scenes):
-        scene['sceneId'] = i
+        scene["sceneId"] = i+1
 
-    t.save_to_json(all_scenes, c.OUTPUT_SCENES)
+    t.save_to_json(all_scenes, f"{folder_path}\scenes.json")
 
-    t.log("info", f"\n\tFound {len(all_scenes)} scenes in total")
-    t.log("info", f"\tScene output file created: {c.OUTPUT_SCENES}")
+    t.log("debug", f"\n    Saved {len(all_scenes)} scenes to {folder_path}\scenes.json")
+    t.log("info", f"\n    ## Finished finding scenes in {folder_path} --- {time.time() - start_time:.2f} seconds --- ##\n")
 
-    # Uses the created JSONs to create a list of links to each scene start
-    output_scene_list()
+    return all_scenes
 
-    t.log("base", f"## Scene finding finished --- {time.time() - start_time:.2f} seconds --- ##\n")
+################ Main function #################
+
+def find_all_scenes():
+
+    start_time = time.time()
+
+    t.log("base", f"\n# Indexing all the scenes in {c.SEARCH_FOLDER}... #\n")
+ 
+    full_scenes = []
+
+    # get all folders in folder c.SEARCH_FOLDER
+    folders = [f.path for f in os.scandir(c.SEARCH_FOLDER) if f.is_dir()]
+
+    # find all scenes in all folders
+    for folder in folders:
+
+        # create Scenes folder if it doesn't exist
+        if not os.path.exists(f"{folder}/Scenes"):
+            os.makedirs(f"{folder}/Scenes")
+
+        scenes = find_scenes_in_category(folder)
+
+        full_scenes.extend(scenes)
+        t.log("info", f"  Found {len(scenes)} scenes in {folder}, adding up to {len(full_scenes)} total scenes\n")
+
+    # sort the scenes by start time
+    full_scenes.sort(key=lambda x: x["start"]["timestamp"])
+
+    # give the scenes new IDs
+    for i, scene in enumerate(full_scenes):
+        scene["sceneId"] = i+1
+
+    t.save_to_json(full_scenes, f"{c.SEARCH_FOLDER}\scenes.json")
+
+    t.log("info", f"\n  Saved {len(full_scenes)} scenes to {c.SEARCH_FOLDER}\scenes.json")
+
+    t.log("base", f"\n# Scene indexing finished --- {time.time() - start_time:.2f} seconds --- #\n")
+
 
 if __name__ == "__main__":
-    find_scenes()
+    find_all_scenes()
     

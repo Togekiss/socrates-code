@@ -1,4 +1,4 @@
-import datetime
+from datetime import datetime
 import json
 import tricks as t
 t.set_path()
@@ -54,7 +54,7 @@ def output_scene_list():
 
             if validStatus and validType:
                  
-                obj_date = datetime.datetime.strptime(obj[mode]['timestamp'], '%Y-%m-%dT%H:%M:%S.%f%z')
+                obj_date = datetime.fromisoformat(obj[mode]['timestamp'])
 
                 output_file.write(f"{obj['category']} - {obj['channel']} - {obj_date.strftime('%B %d, %Y')} - {obj['status']}\n{obj[mode]['link']}\n\n")
 
