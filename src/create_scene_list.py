@@ -10,7 +10,7 @@ from res import constants as c
 
 This module creates a text file with the scene starts and ends.
 
-Main function: output_scene_list()
+Main function: create_scene_list()
 
     This function reads the scene starts and ends from the JSON files created by the find_scenes script.
     It sorts the objects by chronological order based on the "timestamp" field
@@ -28,7 +28,7 @@ def resolve_type(obj):
 
 ################# Main function #################
 
-def output_scene_list():
+def create_scene_list():
 
 
     t.log("base", "\n### Writing a list of scene links... ###\n")
@@ -63,4 +63,4 @@ def output_scene_list():
     t.log("base", "\n### List created! ###\n")
 
 if __name__ == "__main__":
-    output_scene_list()
+    create_scene_list()

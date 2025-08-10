@@ -7,7 +7,7 @@ import tricks as t
 from assign_ids import get_all_character_ids
 t.set_path()
 from res import constants as c
-from output_scene_list import output_scene_list
+from create_scene_list import create_scene_list
 
 ################ File summary #################
 
@@ -22,7 +22,7 @@ Main function: find_scenes()
     Then it iterates over all JSON files in the server backup to find scenes involving the specified character.
     For each, it stores its start and end messages.
     
-    To finish, it saves the scene starts and ends to a JSON file, and calls the output_scene_list module to create a text file with scene names and URLs.
+    To finish, it saves the scene starts and ends to a JSON file, and calls the create_scene_list module to create a text file with scene names and URLs.
 
 """
 
@@ -436,7 +436,7 @@ def find_scenes():
     t.log("info", f"\tScene output file created: {c.OUTPUT_SCENES}")
 
     # Uses the created JSONs to create a list of links to each scene start
-    output_scene_list()
+    create_scene_list()
 
     t.log("base", f"## Scene finding finished --- {time.time() - start_time:.2f} seconds --- ##\n")
 

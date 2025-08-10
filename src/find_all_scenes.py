@@ -8,7 +8,7 @@ from assign_ids import get_character_name
 from find_scenes import find_character_scenes_in_channel
 t.set_path()
 from res import constants as c
-from output_scene_list import output_scene_list
+from create_scene_list import create_scene_list
 
 ################ File summary #################
 

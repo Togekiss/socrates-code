@@ -41,7 +41,7 @@ Once this basic functionality is in working condition, the focus will shift to c
   - `assign_ids.py`: parses the server backup and assigns a unique ID to each tupperbox bot
   - `find_scenes.py`: parses the server backup and gathers a list of scenes for the specified character
   - `export_scenes.py`: uses the list of found scenes to download the full scenes with DCE in HTML format
-  - `output_scene_list.py`: helper function to create URLs that link to the starting messages of found scenes
+  - `create_scene_list.py`: helper function to create URLs that link to the starting messages of found scenes
   - `tricks.py`: helper functions to do a variety of things
   - `test_regex.py`: helper script to test new regex patterns against the server backup
   - `test_discord.py`: helper script to test connection with Discord
@@ -62,7 +62,7 @@ Once this basic functionality is in working condition, the focus will shift to c
 - Run `src/find_scenes.py`
 
 - You should have the scenes list in `out/scene-links.txt`
-  - After this, you don't have to run `src/find_scenes.py` if you just want to search a different status for the same character. You can just change the status in `res/constants.py` and run `src/output_scene_list.py` to get a new list.
+  - After this, you don't have to run `src/find_scenes.py` if you just want to search a different status for the same character. You can just change the status in `res/constants.py` and run `src/create_scene_list.py` to get a new list.
 
 - Run `src/export_scenes.py` if you want to download the full scenes in HTML.
 
