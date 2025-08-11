@@ -9,10 +9,10 @@ from res import constants as c
 
 """
 
-DiscordChatExporter is not able to keep track of a channel's position inside its category,
+'export_channels' can numerate categories, but can't save the channel's position inside its category,
 so this module renames the exported JSON files to include the position numbers saved in the channel list.
 
-This module is meant to be run after `src/export_channels.py`. It will assume the backup folder contains the channels of the channel list.
+This module is meant to be run after `src/export_channels.py`. It will assume the backup folder contains the channels of channel_list.json.
 
 Main function: sort_exported_files(base_folder)
 
@@ -57,7 +57,7 @@ def find_channel_file(folder, target_name):
     normalized_target = super_normalize(target_name)
 
     for filename in os.listdir(folder):
-        if filename.endswith(".json"):
+        if filename.endswith(".json") and not filename.endswith("scenes.json"):
             
             file_name = os.path.splitext(filename)[0]
 
@@ -72,10 +72,7 @@ def sort_exported_files(base_folder):
 
     t.log("base", f"\n###  Adding position numbers to channel files in {base_folder}...  ###\n")
 
-    json_path = c.CHANNEL_LIST
-
-    with open(json_path, 'r', encoding='utf-8') as f:
-        channel_list = json.load(f)
+    channel_list = t.load_from_json(c.CHANNEL_LIST)
 
     # For each category in the channel list
     for category in channel_list.get("categories", []):

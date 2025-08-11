@@ -45,6 +45,8 @@ def create_scene_list():
     # Sort the objects by chronological order based on ['start'/'end']['timestamp']
     sorted_objects = sorted(data, key=lambda x: x[mode]['timestamp'])
 
+    scene_counter = 0
+
     with open(c.OUTPUT_LINKS, 'w',encoding="utf-8") as output_file:
 
         for obj in sorted_objects:
@@ -58,7 +60,9 @@ def create_scene_list():
 
                 output_file.write(f"{obj['category']} - {obj['channel']} - {obj_date.strftime('%B %d, %Y')} - {obj['status']}\n{obj[mode]['link']}\n\n")
 
-    t.log("info", f"\tList of scene links created in: {c.OUTPUT_LINKS}")
+                scene_counter += 1
+
+    t.log("info", f"\tList of {scene_counter} scene links created in: {c.OUTPUT_LINKS}")
 
     t.log("base", "\n### List created! ###\n")
 

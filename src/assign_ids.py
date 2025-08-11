@@ -238,7 +238,7 @@ def assign_ids():
     # Iterate over all channel JSON files in the folder and its subfolders
     for root, dirs, files in os.walk(folder_path):
         for filename in files:
-            if filename.endswith(".json"):
+            if filename.endswith(".json") and not filename.endswith("scenes.json"):
 
                 file_path = os.path.join(root, filename)
 
