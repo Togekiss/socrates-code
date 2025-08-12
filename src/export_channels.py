@@ -47,7 +47,7 @@ def get_last_exported():
         # Try to load JSON data from the file
         with open(file, "r", encoding="utf-8") as json_file:
             json_data = json.load(json_file)
-            date = json_data["exportedAt"]
+            date = json_data.get("exportedAt", None)
 
     except FileNotFoundError:
         # Handle the case when the file doesn't exist
@@ -102,7 +102,7 @@ def export_category(item, after, type="channels"):
     folder = c.SERVER_NAME if after is None else "Update"
     after = "" if after is None else "--after " + after
 
-    path = f"{folder}/{item["position"]}# {category}/%C.json" if type == "channels" else f"{folder}/{item["position"]}# {category}/Threads/%C.json"
+    path = f"{folder}/{item["position"]}# {category}/%p# %C.json" if type == "channels" else f"{folder}/{item["position"]}# {category}/Threads/%p# %C.json"
     group_size = 3 if category == "Text and Calls" else 5
 
     channels = item[type]
@@ -131,8 +131,7 @@ export_from_list(after)
 """
 def export_from_list(after):
 
-    with open(c.CHANNEL_LIST, "r", encoding="utf-8") as file:
-        json_data = json.load(file)
+    json_data = t.load_from_json(c.CHANNEL_LIST)
     
     channel_count = 0
 
@@ -152,7 +151,7 @@ def export_from_list(after):
             export_category(item, after, "threads")
             channel_count += threads_in_category
 
-        t.log("info", f"\n\tExported{total_channels} channels out of {json_data['numChannels']}\n")
+        t.log("info", f"\n\tExported {channel_count} channels out of {json_data['numberOfChannels']}\n")
 
 ################# Main function ################
 
