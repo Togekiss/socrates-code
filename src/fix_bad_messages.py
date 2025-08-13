@@ -32,13 +32,16 @@ fix_messages_in_channel(messages, fixed_messages)
     It also deletes messages from non-bot users if they only have a mention.
 
     Args:
-        messages (list): A list of messages in the channel.
+        channel (dict): A dictionary containing channel information.
         fixed_messages (dict): A dictionary containing fixed versions of messages.
 
     Returns:
-        None
+        channel (dict): The modified channel dictionary.
 """
-def fix_messages_in_channel(messages, fixed_messages):
+def fix_messages_in_channel(channel, fixed_messages):
+
+
+    messages = channel["messages"]
 
     for message in messages:
 
@@ -48,7 +51,8 @@ def fix_messages_in_channel(messages, fixed_messages):
             t.log("debug", f"\tFound bad message {message['id']} from {message['author']['name']}.")
             t.log("debug", f"\t    Replacing it with {fixed_messages[message['id']]['id']} from {fixed_messages[message['id']]['author']['name']}.")
 
-            message = fixed_messages[message["id"]]
+            message["content"] = fixed_messages[message["id"]]["content"]
+            message["author"] = fixed_messages[message["id"]]["author"]
         
         # if message is from a non-tupper user
         if message["type"] == "Default" and int(message["author"]["id"]) >= 100000:
@@ -63,6 +67,8 @@ def fix_messages_in_channel(messages, fixed_messages):
 
                 #remove message from messages
                 messages.remove(message)
+    
+    return channel
 
 ################# Main function #################
 
@@ -89,10 +95,10 @@ def fix_bad_messages():
                 channel_data = t.load_from_json(file_path)
 
                 # find and fix bad messages
-                fix_messages_in_channel(channel_data["messages"], fixed_messages)
+                fixed_data = fix_messages_in_channel(channel_data, fixed_messages)
 
                 # Save the modified JSON data back to the file
-                t.save_to_json(channel_data, file_path)
+                t.save_to_json(fixed_data, file_path)
 
     t.log("base", f"### Finished fixing messages --- {time.time() - start_time:.2f} seconds --- ###\n")
 
