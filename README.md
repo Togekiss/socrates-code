@@ -1,5 +1,8 @@
 # Socrates, the record keeper of Elysium
 
+## About this repository
+This public version reflects the current code of the application. All the actual Discord backup files and IDs are somewhere else!
+
 ## What is Socrates?
 
 A Discord bot specifically made for Elysium, a RP server, with plans to adapt it to work on any roleplaying or collaborative writing server that uses similar tagging systems.
