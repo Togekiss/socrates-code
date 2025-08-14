@@ -1,8 +1,5 @@
 # Socrates, the record keeper of Elysium
 
-## About this repository
-This public version reflects the current code of the application. All the actual Discord backup files and IDs are somewhere else!
-
 ## What is Socrates?
 
 A Discord bot specifically made for Elysium, a RP server, with plans to adapt it to work on any roleplaying or collaborative writing server that uses similar tagging systems.
@@ -36,8 +33,9 @@ Once this is in working condition, the focus will shift to uploading the bot to 
 
 - `res`: contains configuration files and metadata files the bot uses to download and navigate through channels
   - `tokens.py`: contains the bot token. DO NOT SHARE!
+  - `server_data.py`: contains the server ID and some category name. SHARE WITH CAUTION!
+  - `constants.py`: configuration file with search parameters, output parameters, and more
   - `character_ids.json`: a list of tupperbox characters and their associated IDs
-  - `constants.py`: configuration file with server ID, bot token, search parameters, output parameters, and more
   - `channel_list.json`: list of channels and threads to be downloaded
   - `fixed_messages.json`: for each message known to have a bad formatting in the backup, a fixed version is stored here
 
