@@ -7,6 +7,7 @@ from res import constants as c
 from get_channel_list import get_channel_list 
 from merge_exports import merge_exports
 from assign_ids import assign_ids
+from fix_bad_messages import fix_bad_messages
 from sort_exported_files import sort_exported_files
 
 
@@ -194,6 +195,9 @@ def export_channels():
     # assign a proper ID to each character
     t.log("info", "\n\tGenerating IDs for character bots...\n") 
     assign_ids()
+
+    t.log("info", "\n\tFixing bad messages...\n") 
+    fix_bad_messages()
     
     t.log("base", f"\n# Export finished --- {time.time() - start_time:.2f} seconds --- #\n")
 

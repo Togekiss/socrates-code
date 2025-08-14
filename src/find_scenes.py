@@ -217,6 +217,8 @@ find_character_scenes_in_channel(channel, main_character, scene_id, batch=False)
 
     Function to find all the scenes of a target character in a channel.
 
+    If batch is True, we'll assume all timeouts have been fixed.
+
     If the channel is a thread, we can assume it only contains one scene,
     so the function will only check if the main character is in the first 5 messages, and if so, save the scene and the status.
 
@@ -251,8 +253,8 @@ def find_character_scenes_in_channel(channel, main_character_list, scene_id, bat
         
         characters= []
 
-        #look at the first 5 messages 
-        for message in channel["messages"][:5]:
+        #look at all messages
+        for message in channel["messages"]:
 
             # skip system messages
             if message["type"] != "Default":
@@ -260,14 +262,13 @@ def find_character_scenes_in_channel(channel, main_character_list, scene_id, bat
             
             character = int(message["author"]["id"])
 
-            #save the other characters
-            if character not in main_character_list and character not in characters:
+            # save the characters we find
+            if character not in characters:
                 characters.append(character)
 
             # if it contains the main character, we'll get the whole channel
             if not active_scene and character in main_character_list:
 
-                characters.append(character)
                 active_scene = True
                 scene_id = scene_id + 1
 
@@ -320,7 +321,7 @@ def find_character_scenes_in_channel(channel, main_character_list, scene_id, bat
 
             # if we're already in an active scene, look for the end
             if active_scene: 
-
+                
                 # if our character appears, we consider this scene active
                 if character in main_character_list:
                     main_missing_counter = 0
@@ -328,8 +329,9 @@ def find_character_scenes_in_channel(channel, main_character_list, scene_id, bat
                 else:
                     # we write down other characters too- but only at the start,
                     # to prevent adding authors of the next scene if this one timed out
-                    if character not in characters and chara_search_counter < 10:
-                        characters.append(character)
+                    if character not in characters:
+                        if batch or (not batch and chara_search_counter < 10):
+                            characters.append(character)
 
                     # if our character doesn't appear, we worry the thread might have ended
                     main_missing_counter += 1
@@ -353,7 +355,7 @@ def find_character_scenes_in_channel(channel, main_character_list, scene_id, bat
                     scenes.append(found_scene)
                 
                 # if it's been too many messages without the main character
-                if main_missing_counter > len(characters)*5 and character not in characters and active_scene:
+                if not batch and main_missing_counter > len(characters)*5 and character not in characters and active_scene:
 
                     # tag the scene as timed out
                     active_scene = False
