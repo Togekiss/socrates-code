@@ -5,7 +5,8 @@
 !.gitignore
 !README.md
 !src/
-!res/constants.py
+!res/
 
 # And inside src/, allow everything
 !src/**
+!res/constants.py
