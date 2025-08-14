@@ -4,6 +4,7 @@ import time
 import tricks as t
 t.set_path()
 from res import constants as c
+from res import tokens
 from get_channel_list import get_channel_list 
 from merge_exports import merge_exports
 from assign_ids import assign_ids
@@ -115,7 +116,7 @@ def export_category(item, after, type="channels"):
         for channel in group:
             channel_ids = channel_ids + " " + channel["id"]
 
-        cli_command = f'dotnet DCE/DiscordChatExporter.Cli.dll export --parallel {group_size} -c {channel_ids} -t {c.BOT_TOKEN} -f Json -o "{path}" --locale "en-GB" {after} --fuck-russia'
+        cli_command = f'dotnet DCE/DiscordChatExporter.Cli.dll export --parallel {group_size} -c {channel_ids} -t {tokens.DISCORD_BOT} -f Json -o "{path}" --locale "en-GB" {after} --fuck-russia'
         t.run_command(cli_command, group_size)
         t.log("info", f"\t\tExported {i+group_size} {type} out of {len(channels)}")
 

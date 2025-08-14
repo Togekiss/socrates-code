@@ -32,9 +32,9 @@ Once this is in working condition, the focus will shift to uploading the bot to 
   - The root folder also contains a `scenes.json` file with the list of all detected scenes in the whole server
 
 - `res`: contains configuration files and metadata files the bot uses to download and navigate through channels
+  - `tokens.py`: contains the bot token. DO NOT SHARE!
   - `character_ids.json`: a list of tupperbox characters and their associated IDs
   - `constants.py`: configuration file with server ID, bot token, search parameters, output parameters, and more
-  - `constants copy.py`: copy of the configuration file with a blank bot token for GitHub upload
   - `channel_list.json`: list of channels and threads to be downloaded
   - `fixed_messages.json`: for each message known to have a bad formatting in the backup, a fixed version is stored here
 
@@ -65,7 +65,7 @@ Once this is in working condition, the focus will shift to uploading the bot to 
 
 - Create a folder named `DCE` and download the CLI version of https://github.com/Tyrrrz/DiscordChatExporter
 
-- Copy the file in the `res` folder named `constants copy.py`, rename it `constants.py` and fill in the fields.
+- Fill in `res/tokens.py` with your bot token
 
 - Run `src/export_channels.py`
 

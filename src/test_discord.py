@@ -1,10 +1,12 @@
 # bot.py
 import os
 import random
+import discord
 import tricks as t
 t.set_path()
 from res import constants as c
-import discord
+from res import tokens
+
 
 ################# File summary #################
 
@@ -24,7 +26,7 @@ Main function: on_message()
 
 ################# Functions #################
 
-TOKEN = c.BOT_TOKEN
+TOKEN = tokens.DISCORD_BOT
 GUILD = 857848490683269161
 
 intents = discord.Intents.default()

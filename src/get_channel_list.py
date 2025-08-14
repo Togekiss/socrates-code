@@ -2,6 +2,7 @@ import time, datetime
 import tricks as t
 t.set_path()
 from res import constants as c
+from res import tokens
 
 ############### File summary #################
 
@@ -161,7 +162,7 @@ def get_channel_list():
     start_time = time.time()
 
     # Call the CLI command and capture its output
-    cli_command = f"dotnet DCE/DiscordChatExporter.Cli.dll channels -g {c.SERVER_ID} -t {c.BOT_TOKEN} --include-threads all"
+    cli_command = f"dotnet DCE/DiscordChatExporter.Cli.dll channels -g {c.SERVER_ID} -t {tokens.DISCORD_BOT} --include-threads all"
     code, output = t.run_command(cli_command)
 
     t.log("info", "\tGot a list of channels from DCE\n")
