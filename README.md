@@ -66,7 +66,7 @@ Once this is in working condition, the focus will shift to uploading the bot to 
 
 - Create a folder named `DCE` and download the CLI version of https://github.com/Tyrrrz/DiscordChatExporter
 
-- Fill in `res/tokens.py` with your bot token
+- Fill in `res/tokens.py` and `res/server_data.py` with your bot token and server info
 
 - Run `src/export_channels.py`
 
