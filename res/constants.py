@@ -16,8 +16,8 @@ MODE = "end"                # start, end
 
 # Feedback settings
 INFO = True             # True if you want to know what the script is doing
-DEBUG = False           # True if you want to see an insane amount of information
-CONSOLE = True          # True if you want to see the output of DCE console commands
+DEBUG = True           # True if you want to see an insane amount of information
+CONSOLE = False          # True if you want to see the output of DCE console commands
 LOG = True              # True if you want to save absolutely all the info into a log file
 
 # Result file parameters
@@ -31,7 +31,7 @@ CHANNEL_LIST = "res/channel_list.json"
 FIXED_MESSAGES = "res/fixed_messages.json"
 
 # Discord parameters
-import server_data as s
+from res import server_data as s
 SERVER_NAME = s.SERVER_NAME
 SERVER_ID = s.SERVER_ID
 DM_CATEGORIES = s.DM_CATEGORIES

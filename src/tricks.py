@@ -89,6 +89,8 @@ def log(level="base", message=""):
     elif level == "console":
         if c.CONSOLE:
             print(GRAY + message, end="")
+    elif level == "error":
+        print(RED + message + RESET)
     
     level = "console" if level == "consolelog" else level
     
