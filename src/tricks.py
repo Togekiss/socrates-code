@@ -4,6 +4,8 @@ import os
 import subprocess
 import json
 import re
+import inspect
+import exceptions as exc
 from collections import deque
 
 GRAY = '\033[90m'
@@ -50,6 +52,8 @@ def save_to_json(data, file_path):
     with open(file_path, "w", encoding="utf-8") as file:
         json.dump(data, file, indent=4)
 
+
+
 """
 clean(message)
 
@@ -77,6 +81,16 @@ log(level, message)
 def log(level="base", message=""):
     set_path()
     from res import constants as c
+
+    # Determine caller module
+    stack = inspect.stack()
+    caller_frame = stack[1]
+    caller_module = inspect.getmodule(caller_frame.frame)
+    caller_name = caller_module.__name__ if caller_module else None
+
+    # Prepend tab if not called from export_channels.py
+    if caller_name != "export_channels":
+        message = "\t" + message
 
     if level == "base":
         print(GREEN + message + RESET)
@@ -115,45 +129,49 @@ def run_command(command: str, show_lines: int = None):
     set_path()
     from res import constants as c
 
-    log("console", f"# RUNNING CONSOLE COMMAND #\n")
-    log("console", f"> {MAGENTA}{command}{GRAY}\n")
-
-    process = subprocess.Popen(
-        command,
-        shell=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1
-    )
-
-    full_output = []
-    tail_buffer = deque(maxlen=show_lines if show_lines else 0)
-
     try:
-        for line in process.stdout:
-            full_output.append(line)  # Collect output for return
+        log("console", f"# RUNNING CONSOLE COMMAND #\n")
+        log("console", f"> {MAGENTA}{command}{GRAY}\n")
 
-            if show_lines and c.CONSOLE:
-                # Clear previous lines (simulate dynamic overwrite)
-                print("\033[F" * len(tail_buffer), end="")  # Move cursor up
+        process = subprocess.Popen(
+            command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
+        )
 
-                tail_buffer.append(line)
+        full_output = []
+        tail_buffer = deque(maxlen=show_lines if show_lines else 0)
+
+        try:
+            for line in process.stdout:
+                full_output.append(line)  # Collect output for return
+
+                if show_lines and c.CONSOLE:
+                    # Clear previous lines (simulate dynamic overwrite)
+                    print("\033[F" * len(tail_buffer), end="")  # Move cursor up
+
+                    tail_buffer.append(line)
+                    
+                    for l in tail_buffer:
+                        print(f">\t{l.strip():<80}")  # Print line padded to overwrite
+                        log("consolelog", f">\t{l}")
+                else:
+                    log("console", f">\t{line}")
                 
-                for l in tail_buffer:
-                    print(f">\t{l.strip():<80}")  # Print line padded to overwrite
-                    log("consolelog", f">\t{l}")
-            else:
-                log("console", f">\t{line}")
-            
-    except KeyboardInterrupt:
-        log("\nCommand interrupted by user.")
-        process.terminate()
+        except KeyboardInterrupt:
+            log("base", f"{YELLOW}\nCommand interrupted by user.\n")
+            process.terminate()
 
-    process.wait()
+        process.wait()
 
-    log("console", f"\n{RESET}# END OF CONSOLE COMMAND #\n\n")
-    return process.returncode, ''.join(full_output)
+        log("console", f"\n{RESET}# END OF CONSOLE COMMAND #\n\n")
+        return process.returncode, ''.join(full_output)
+
+    except Exception as e:
+        raise exc.ConsoleCommandException("An error occurred while running the command") from e
 
 
 ################ End Functions ################
