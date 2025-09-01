@@ -21,7 +21,7 @@ Main function: create_scene_list()
 ################# Functions #################
 
 def resolve_type(obj):
-    if obj['category'] == c.DM_CATEGORIES or obj['category'].startswith("dm-") or obj['category'].startswith("lets-call-"):
+    if obj['category'] in c.DM_CATEGORIES or obj['category'].startswith("dm-") or obj['category'].startswith("lets-call-"):
         return "DM"
     return obj['type']
 

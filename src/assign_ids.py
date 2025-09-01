@@ -1,7 +1,7 @@
 import os
-import json
 import time
 import tricks as t
+import exceptions as exc
 t.set_path()
 from res import constants as c
 
@@ -11,7 +11,7 @@ from res import constants as c
 
 This module assigns unique IDs to the Tupperbox bots in the backup of a Discord server.
 
-Main function: assign_ids()
+Main function: assign_ids(search_folder)
 
     This function traverses all JSON files in the specified folder and its subdirectories to assign unique 
     identifiers to each bot found within the message data. If a character ID mapping file exists, it will be 
@@ -22,6 +22,48 @@ Main function: assign_ids()
 """
 
 ################ Functions #################
+
+"""
+check_base_status()
+
+    Checks the status file, and raises exceptions if the backup is not ready to be sorted.
+
+    Returns:
+        str: The current status of the backup.
+
+"""
+def check_base_status():
+
+    try: 
+        t.log("debug", "\nChecking the status of the backup...")
+
+        channel_list = t.load_from_json(c.CHANNEL_LIST)
+
+        t.log("debug", "  Loaded the status file\n")
+
+        main_status = channel_list["status"]["main"] + ""
+
+        t.log("debug", f"  The current status of the backup is '{main_status}'\n")
+
+        if channel_list["status"]["main"] == "running":
+            raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
+
+        if channel_list["status"]["main"] == "failed":
+            raise exc.DataNotReadyError("The data may be corrupted. Ensure the backup downloaded successfully and try again.")
+
+        channel_list["status"]["main"] = "running"
+        channel_list["status"]["idAssignStatus"] = "running"
+
+        t.save_to_json(channel_list, c.CHANNEL_LIST)
+
+        return main_status
+
+    except (exc.AlreadyRunningError, exc.DataNotReadyError) as e:
+        raise e
+    
+    except Exception as e:
+        raise exc.AssignIDError("The export status file could not be read") from e
+
 
 """
 character_info(id, name)
@@ -168,7 +210,7 @@ def get_all_character_ids(name):
     return ids
 
 """
-assign_unique_ids(data, characters_json, lookup_map)
+assign_ids_in_file(data, characters_json, lookup_map)
 
     Assigns unique IDs to the Tupperbox bots in the given data and updates the ID mapping accordingly.
 
@@ -177,18 +219,21 @@ assign_unique_ids(data, characters_json, lookup_map)
     the author's ID in the message.
 
     Args:
-        data (dict): The JSON data of the channel, containing a list of messages.
+        file_path (str): The JSON file of the channel, containing a list of messages.
         characters_json (dict): A dictionary containing character information.
         lookup_map (dict): A dictionary mapping character names to their respective unique IDs.
 
     Returns:
         None
 """
-def assign_unique_ids(data, characters_json, lookup_map):
+def assign_ids_in_file(file_path, characters_json, lookup_map):
 
-    messages = data["messages"]
+    t.log("debug", f"\t    Analysing {file_path}...")
 
-    for message in messages:
+    # Load channel JSON data from file
+    data = t.load_from_json(file_path)
+
+    for message in data["messages"]:
 
         #only do this for tuppers
         if message["author"]["isBot"]:
@@ -203,69 +248,85 @@ def assign_unique_ids(data, characters_json, lookup_map):
                 lookup_map[author_name] = new_id
 
                 t.log("info", f"\t  Found a new Tupper: {author_name} (ID: {new_id})")
+                t.save_to_json(characters_json, c.CHARACTER_IDS)
          
             # Update the author's ID in the message
             message["author"]["id"] = f"{lookup_map[author_name]}"
 
+    # Save the updated JSON data to the file
+    t.save_to_json(data, file_path)
+    
 
 ################# Main function #################
 
-def assign_ids():
+def assign_ids(search_folder=c.SEARCH_FOLDER):
 
-    t.log("base", f"\n###  Assigning unique IDs to Tupperbox bots in {c.SERVER_NAME}...  ###\n")
+    try:
 
-    start_time = time.time()
+        t.log("base", f"\n###  Assigning unique IDs to Tupperbox bots in {search_folder}...  ###\n")
 
-    # Get the path of the server folder in the same directory as the script
-    folder_path = c.SERVER_NAME
+        start_time = time.time()
 
-    # Open or create a dictionary to store character IDs
-    if os.path.exists(c.CHARACTER_IDS):
-        characters_json = t.load_from_json(c.CHARACTER_IDS)
+        main_status = check_base_status()
+
+        # Open or create a dictionary to store character info
+        if os.path.exists(c.CHARACTER_IDS):
+            characters_json = t.load_from_json(c.CHARACTER_IDS)
+        else:
+            characters_json = []
+            t.save_to_json(characters_json, c.CHARACTER_IDS)
+
+        t.log("info", f"\tLoaded {len(characters_json)} existing characters\n")
+
+        lookup_map = build_id_lookup_map(characters_json)
+
+        t.log("debug", f"\t  Found {len(lookup_map)} distinct character names\n")
+
+        t.log("debug", f"\tIterating over backup files in {search_folder}...\n")  
+
+        # Iterate over all channel JSON files in the folder and its subfolders
+        for root, dirs, files in os.walk(search_folder):
+            for filename in files:
+                if filename.endswith(".json") and not filename.endswith("scenes.json"):
+
+                    file_path = os.path.join(root, filename)
+
+                    # Assign unique IDs to authors in the JSON data
+                    assign_ids_in_file(file_path, characters_json, lookup_map)
+
+
+        # debug the dictionary
+        t.log("debug", "\tFinal list of character names:")
+        for key, value in lookup_map.items():
+            t.log("debug", f"\t    {key}: {value}")
+
+        t.log("info", f"\tSaved {len(lookup_map)} unique character names\n")
+
+        step_status = "success"
+        
+    except Exception as e:
+        main_status = "failed"
+        step_status = "failed"
+        raise exc.AssignIDError("Failed to assign unique IDs to Tupperbox bots") from e
     
-    # If the file does not exist, initialize an empty dictionary
-    else:
-        characters_json = []
+    finally:
+        try:
+            t.log("base", f"### ID assigning finished --- {time.time() - start_time:.2f} seconds --- ###\n")
+            channel_list = t.load_from_json(c.CHANNEL_LIST)
+            channel_list["status"]["main"] = main_status
+            channel_list["status"]["idAssignStatus"] = step_status
+            t.save_to_json(channel_list, c.CHANNEL_LIST)
 
-    t.log("info", f"\tLoaded {len(characters_json)} existing characters\n")
-
-    lookup_map = build_id_lookup_map(characters_json)
-
-    t.log("debug", f"\t  Found {len(lookup_map)} distinct character names\n")
-
-    t.log("debug", f"\tIterating over backup files in {folder_path}...\n")  
-
-    # Iterate over all channel JSON files in the folder and its subfolders
-    for root, dirs, files in os.walk(folder_path):
-        for filename in files:
-            if filename.endswith(".json") and not filename.endswith("scenes.json"):
-
-                file_path = os.path.join(root, filename)
-
-                t.log("debug", f"\t    Analysing {file_path}...")
-
-                # Load channel JSON data from file
-                channel_data = t.load_from_json(file_path)
-
-                # Assign unique IDs to authors in the JSON data
-                assign_unique_ids(channel_data, characters_json, lookup_map)
-
-                # Save the modified JSON data back to the file
-                t.save_to_json(channel_data, file_path)
-
-
-    #save the dictionary
-    t.save_to_json(characters_json, c.CHARACTER_IDS)
-
-    # debug the dictionary
-    t.log("debug", "\tFinal list of character names:")
-    for key, value in lookup_map.items():
-       t.log("debug", f"\t    {key}: {value}")
-
-    t.log("info", f"\tSaved {len(lookup_map)} unique character names\n")
-
-    t.log("base", f"### ID assigning finished --- {time.time() - start_time:.2f} seconds --- ###\n")
+        except Exception as e:
+            t.log("error", f"\tFailed to save the status file: {e}\n")
+        
 
 if __name__ == "__main__":
-    assign_ids()
+
+    try:
+        assign_ids(c.SEARCH_FOLDER)
+
+    except Exception as e:
+        t.log("error", f"\n{exc.unwrap(e)}\n")
+    
     

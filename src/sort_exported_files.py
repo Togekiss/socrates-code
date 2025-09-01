@@ -1,7 +1,7 @@
 import os
-import json
 import re
 import tricks as t
+import exceptions as exc
 t.set_path()
 from res import constants as c
 
@@ -41,6 +41,131 @@ super_normalize(text)
 def super_normalize(text):
     return re.sub(r'[^a-zA-Z0-9-]', '', text).lower()
 
+"""
+check_base_status()
+
+    Checks the status file, and raises exceptions if the backup is not ready to be sorted.
+
+    Returns:
+        str: The current status of the backup.
+
+"""
+def check_base_status():
+
+    try: 
+        t.log("debug", "\nChecking the status of the backup...")
+
+        channel_list = t.load_from_json(c.CHANNEL_LIST)
+
+        t.log("debug", "  Loaded the status file\n")
+
+        if channel_list["status"]["main"] == "running":
+            raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
+        
+        t.log("debug", f"  The current status of the backup is '{channel_list['status']['main']}'\n")
+
+        if channel_list["status"]["downloadStatus"] != "success":
+            raise exc.DataNotReadyError("There is no data to sort. Ensure the backup downloaded successfully and try again.")
+        
+    except (exc.AlreadyRunningError, exc.DataNotReadyError) as e:
+        raise e
+    
+    except Exception as e:
+        raise exc.FileSortingError("The export status file could not be read") from e
+    
+    finally:
+        return channel_list["status"]["main"]
+
+"""
+check_read_status()
+
+    Checks the status file, and raises exceptions if the backup file names are not ready to be read.
+
+    Args:
+        channel_list (dict): The channel list dictionary which contains the status of the backup.
+
+"""
+def check_read_status(channel_list):
+
+    try: 
+        t.log("debug", "\n  Checking the status of the backup to read file order...")
+
+        if channel_list["status"]["main"] == "running":
+            raise exc.AlreadyRunningError("The program is still running in another process. Exiting...")
+        
+        if channel_list["status"]["sortingCleanStatus"] == "failed" or channel_list["status"]["sortingWriteStatus"] == "failed":
+            raise exc.DataNotReadyError("Filenames may have been partially cleaned of position numbers. Exiting...")
+
+        if channel_list["status"]["sortingCleanStatus"] == "success" and channel_list["status"]["sortingWriteStatus"] != "success":
+            raise exc.AlreadyRunningError("Filenames have been cleaned of position numbers. Skipping...")
+        
+    except (exc.AlreadyRunningError, exc.DataNotReadyError) as e:
+        raise e
+    
+    except Exception as e:
+        raise exc.FileSortingError("The export status file could not be read") from e
+
+
+"""
+check_clean_status()
+
+    Checks the status file, and raises exceptions if the backup file names are not ready to be cleaned.
+
+    Args:
+        channel_list (dict): The channel list dictionary which contains the status of the backup.
+
+"""
+def check_clean_status(channel_list):
+
+    try: 
+        t.log("debug", "\n  Checking the status of the backup to clean file order...")
+
+        if channel_list["status"]["main"] == "running":
+            raise exc.AlreadyRunningError("The program is still running in another process. Exiting...")
+        
+        if channel_list["status"]["sortingReadStatus"] != "success":
+            raise exc.DataNotReadyError("Filenames were not read correctly. Ensure the reading process completed successfully and try again.")
+
+        if channel_list["status"]["sortingCleanStatus"] == "success" and channel_list["status"]["sortingWriteStatus"] != "success":
+            raise exc.AlreadyRunningError("Filenames have been cleaned of position numbers. Skipping...")
+        
+    except (exc.AlreadyRunningError, exc.DataNotReadyError) as e:
+        raise e
+    
+    except Exception as e:
+        raise exc.FileSortingError("The export status file could not be read") from e
+
+"""
+check_write_status()
+
+    Checks the status file, and raises exceptions if the backup file names are not ready to be written.
+
+    Args:
+        channel_list (dict): The channel list dictionary which contains the status of the backup.
+
+"""
+def check_write_status(channel_list):
+
+    try: 
+        t.log("debug", "\n  Checking the status of the backup to write file order...")
+
+        if channel_list["status"]["main"] == "running":
+            raise exc.AlreadyRunningError("The program is still running in another process. Exiting...")
+        
+        if channel_list["status"]["sortingCleanStatus"] != "success":
+            raise exc.DataNotReadyError("Filenames were not cleaned correctly. Ensure the cleaning process ran and try again.")
+
+        if channel_list["status"]["sortingCleanStatus"] == "success" and channel_list["status"]["sortingWriteStatus"] != "pending":
+            raise exc.DataNotReadyError("Filenames have already been numbered. Clean them again if you want to re-do it.")
+
+
+    except (exc.AlreadyRunningError, exc.DataNotReadyError) as e:
+        raise e
+    
+    except Exception as e:
+        raise exc.FileSortingError("The export status file could not be read") from e
+
+
 
 """
 find_channel_file(folder, target_name)
@@ -68,36 +193,10 @@ def find_channel_file(folder, target_name):
             
     return None
 
-"""
-remove_number_from_files(folder)
-
-    Removes the position number from the filenames of the channel files in the specified folder.
-
-    Args:
-        folder (str): The folder to search in.
+    
 
 """
-def remove_number_from_files(folder):
-
-    t.log("info", f"\n\tCleaning up position numbers in the filenames of {folder}...\n")
-
-    # Iterate over all channel JSON files in the folder and its subfolders
-    for root, dirs, files in os.walk(folder):
-        for filename in files:
-            if filename.endswith(".json") and not filename.endswith("scenes.json"):
-
-                t.log("log", f"\t  Cleaning {filename}...")
-
-                # remove number# from the filename
-                new_filename = filename.split("# ")[1]
-                src = os.path.join(root, filename)
-                dst = os.path.join(root, new_filename)
-                os.rename(src, dst)
-
-    t.log("info", f"\n\tFinished cleaning up position numbers from channel files\n")
-
-"""
-get_number_from_files(folder)
+read_number_from_files(search_folder, main_status)
 
     Analyzes the current order of channel files in the specified folder.
     
@@ -109,137 +208,289 @@ get_number_from_files(folder)
 
     Args:
         search_folder (str): The folder to search in.
-        channel_list (dict): The channel list to update.
+        main_status (str): The main status of the backup.
 
 """
-def get_number_from_files(search_folder, channel_list):
+def read_number_from_files(search_folder, main_status):
 
-    t.log("info", f"\n\tAnalyzing current order in {search_folder}...\n")
+    t.log("info", f"\n\tReading the current file order in {search_folder}...\n")
 
-    # For each category in the channel list
-    for category in channel_list.get("categories", []):
+    try:
+        channel_list = t.load_from_json(c.CHANNEL_LIST)
 
-        folder_name = category["category"].replace(":", "_")
-        folder = os.path.join(search_folder, f"{category['position']}# {folder_name}")
+        check_read_status(channel_list)
 
-        t.log("debug", f"\n\t  Analyzing current order in {folder}... ###")
+    # If "clean" has already been run, there will be nothing to read,  so we can skip
+    except exc.AlreadyRunningError as e:
+        t.log("debug", f"\t  {e}\n")
+        return
+    
+    try:
 
-        # get a list of file names
-        file_names = [f.name for f in os.scandir(folder) if f.is_file()]
-        t.log("debug", f"\t    Found {len(file_names)} files in {folder}")
+        # flag it as running in case another execution of the script is launched
+        channel_list["status"]["main"] = "running"
+        channel_list["status"]["sortingReadStatus"] = "running"
+        t.save_to_json(channel_list, c.CHANNEL_LIST)
 
-        file_dict = {}
+        # For each category in the channel list
+        for category in channel_list.get("categories", []):
 
-        for file in file_names:
-            # get number# from the filename
-            if not file.endswith("scenes.json"):
-                channel_position, channel_name = file.split("# ")
-                norm_channel_name = super_normalize(channel_name.split(".js")[0])
-                file_dict[norm_channel_name] = int(channel_position)
+            folder_name = category["category"].replace(":", "_")
+            folder = os.path.join(search_folder, f"{category['position']}# {folder_name}")
 
-        # sort dictionary by value
-        sorted_dict = {k: v for k, v in sorted(file_dict.items(), key=lambda item: item[1])}
+            t.log("debug", f"\n\t  Analyzing current order in {folder}... ###")
 
-        # renumber the dictionary
-        for index, (key, value) in enumerate(sorted_dict.items(), start=1):
-            sorted_dict[key] = index
+            # get a list of file names
+            file_names = [f.name for f in os.scandir(folder) if f.is_file()]
+            t.log("debug", f"\t    Found {len(file_names)} files in {folder}")
 
-        t.log("debug", f"\n\t  Sorted the dictionary of files in {folder}\n")
+            file_dict = {}
+
+            for file in file_names:
+                # get number# from the filename
+                if not file.endswith("scenes.json"):
+                    channel_position, channel_name = file.split("# ")
+                    norm_channel_name = super_normalize(channel_name.split(".js")[0])
+                    file_dict[norm_channel_name] = int(channel_position)
+
+            # sort dictionary by value
+            sorted_dict = {k: v for k, v in sorted(file_dict.items(), key=lambda item: item[1])}
+
+            # renumber the dictionary
+            for index, (key, value) in enumerate(sorted_dict.items(), start=1):
+                sorted_dict[key] = index
+
+            t.log("debug", f"\n\t  Sorted the dictionary of files in {folder}\n")
+            
+            for channel in category.get("channels", []):
+                channel["position"] = sorted_dict[super_normalize(channel["channel"])]
+                t.log("log", f"\tFound channel: {channel['position']}# {channel['channel']}")
+            
+            # sort channels by position
+            category["channels"] = sorted(category["channels"], key=lambda x: x["position"])
+
+            for thread in category.get("threads", []):
+                thread["position"] = sorted_dict[super_normalize(thread["channel"])]
+                t.log("log", f"\tFound thread: {thread['position']}-{thread['threadPosition']}# {thread['thread']}")
+
+            # sort threads by position then threadPosition
+            category["threads"] = sorted(category["threads"], key=lambda x: (x["position"], x["threadPosition"]))
+
+        channel_list["status"]["sortingReadStatus"] = "success"
+        channel_list["status"]["sortingCleanStatus"] = "pending"
+        channel_list["status"]["main"] = main_status
+    
+    except Exception as e:
+        channel_list["status"]["main"] = "failed"
+        channel_list["status"]["sortingReadStatus"] = "failed"
         
-        for channel in category.get("channels", []):
-            channel["position"] = sorted_dict[super_normalize(channel["channel"])]
-            t.log("log", f"\tFound channel: {channel['position']}# {channel['channel']}")
+        raise exc.FileSortingReadError(f"An error occurred while reading the current order in {search_folder}") from e
+
+    finally:
+        try:
+            t.log("info", "\n\tFinished analyzing current order\n")
+            t.save_to_json(channel_list, c.CHANNEL_LIST)
+
+        except Exception as e:
+            t.log("error", f"\tFailed to save the list of channels: {e}\n")
+
+"""
+remove_number_from_files(search_folder)
+
+    Removes the position number from the filenames of the channel files in the specified folder.
+
+    Args:
+        search_folder (str): The folder to search in.
+
+"""
+def remove_number_from_files(search_folder):
+
+    t.log("info", f"\n\tCleaning up position numbers in the filenames of {search_folder}...\n")
+    try:
+        channel_list = t.load_from_json(c.CHANNEL_LIST)
+
+        check_clean_status(channel_list)
+
+    # If "clean" has already been run, there will be nothing to clean, so we can skip
+    except exc.AlreadyRunningError as e:
+        t.log("debug", f"\t  {e}\n")
+        return
+    
+    try:
+        # flag it as running in case another execution of the script is launched
+        channel_list["status"]["main"] = "running"
+        channel_list["status"]["sortingCleanStatus"] = "running"
+        t.save_to_json(channel_list, c.CHANNEL_LIST)
+
+        # Iterate over all channel JSON files in the folder and its subfolders
+        for root, dirs, files in os.walk(search_folder):
+            for filename in files:
+                if filename.endswith(".json") and not filename.endswith("scenes.json"):
+
+                    t.log("log", f"\t  Cleaning {filename}...")
+
+                    # remove number# from the filename
+                    new_filename = filename.split("# ")[1]
+                    src = os.path.join(root, filename)
+                    dst = os.path.join(root, new_filename)
+                    os.rename(src, dst)
+
+        channel_list["status"]["main"] = "pending"
+        channel_list["status"]["sortingCleanStatus"] = "success"
+        channel_list["status"]["sortingWriteStatus"] = "pending"
+    
+    except Exception as e:
+        channel_list["status"]["main"] = "failed"
+        channel_list["status"]["sortingCleanStatus"] = "failed"
+        channel_list["status"]["sortingWriteStatus"] = "pending"
         
-        # sort channels by position
-        category["channels"] = sorted(category["channels"], key=lambda x: x["position"])
+        raise exc.FileSortingCleanError(f"An error occurred while cleaning the current order in {search_folder}") from e
 
-        for thread in category.get("threads", []):
-            thread["position"] = sorted_dict[super_normalize(thread["channel"])]
-            t.log("l9og", f"\tFound thread: {thread['position']}-{thread['threadPosition']}# {thread['thread']}")
+    finally:
+        try:
+            t.log("info", f"\n\tFinished cleaning up position numbers from channel files\n")
+            t.save_to_json(channel_list, c.CHANNEL_LIST)
 
-        # sort threads by position then threadPosition
-        category["threads"] = sorted(category["threads"], key=lambda x: (x["position"], x["threadPosition"]))
+        except Exception as e:
+            t.log("error", f"\tFailed to save the status file: {e}\n")
 
-    t.log("info", "\n\tFinished analyzing current order\n")
+"""
+write_number_to_files(search_folder, main_status)
 
-    return
+    Writes the position number to the filenames of the channel files in the specified folder.
+
+    Args:
+        search_folder (str): The folder to search in.
+        main_status (str): The main status of the program.
+
+"""
+
+def write_number_to_files(search_folder, main_status):
+
+    t.log("info", f"\n\tWriting channel order to files in {search_folder}...\n")
+
+    try:
+        channel_list = t.load_from_json(c.CHANNEL_LIST)
+
+        check_write_status(channel_list)
+
+    # If "write" has already been run, there will be nothing to write, so we can skip
+    except exc.AlreadyRunningError as e:
+        t.log("debug", f"\t  {e}\n")
+        return
+    
+    try:
+        # flag it as running in case another execution of the script is launched
+        channel_list["status"]["main"] = "running"
+        channel_list["status"]["sortingWriteStatus"] = "running"
+        t.save_to_json(channel_list, c.CHANNEL_LIST)
+
+        # For each category in the channel list
+        for category in channel_list.get("categories", []):
+
+            category_pos = category["position"]
+            category_name = category["category"].replace(":", "_")
+            category_folder = os.path.join(search_folder, f"{category_pos}# {category_name}")
+
+            t.log("info", f"\n  Sorting {category_pos}# {category_name}...")
+
+            t.log("info", f"    Renaming {len(category['channels'])} channel files...")
+
+            # Rename channel files
+            for channel in category.get("channels", []):
+
+                channel_name = channel["channel"]
+                channel_pos = channel["position"]
+
+                # Find the file that corresponds to the channel
+                old_filename = find_channel_file(category_folder, channel_name)
+
+                if old_filename:
+
+                    new_filename = f"{channel_pos}# {old_filename}"
+
+                    src = os.path.join(category_folder, old_filename)
+                    dst = os.path.join(category_folder, new_filename)
+                    os.rename(src, dst)
+
+                    t.log("log", f"\tRenamed file: {old_filename} → {new_filename}")
+
+                else:
+                    t.log("error", f"\tChannel file not found: {channel_name}")
+
+            # Rename thread files
+            threads_folder = os.path.join(category_folder, "Threads")
+            t.log("info", f"    Renaming {len(category['threads'])} thread files...")
+
+            for thread in category.get("threads", []):
+
+                channel_name = thread["channel"]
+                channel_pos = thread["position"]
+                thread_title = thread["thread"]
+                thread_pos = thread["threadPosition"]
+
+                # Find the file that corresponds to the thread
+                old_filename = find_channel_file(threads_folder, thread_title)
+
+                if old_filename:
+
+                    new_filename = f"{channel_pos}-{thread_pos}# {old_filename}"
+
+                    src = os.path.join(threads_folder, old_filename)
+                    dst = os.path.join(threads_folder, new_filename)
+                    os.rename(src, dst)
+
+                    t.log("log", f"\tRenamed file: {old_filename} → {new_filename}")
+
+                else:
+                    t.log("error", f"\tThread file not found: {thread_title}")
+
+
+        channel_list["status"]["sortingWriteStatus"] = "success"
+        channel_list["status"]["main"] = main_status
+    
+    except Exception as e:
+        channel_list["status"]["main"] = "failed"
+        channel_list["status"]["sortingWriteStatus"] = "failed"
+        
+        raise exc.FileSortingWriteError(f"An error occurred while reading the current order in {search_folder}") from e
+
+    finally:
+        try:
+            t.log("info", "\n\tFinished writing channel order to files\n")
+            t.save_to_json(channel_list, c.CHANNEL_LIST)
+
+        except Exception as e:
+            t.log("error", f"\tFailed to save the status file: {e}\n")
+
 
 ################# Main function #################
 
-def sort_exported_files(base_folder):
+def sort_exported_files(base_folder=c.SEARCH_FOLDER):
 
     t.log("base", f"\n###  Sorting channel files in {base_folder}...  ###\n")
 
-    channel_list = t.load_from_json(c.CHANNEL_LIST)
+    try:
 
-    get_number_from_files(base_folder, channel_list)
+        main_status = check_base_status()
 
-    remove_number_from_files(base_folder)
+        read_number_from_files(base_folder, main_status)
 
-    # For each category in the channel list
-    for category in channel_list.get("categories", []):
+        remove_number_from_files(base_folder)
 
-        category_pos = category["position"]
-        category_name = category["category"].replace(":", "_")
-        category_folder = os.path.join(base_folder, f"{category_pos}# {category_name}")
-
-        t.log("info", f"\n  Sorting {category_pos}# {category_name}...")
-
-        t.log("info", f"    Renaming {len(category['channels'])} channel files...")
-
-        # Rename channel files
-        for channel in category.get("channels", []):
-
-            channel_name = channel["channel"]
-            channel_pos = channel["position"]
-
-            # Find the file that corresponds to the channel
-            old_filename = find_channel_file(category_folder, channel_name)
-
-            if old_filename:
-
-                new_filename = f"{channel_pos}# {old_filename}"
-
-                src = os.path.join(category_folder, old_filename)
-                dst = os.path.join(category_folder, new_filename)
-                os.rename(src, dst)
-
-                t.log("log", f"\tRenamed file: {old_filename} → {new_filename}")
-
-            else:
-                t.log("info", f"{t.RED}\tChannel file not found: {channel_name}")
-
-        # Rename thread files
-        threads_folder = os.path.join(category_folder, "Threads")
-        t.log("info", f"    Renaming {len(category['threads'])} thread files...")
-
-        for thread in category.get("threads", []):
-
-            channel_name = thread["channel"]
-            channel_pos = thread["position"]
-            thread_title = thread["thread"]
-            thread_pos = thread["threadPosition"]
-
-            # Find the file that corresponds to the thread
-            old_filename = find_channel_file(threads_folder, thread_title)
-
-            if old_filename:
-
-                new_filename = f"{channel_pos}-{thread_pos}# {old_filename}"
-
-                src = os.path.join(threads_folder, old_filename)
-                dst = os.path.join(threads_folder, new_filename)
-                os.rename(src, dst)
-
-                t.log("log", f"\tRenamed file: {old_filename} → {new_filename}")
-
-            else:
-                t.log("info", f"{t.RED}\tThread file not found: {thread_title}")
-
-    t.save_to_json(channel_list, c.CHANNEL_LIST)
+        write_number_to_files(base_folder, main_status)
     
-    t.log("base", f"### Finished renaming files ###\n")
+    except Exception as e:
+        raise exc.FileSortingError(f"An error occurred while sorting channel files in {base_folder}:") from e
+
+    finally:
+        t.log("base", f"### Finished sorting files ###\n")
+
 
 if __name__ == "__main__":
-    
-    sort_exported_files(c.SERVER_NAME)
+
+    try:
+        sort_exported_files(c.SEARCH_FOLDER)
+
+    except Exception as e:
+        t.log("error", f"\n{exc.unwrap(e)}\n")

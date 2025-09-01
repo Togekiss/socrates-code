@@ -171,7 +171,7 @@ def run_command(command: str, show_lines: int = None):
         return process.returncode, ''.join(full_output)
 
     except Exception as e:
-        raise exc.ConsoleCommandException("An error occurred while running the command") from e
+        raise exc.ConsoleCommandError("An error occurred while running the command") from e
 
 
 ################ End Functions ################

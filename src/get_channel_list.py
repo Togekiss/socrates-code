@@ -29,7 +29,7 @@ Main function: get_channel_list()
 ############### Functions #################
 
 """
-load_previous_update()
+load_last_update()
 
     Loads the previous list of channels from a JSON file.
     If there is no previous list of channels, returns None.
@@ -41,29 +41,47 @@ load_previous_update()
         tuple: A tuple containing the previous update timestamp and the previous export timestamp.
 
 """
-def load_previous_update():
+def load_last_update():
 
     try:
-        t.log("debug", "\tLoading a previous list of channels...")
+        t.log("debug", "\t\nChecking the status of the backup...")
 
         # Load the JSON file
-        previous_channel_list = t.load_from_json(c.CHANNEL_LIST)
+        last_channel_list = t.load_from_json(c.CHANNEL_LIST)
 
-        t.log("debug", "\tLoaded a previous list of channels\n")
-        if previous_channel_list["status"]["updateStatus"] == "failed":
-            previous_update = previous_channel_list["status"]["previousUpdate"]
+        t.log("debug", "\t  Loaded the status file\n")
 
-        previous_update = previous_channel_list["updatedAt"]
-        previous_export = previous_channel_list["exportedAt"]
+        if last_channel_list["status"]["main"] == "running":
+            raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
+        
+        t.log("debug", f"\t  The current status of the backup is '{last_channel_list['status']['main']}'\n")
 
-        return previous_update, previous_export
+        last_update = last_channel_list["updatedAt"]
+        last_export = last_channel_list["exportedAt"]
 
-    except OSError:
-        t.log("debug", "\tNo previous list of channels file could be loaded\n")
+        t.log("debug", f"\t  The last update was downloaded at {last_update}")
+
+        # If the update failed, use the previous update
+        if last_channel_list["status"]["updateStatus"] == "failed" or last_channel_list["status"]["updateCleanStatus"] == "failed":
+            t.log("debug", "\t  The previous update failed. Will use the last good update\n")
+            last_update = last_channel_list["status"]["lastGoodUpdate"]
+
+        # flag it as running in case another execution of the script is launched
+        last_channel_list["status"]["main"] = "running"
+        last_channel_list["status"]["updateStatus"] = "running"
+        t.save_to_json(last_channel_list, c.CHANNEL_LIST)
+
+        return last_update, last_export
+
+    except exc.AlreadyRunningError as e:
+        raise e
+    
+    except OSError as e:
+        t.log("debug", f"\tNo status file could be loaded: {e}\n")
         return None, None
     
-    except Exception :
-        t.log("debug", "\tThe previous list of channels could not be read\n")
+    except Exception as e:
+        t.log("debug", f"\tThe status file could not be read: {e}\n")
         return None, None
 
 """
@@ -81,14 +99,13 @@ def parse_output(output):
 
     t.log("info", "\tParsing the list of channels...")
 
-    # Timestamp
-    updated_at = datetime.now().astimezone().isoformat(sep='T', timespec='microseconds')
-
     # Base object
     backup_data = {
         "id": c.SERVER_ID,
         "name": c.SERVER_NAME,
-        "updatedAt": updated_at,
+        "updatedAt": "",
+        "exportedAt": "",
+        "status": "",
         "numberOfChannels": 0,
         "categories": []
     }
@@ -181,7 +198,7 @@ def parse_output(output):
         return backup_data
     
     except Exception as e:
-        raise exc.ChannelListGetException("Failed to parse the list of channels") from e
+        raise exc.GetChannelListError("Failed to parse the list of channels") from e
     
 """
 get_channel_list_from_discord()
@@ -195,6 +212,8 @@ get_channel_list_from_discord()
 """
 def get_channel_list_from_discord():
 
+    t.log("base", "  #  This may take a few minutes...  #\n")
+
     t.log("info", "\tGetting a list of channels from Discord...")
 
     # Call the CLI command and capture its output
@@ -202,7 +221,7 @@ def get_channel_list_from_discord():
     code, output = t.run_command(cli_command)
 
     if code != 0:
-        raise exc.ConsoleCommandException("DCE command failed")
+        raise exc.ConsoleCommandError("DCE command failed")
 
     t.log("info", f"\tGot a list of channels from DCE: {code}\n")
 
@@ -250,7 +269,7 @@ def clean_channel_list(channel_list):
         return channel_list
 
     except Exception as e:
-        raise exc.ChannelListCleanException("Failed to clean the list of channels") from e
+        raise exc.CleanChannelListError("Failed to clean the list of channels") from e
 
 
 ################# Main function #################
@@ -258,21 +277,21 @@ def clean_channel_list(channel_list):
 
 def get_channel_list():
 
-    try:
+    t.log("base", f"\n###  Getting a list of all channels from the server {c.SERVER_NAME}...  ###\n")
 
-        t.log("base", f"\n###  Getting a list of all channels from the server {c.SERVER_NAME}...  ###\n")
-        t.log("base", "  #  This may take a few minutes...  #\n")
+    last_update, last_export = load_last_update()
+
+    try:
 
         start_time = time.time()
 
-        previous_update, previous_export = load_previous_update()
-
         update_status = {
-            "previousUpdate": previous_update,
+            "main": "running",
+            "lastGoodUpdate": last_update,
             "updateStatus": "running",
             "updateCleanStatus": "pending",
-            "previousExport": previous_export,
-            "isPartialUpdate": False if previous_export is None else True,
+            "lastGoodExport": last_export,
+            "isPartialUpdate": False if last_export is None else True,
             "downloadStatus": "pending",
             "sortingReadStatus": "pending",
             "sortingCleanStatus": "pending",
@@ -284,38 +303,40 @@ def get_channel_list():
 
         channel_list = get_channel_list_from_discord()
 
-        channel_list["exportedAt"] = previous_export
+        channel_list["exportedAt"] = last_export
         update_status["updateStatus"] = "success"
         update_status["updateCleanStatus"] = "running"
 
         channel_list = clean_channel_list(channel_list)
 
         update_status["updateCleanStatus"] = "success"
+        update_status["main"] = "pending"
+        update_status["lastGoodUpdate"] = datetime.now().astimezone().isoformat(sep='T', timespec='microseconds')
 
+    except exc.CleanChannelListError as e:
 
-    except exc.ChannelListCleanException as e:
+        update_status["updateCleanStatus"] = "failed"
+        update_status["main"] = "failed"
 
-        update_status["updateCleanStatus"] = "failed"   
-
-        raise exc.ChannelListException from e
+        raise exc.ChannelListError from e
     
     except Exception as e:
 
         update_status["updateStatus"] = "failed"
         update_status["updateCleanStatus"] = "pending"
+        update_status["main"] = "failed"
 
-        if previous_update is not None:
+        if last_update is not None:
             channel_list = t.load_from_json(c.CHANNEL_LIST)
         else:
-            channel_list = {}        
+            channel_list = {}         
 
-        channel_list["updatedAt"] = datetime.now().astimezone().isoformat(sep='T', timespec='microseconds')   
-
-        raise exc.ChannelListException from e
+        raise exc.ChannelListError from e
 
 
     finally:
         try:
+            channel_list["updatedAt"] = datetime.now().astimezone().isoformat(sep='T', timespec='microseconds')
             channel_list["status"] = update_status
             t.save_to_json(channel_list, c.CHANNEL_LIST)
             t.log("info", f"\t\nSaved the list of channels to {c.CHANNEL_LIST}\n")

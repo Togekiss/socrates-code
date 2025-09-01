@@ -121,6 +121,7 @@ After having gone through all channels, it will output a list of scenes, with th
 - ~~Input a scene status (Closed, Active, Timed out)~~ Use `STATUS` in `res/constants.py`
 
 ### Chat exporting
+- It'd be cool to add "number of messages, number of scenes" in `res/channel_list.json`
 - Avoid re-processing channels that have already been exported
   - Keep a list of channels that did get updates (no empty message list)
   - Run `assign_ids.py` against the update batch

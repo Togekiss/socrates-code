@@ -1,5 +1,5 @@
 # Search parameters
-SEARCH_FOLDER = "Elysium"       # Same as SERVER_NAME, or a subfolder if you want to search in a specific category
+SEARCH_FOLDER = "Update"       # Same as SERVER_NAME, or a subfolder if you want to search in a specific category
 CHARACTER = "Ophelia"            # Character name. If looking for a canon, specify the writer i.e. "Laito Sakamaki (Meli)"
 # TIP: Most of the times, using the first name or nickname is enough i.e. "Lysander" or "Lys"
 
