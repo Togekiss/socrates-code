@@ -55,3 +55,6 @@ class AssignIDError(Exception):
 
 class MergeError(Exception):
     pass
+
+class FixMessagesError(Exception):
+    pass

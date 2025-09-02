@@ -291,7 +291,6 @@ def get_channel_list():
             "updateStatus": "running",
             "updateCleanStatus": "pending",
             "lastGoodExport": last_export,
-            "isPartialUpdate": False if last_export is None else True,
             "downloadStatus": "pending",
             "sortingReadStatus": "pending",
             "sortingCleanStatus": "pending",

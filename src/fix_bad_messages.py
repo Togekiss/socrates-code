@@ -1,8 +1,8 @@
 import os
-import json
 import time
 import re
 import tricks as t
+import exceptions as exc
 t.set_path()
 from res import constants as c
 
@@ -21,9 +21,53 @@ Main function: fix_bad_messages()
 
 ################ Functions #################
 
+"""
+check_base_status()
+
+    Checks the status file, and raises exceptions if the backup is not ready to be sorted.
 
 """
-fix_messages_in_channel(messages, fixed_messages)
+def check_base_status():
+
+    try: 
+        t.log("debug", "\nChecking the status of the backup...")
+
+        channel_list = t.load_from_json(c.CHANNEL_LIST)
+
+        t.log("debug", "  Loaded the status file\n")
+
+        t.log("debug", f"  The current status of the backup is '{channel_list['status']['main']}'\n")
+
+        main_status = channel_list["status"]["main"] + ""
+
+        if channel_list["status"]["main"] == "running":
+            raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
+        
+        if channel_list["status"]["main"] == "failed":
+            raise exc.DataNotReadyError("The data may be corrupted. Ensure the backup downloaded successfully and try again.")
+        
+        if channel_list["status"]["idAssignStatus"] != "success":
+            raise exc.DataNotReadyError("The backup is not fully updated. Ensure the ID assignment process ran and try again.")
+
+        if channel_list["status"]["mergeStatus"] != "success":
+            raise exc.DataNotReadyError("The backup is not fully updated. Ensure the merge process ran and try again.")
+
+        channel_list["status"]["main"] = "running"
+        channel_list["status"]["messageFixStatus"] = "running"
+
+        t.save_to_json(channel_list, c.CHANNEL_LIST)
+
+        return main_status
+
+    except (exc.AlreadyRunningError, exc.DataNotReadyError) as e:
+        raise e
+    
+    except Exception as e:
+        raise exc.FixMessagesError("The export status file could not be read") from e
+    
+
+"""
+fix_messages_in_channel(file_path, fixed_messages)
 
     This function traverses through all the messages in a channel and,
     if it finds a message that has a fixed version in the fixed_messages dictionary,
@@ -32,18 +76,17 @@ fix_messages_in_channel(messages, fixed_messages)
     It also deletes messages from non-bot users if they only have a mention.
 
     Args:
-        channel (dict): A dictionary containing channel information.
+        file_path (str): The path to the channel JSON file.
         fixed_messages (dict): A dictionary containing fixed versions of messages.
 
     Returns:
         channel (dict): The modified channel dictionary.
 """
-def fix_messages_in_channel(channel, fixed_messages):
+def fix_messages_in_channel(file_path, fixed_messages):
 
+    channel = t.load_from_json(file_path)
 
-    messages = channel["messages"]
-
-    for message in messages:
+    for message in channel["messages"]:
 
         # if ID in fixed_messages, replace it
         if message["id"] in fixed_messages:
@@ -66,42 +109,62 @@ def fix_messages_in_channel(channel, fixed_messages):
                 t.log("debug", f"\tFound message with only a mention '{message['content']}' from {message['author']['name']}.")
 
                 #remove message from messages
-                messages.remove(message)
+                channel["messages"].remove(message)
     
-    return channel
+    t.save_to_json(channel, file_path)
 
 ################# Main function #################
 
 def fix_bad_messages():
 
-    t.log("base", f"\n###  Fixing badly formatted messages in {c.SERVER_NAME}...  ###\n")
+    try:
 
-    start_time = time.time()
+        t.log("base", f"\n###  Fixing badly formatted messages in {c.SERVER_NAME}...  ###\n")
 
-    fixed_messages = t.load_from_json(c.FIXED_MESSAGES)
+        start_time = time.time()
 
-    t.log("info", f"    Found {len(fixed_messages)} messages to patch\n")
+        main_status = check_base_status()
 
-    # Iterate over all channel JSON files in the folder and its subfolders
-    for root, dirs, files in os.walk(c.SEARCH_FOLDER):
-        for filename in files:
-            if filename.endswith(".json") and not filename.endswith("scenes.json"):
+        fixed_messages = t.load_from_json(c.FIXED_MESSAGES)
 
-                file_path = os.path.join(root, filename)
+        t.log("info", f"    Found {len(fixed_messages)} messages to patch\n")
 
-                t.log("log", f"\t    Analysing {file_path}...")
+        # Iterate over all channel JSON files in the folder and its subfolders
+        for root, dirs, files in os.walk(c.SEARCH_FOLDER):
+            for filename in files:
+                if filename.endswith(".json") and not filename.endswith("scenes.json"):
 
-                # Load channel JSON data from file
-                channel_data = t.load_from_json(file_path)
+                    file_path = os.path.join(root, filename)
 
-                # find and fix bad messages
-                fixed_data = fix_messages_in_channel(channel_data, fixed_messages)
+                    t.log("log", f"\t    Analysing {file_path}...")
 
-                # Save the modified JSON data back to the file
-                t.save_to_json(fixed_data, file_path)
+                    # find and fix bad messages
+                    fix_messages_in_channel(file_path, fixed_messages)
 
-    t.log("base", f"### Finished fixing messages --- {time.time() - start_time:.2f} seconds --- ###\n")
+        step_status = "success"
+
+    except Exception as e:
+        main_status = "failed"
+        step_status = "failed"
+        raise exc.FixMessagesError("Failed to fix bad messages in files") from e
+    
+    finally:
+        try:
+            t.log("base", f"### Finished fixing messages --- {time.time() - start_time:.2f} seconds --- ###\n")
+            channel_list = t.load_from_json(c.CHANNEL_LIST)
+            channel_list["status"]["main"] = main_status
+            channel_list["status"]["messageFixStatus"] = step_status
+            t.save_to_json(channel_list, c.CHANNEL_LIST)
+
+        except Exception as e:
+            t.log("error", f"\tFailed to save the status file: {e}\n")
+
 
 if __name__ == "__main__":
-    fix_bad_messages()
+    
+    try:
+        fix_bad_messages()
+    
+    except Exception as e:
+        t.log("error", f"\n{exc.unwrap(e)}\n")
     
