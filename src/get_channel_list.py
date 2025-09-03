@@ -47,29 +47,29 @@ def load_last_update():
         t.log("debug", "\t\nChecking the status of the backup...")
 
         # Load the JSON file
-        last_channel_list = t.load_from_json(c.CHANNEL_LIST)
+        last_channel_list = t.load_from_json(c.BACKUP_INFO)
 
         t.log("debug", "\t  Loaded the status file\n")
 
-        if last_channel_list["status"]["main"] == "running":
+        if last_channel_list["status"] == "running":
             raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
         
-        t.log("debug", f"\t  The current status of the backup is '{last_channel_list['status']['main']}'\n")
+        t.log("debug", f"\t  The current status of the backup is '{last_channel_list['status']}'\n")
 
-        last_update = last_channel_list["updatedAt"]
-        last_export = last_channel_list["exportedAt"]
+        last_update = last_channel_list["dates"]["updatedAt"]
+        last_export = last_channel_list["dates"]["exportedAt"]
 
         t.log("debug", f"\t  The last update was downloaded at {last_update}")
 
         # If the update failed, use the previous update
-        if last_channel_list["status"]["updateStatus"] == "failed" or last_channel_list["status"]["updateCleanStatus"] == "failed":
+        if last_channel_list["steps"]["updateStatus"] == "failed" or last_channel_list["steps"]["updateCleanStatus"] == "failed":
             t.log("debug", "\t  The previous update failed. Will use the last good update\n")
-            last_update = last_channel_list["status"]["lastGoodUpdate"]
+            last_update = last_channel_list["dates"]["lastGoodUpdate"]
 
         # flag it as running in case another execution of the script is launched
-        last_channel_list["status"]["main"] = "running"
-        last_channel_list["status"]["updateStatus"] = "running"
-        t.save_to_json(last_channel_list, c.CHANNEL_LIST)
+        last_channel_list["status"] = "running"
+        last_channel_list["steps"]["updateStatus"] = "running"
+        t.save_to_json(last_channel_list, c.BACKUP_INFO)
 
         return last_update, last_export
 
@@ -82,7 +82,7 @@ def load_last_update():
     
     except Exception as e:
         t.log("debug", f"\tThe status file could not be read: {e}\n")
-        return None, None
+        raise e
 
 """
 parse_output(output)
@@ -103,10 +103,12 @@ def parse_output(output):
     backup_data = {
         "id": c.SERVER_ID,
         "name": c.SERVER_NAME,
-        "updatedAt": "",
-        "exportedAt": "",
+        "dates": "",
         "status": "",
-        "numberOfChannels": 0,
+        "steps": "",
+        "numberOfCategories": 0,
+        "numberOfChannels": 0, 
+        "numberOfScenes": 0,
         "categories": []
     }
 
@@ -163,6 +165,9 @@ def parse_output(output):
                 category_data = {
                     "category": entry["category"],
                     "position": len(category_list) + 1,
+                    "numberOfChannels": 0,
+                    "numberOfThreads": 0,
+                    "numberOfScenes": 0,
                     "channels": [],
                     "threads": []
                 }
@@ -173,7 +178,7 @@ def parse_output(output):
             channel_data = {
                 "id": entry["id"],
                 "channel": entry["channel"],
-                "position": len(backup_data["categories"][category_list.index(entry["category"])]["channels"]) + 1
+                "position": len(backup_data["categories"][category_list.index(entry["category"])]["channels"]) + 1,
             }
 
             # Add the channel to the category
@@ -186,10 +191,13 @@ def parse_output(output):
                     if thread["channel"] == entry["channel"]:
                         thread_position += 1
                 channel_data["threadPosition"] = thread_position
+                channel_data["numberOfMessages"] = 0
                 
                 backup_data["categories"][category_list.index(entry["category"])]["threads"].append(channel_data)
             
             else:
+                channel_data["numberOfScenes"] = 0
+                channel_data["numberOfMessages"] = 0
                 backup_data["categories"][category_list.index(entry["category"])]["channels"].append(channel_data)
             backup_data["numberOfChannels"] += 1
 
@@ -226,9 +234,9 @@ def get_channel_list_from_discord():
     t.log("info", f"\tGot a list of channels from DCE: {code}\n")
 
     # Process the output and create the desired JSON format
-    channel_list = parse_output(output)
+    backup_info = parse_output(output)
 
-    return channel_list
+    return backup_info
 
 """
 remove_categories(json_data, categories_to_remove), keep_categories(json_data, categories_to_keep)
@@ -243,30 +251,33 @@ def keep_categories(json_data, categories_to_keep):
 
 
 """
-clean_channel_list(channel_list)
+clean_channel_list(backup_info)
 
     Cleans up the channel list by removing categories and updating the number of channels.
 
     Returns:
         dict: A cleaned up list of channel data in JSON format.
 """
-def clean_channel_list(channel_list):
+def clean_channel_list(backup_info):
 
     t.log("info", "\tCleaning the list of channels...")
 
     try: 
-        channel_list["categories"] = remove_categories(channel_list["categories"], c.CATEGORIES_TO_IGNORE)
+        backup_info["categories"] = remove_categories(backup_info["categories"], c.CATEGORIES_TO_IGNORE)
 
         t.log("info", f"\t  Removed {len(c.CATEGORIES_TO_IGNORE)} categories")
 
         # Update the number of channels
-        channel_list["numberOfChannels"] = 0
-        for category in channel_list["categories"]:
-            channel_list["numberOfChannels"] += len(category["channels"]) + len(category["threads"])
+        backup_info["numberOfChannels"] = 0
+        for category in backup_info["categories"]:
+            category["numberOfChannels"] = len(category["channels"])
+            category["numberOfThreads"] = len(category["threads"])
+            backup_info["numberOfChannels"] += len(category["channels"]) + len(category["threads"])
+        backup_info["numberOfCategories"] = len(backup_info["categories"])
             
-        t.log("info", f"\t  Kept {channel_list['numberOfChannels']} channels across {len(channel_list['categories'])} categories\n")
+        t.log("info", f"\t  Kept {backup_info['numberOfChannels']} channels across {len(backup_info['categories'])} categories\n")
 
-        return channel_list
+        return backup_info
 
     except Exception as e:
         raise exc.CleanChannelListError("Failed to clean the list of channels") from e
@@ -285,12 +296,18 @@ def get_channel_list():
 
         start_time = time.time()
 
-        update_status = {
-            "main": "running",
+        update_history = {
+            "updatedAt": datetime.now().astimezone().isoformat(sep='T', timespec='microseconds'),
+            "exportedAt": last_export,
             "lastGoodUpdate": last_update,
+            "lastGoodExport": last_export
+        }
+
+        main_status = "running"
+
+        update_status = {
             "updateStatus": "running",
             "updateCleanStatus": "pending",
-            "lastGoodExport": last_export,
             "downloadStatus": "pending",
             "sortingReadStatus": "pending",
             "sortingCleanStatus": "pending",
@@ -300,22 +317,21 @@ def get_channel_list():
             "messageFixStatus": "pending"
         }
 
-        channel_list = get_channel_list_from_discord()
+        backup_info = get_channel_list_from_discord()
 
-        channel_list["exportedAt"] = last_export
         update_status["updateStatus"] = "success"
         update_status["updateCleanStatus"] = "running"
 
-        channel_list = clean_channel_list(channel_list)
+        backup_info = clean_channel_list(backup_info)
 
         update_status["updateCleanStatus"] = "success"
-        update_status["main"] = "pending"
-        update_status["lastGoodUpdate"] = datetime.now().astimezone().isoformat(sep='T', timespec='microseconds')
+        main_status = "pending"
+        update_history["lastGoodUpdate"] = datetime.now().astimezone().isoformat(sep='T', timespec='microseconds')
 
     except exc.CleanChannelListError as e:
 
         update_status["updateCleanStatus"] = "failed"
-        update_status["main"] = "failed"
+        main_status = "failed"
 
         raise exc.ChannelListError from e
     
@@ -323,22 +339,23 @@ def get_channel_list():
 
         update_status["updateStatus"] = "failed"
         update_status["updateCleanStatus"] = "pending"
-        update_status["main"] = "failed"
+        main_status = "failed"
 
         if last_update is not None:
-            channel_list = t.load_from_json(c.CHANNEL_LIST)
+            backup_info = t.load_from_json(c.BACKUP_INFO)
         else:
-            channel_list = {}         
+            backup_info = {}         
 
         raise exc.ChannelListError from e
 
 
     finally:
         try:
-            channel_list["updatedAt"] = datetime.now().astimezone().isoformat(sep='T', timespec='microseconds')
-            channel_list["status"] = update_status
-            t.save_to_json(channel_list, c.CHANNEL_LIST)
-            t.log("info", f"\t\nSaved the list of channels to {c.CHANNEL_LIST}\n")
+            backup_info["status"] = main_status
+            backup_info["steps"] = update_status
+            backup_info["dates"] = update_history
+            t.save_to_json(backup_info, c.BACKUP_INFO)
+            t.log("info", f"\t\nSaved the list of channels to {c.BACKUP_INFO}\n")
             
         except Exception as e:
             t.log("error", f"\tFailed to save the list of channels: {e}\n")

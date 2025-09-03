@@ -11,6 +11,7 @@ from merge_exports import merge_exports
 from assign_ids import assign_ids
 from fix_bad_messages import fix_bad_messages
 from sort_exported_files import sort_exported_files
+from update_info import update_info
 
 
 ################# File summary #################
@@ -36,14 +37,14 @@ def check_busy():
     try: 
         t.log("debug", "\nChecking the status of the backup...")
 
-        channel_list = t.load_from_json(c.CHANNEL_LIST)
+        backup_info = t.load_from_json(c.BACKUP_INFO)
 
         t.log("debug", "  Loaded the status file\n")
 
-        if channel_list["status"]["main"] == "running":
+        if backup_info["status"] == "running":
             raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
         
-        t.log("debug", f"  The current status of the backup is '{channel_list['status']['main']}'\n")
+        t.log("debug", f"  The current status of the backup is '{backup_info["status"]}'\n")
 
     except exc.AlreadyRunningError as e:
         raise e
@@ -98,7 +99,7 @@ get_export_date()
 
     Returns the date of the last export in ISO format as a string or None if there is no previous backup.
 
-    The date is retrieved from channel_list.json.
+    The date is retrieved from backup_info.json.
 
     Note: Backups are dated as a whole. This assumes the whole list of channels was downloaded at that time.
           If the export was interrupted, this does NOT keep track of which channels were downloaded and which weren't.
@@ -107,25 +108,25 @@ def set_export_date():
     
     date = None
 
-    channel_list = t.load_from_json(c.CHANNEL_LIST)
+    backup_info = t.load_from_json(c.BACKUP_INFO)
 
     # if the previous export failed, use the last good export date
-    if channel_list["status"]["downloadStatus"] == "failed":
-        channel_list["exportedAt"] = channel_list["status"]["lastGoodExport"]
+    if backup_info["steps"]["downloadStatus"] == "failed":
+        backup_info["dates"]["exportedAt"] = backup_info["dates"]["lastGoodExport"]
 
     # Check if there is a previous backup
-    if channel_list["exportedAt"] is not None:
+    if backup_info["dates"]["exportedAt"] is not None:
 
-        t.log("info", f'\tThe last backup was downloaded at {channel_list["exportedAt"]}')
-        date = set_day_before(channel_list["exportedAt"])
+        t.log("info", f'\tThe last backup was downloaded at {backup_info["dates"]["exportedAt"]}')
+        date = set_day_before(backup_info["dates"]["exportedAt"])
         t.log("info", f'\tWill download updates after {date}\n')
 
     else:
         t.log("info", '\tNo previous backup was found. Will download the full history\n')
 
     # flag it as running in case another execution of the script is launched
-    channel_list["status"]["main"] = "running"
-    t.save_to_json(channel_list, c.CHANNEL_LIST)
+    backup_info["status"] = "running"
+    t.save_to_json(backup_info, c.BACKUP_INFO)
     
     return date
 
@@ -176,7 +177,7 @@ def export_category(item, date, type="channels"):
 """
 download_exports(date=None)
 
-    Opens the channel list in the file channel_list.json, and downloads the channels of each category.
+    Opens the channel list in the file backup_info.json, and downloads the channels of each category.
 
     Args:
         date (str, optional): The timestamp of the last export in ISO format. If not provided, downloads the full history.
@@ -192,16 +193,16 @@ def download_exports(date=None):
         # saving the current timestamp before starting, since it can take a long time
         now = datetime.now().astimezone().isoformat(sep='T', timespec='microseconds')
 
-        channel_list = t.load_from_json(c.CHANNEL_LIST)
+        backup_info = t.load_from_json(c.BACKUP_INFO)
 
         # flag it as running in case another execution of the script is launched
-        channel_list["status"]["downloadStatus"] = "running"
-        t.save_to_json(channel_list, c.CHANNEL_LIST)
+        backup_info["steps"]["downloadStatus"] = "running"
+        t.save_to_json(backup_info, c.BACKUP_INFO)
         
         channel_count = 0
 
         # for each category, get channel and thread list
-        for item in channel_list["categories"]:
+        for item in backup_info["categories"]:
 
             channels_in_category = len(item["channels"])
             threads_in_category = len(item["threads"])
@@ -216,22 +217,22 @@ def download_exports(date=None):
                 export_category(item, date, "threads")
                 channel_count += threads_in_category
 
-            t.log("info", f"\n\tExported {channel_count} channels out of {channel_list['numberOfChannels']}\n")
+            t.log("info", f"\n\tExported {channel_count} channels out of {backup_info['numberOfChannels']}\n")
 
-        channel_list["status"]["downloadStatus"] = "success"
-        channel_list["status"]["main"] = "pending"
-        channel_list["status"]["lastGoodExport"] = now
+        backup_info["steps"]["downloadStatus"] = "success"
+        backup_info["status"] = "pending"
+        backup_info["dates"]["lastGoodExport"] = now
 
     # this covers both ExportError and built-in exceptions like OSError and JSON-related ones
     except Exception as e:
-        channel_list["status"]["downloadStatus"] = "failed"
-        channel_list["status"]["main"] = "failed"
+        backup_info["steps"]["downloadStatus"] = "failed"
+        backup_info["status"] = "failed"
         raise exc.ExportError(f"An error occurred while exporting the backup") from e
     
     finally:
         try:
-            channel_list["exportedAt"] = now
-            t.save_to_json(channel_list, c.CHANNEL_LIST)
+            backup_info["dates"]["exportedAt"] = now
+            t.save_to_json(backup_info, c.BACKUP_INFO)
         except Exception as e:
             t.log("error", f"\tFailed to save the backup status: {e}\n")
 
@@ -274,12 +275,10 @@ def export_channels():
 
         t.log("info", "\n\tFixing bad messages...\n") 
         fix_bad_messages()
-        
-    except exc.ChannelListError as e:
-        raise e
-    
-    except exc.ExportError as e:
-        raise e
+
+        t.log("info", "\n\Updating information of the backup...\n")
+        update_info()
+
 
     except Exception as e:
         raise e

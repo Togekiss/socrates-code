@@ -58,3 +58,6 @@ class MergeError(Exception):
 
 class FixMessagesError(Exception):
     pass
+
+class UpdateInfoError(Exception):
+    pass

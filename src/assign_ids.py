@@ -37,24 +37,24 @@ def check_base_status():
     try: 
         t.log("debug", "\nChecking the status of the backup...")
 
-        channel_list = t.load_from_json(c.CHANNEL_LIST)
+        backup_info = t.load_from_json(c.BACKUP_INFO)
 
         t.log("debug", "  Loaded the status file\n")
 
-        main_status = channel_list["status"]["main"] + ""
+        main_status = backup_info["status"] + ""
 
         t.log("debug", f"  The current status of the backup is '{main_status}'\n")
 
-        if channel_list["status"]["main"] == "running":
+        if backup_info["status"] == "running":
             raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
 
-        if channel_list["status"]["main"] == "failed":
+        if backup_info["status"] == "failed":
             raise exc.DataNotReadyError("The data may be corrupted. Ensure the backup downloaded successfully and try again.")
 
-        channel_list["status"]["main"] = "running"
-        channel_list["status"]["idAssignStatus"] = "running"
+        backup_info["status"] = "running"
+        backup_info["steps"]["idAssignStatus"] = "running"
 
-        t.save_to_json(channel_list, c.CHANNEL_LIST)
+        t.save_to_json(backup_info, c.BACKUP_INFO)
 
         return main_status
 
@@ -312,10 +312,10 @@ def assign_ids(search_folder=c.SEARCH_FOLDER):
     finally:
         try:
             t.log("base", f"### ID assigning finished --- {time.time() - start_time:.2f} seconds --- ###\n")
-            channel_list = t.load_from_json(c.CHANNEL_LIST)
-            channel_list["status"]["main"] = main_status
-            channel_list["status"]["idAssignStatus"] = step_status
-            t.save_to_json(channel_list, c.CHANNEL_LIST)
+            backup_info = t.load_from_json(c.BACKUP_INFO)
+            backup_info["status"] = main_status
+            backup_info["steps"]["idAssignStatus"] = step_status
+            t.save_to_json(backup_info, c.BACKUP_INFO)
 
         except Exception as e:
             t.log("error", f"\tFailed to save the status file: {e}\n")

@@ -346,7 +346,7 @@ def find_character_scenes_in_channel(channel, main_character_list, scene_id, bat
                     
                     # tag the scene as closed
                     active_scene = False
-                    found_scene["status"] = 'closed'
+                    found_scene["steps"] = 'closed'
                     found_scene["characters"] = characters
                     t.log(log_level, f"\t  This scene is {t.GREEN}closed")
 
@@ -359,7 +359,7 @@ def find_character_scenes_in_channel(channel, main_character_list, scene_id, bat
 
                     # tag the scene as timed out
                     active_scene = False
-                    found_scene["status"] = 'timeout'
+                    found_scene["steps"] = 'timeout'
                     found_scene["characters"] = characters
                     t.log(log_level, f"\t  This scene has {t.YELLOW}timed out")
 

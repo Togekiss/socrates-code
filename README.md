@@ -36,7 +36,7 @@ Once this is in working condition, the focus will shift to uploading the bot to 
   - `server_data.py`: contains the server ID and some category name. SHARE WITH CAUTION!
   - `constants.py`: configuration file with search parameters, output parameters, and more
   - `character_ids.json`: a list of tupperbox characters and their associated IDs
-  - `channel_list.json`: list of channels and threads to be downloaded
+  - `backup_info.json`: list of channels and threads to be downloaded
   - `fixed_messages.json`: for each message known to have a bad formatting in the backup, a fixed version is stored here
 
 - `out`: contains the results of scene searches, both for link lists and full scene extractions
@@ -121,7 +121,7 @@ After having gone through all channels, it will output a list of scenes, with th
 - ~~Input a scene status (Closed, Active, Timed out)~~ Use `STATUS` in `res/constants.py`
 
 ### Chat exporting
-- It'd be cool to add "number of messages, number of scenes" in `res/channel_list.json`
+- It'd be cool to add "number of messages, number of scenes" in `res/backup_info.json`
 - Avoid re-processing channels that have already been exported
   - Keep a list of channels that did get updates (no empty message list)
   - Run `assign_ids.py` against the update batch

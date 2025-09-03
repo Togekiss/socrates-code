@@ -27,7 +27,7 @@ LOG_FILE = "out/log.txt"
 
 # File parameters
 CHARACTER_IDS = "res/character_ids.json"
-CHANNEL_LIST = "res/channel_list.json"
+BACKUP_INFO = "res/backup_info.json"
 FIXED_MESSAGES = "res/fixed_messages.json"
 
 # Discord parameters

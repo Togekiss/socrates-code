@@ -32,30 +32,30 @@ def check_base_status():
     try: 
         t.log("debug", "\nChecking the status of the backup...")
 
-        channel_list = t.load_from_json(c.CHANNEL_LIST)
+        backup_info = t.load_from_json(c.BACKUP_INFO)
 
         t.log("debug", "  Loaded the status file\n")
 
-        t.log("debug", f"  The current status of the backup is '{channel_list['status']['main']}'\n")
+        t.log("debug", f"  The current status of the backup is '{backup_info["status"]}'\n")
 
-        main_status = channel_list["status"]["main"] + ""
+        main_status = backup_info["status"] + ""
 
-        if channel_list["status"]["main"] == "running":
+        if backup_info["status"] == "running":
             raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
         
-        if channel_list["status"]["main"] == "failed":
+        if backup_info["status"] == "failed":
             raise exc.DataNotReadyError("The data may be corrupted. Ensure the backup downloaded successfully and try again.")
         
-        if channel_list["status"]["idAssignStatus"] != "success":
+        if backup_info["steps"]["idAssignStatus"] != "success":
             raise exc.DataNotReadyError("The backup is not fully updated. Ensure the ID assignment process ran and try again.")
 
-        if channel_list["status"]["mergeStatus"] != "success":
+        if backup_info["steps"]["mergeStatus"] != "success":
             raise exc.DataNotReadyError("The backup is not fully updated. Ensure the merge process ran and try again.")
 
-        channel_list["status"]["main"] = "running"
-        channel_list["status"]["messageFixStatus"] = "running"
+        backup_info["status"] = "running"
+        backup_info["steps"]["messageFixStatus"] = "running"
 
-        t.save_to_json(channel_list, c.CHANNEL_LIST)
+        t.save_to_json(backup_info, c.BACKUP_INFO)
 
         return main_status
 
@@ -151,10 +151,10 @@ def fix_bad_messages():
     finally:
         try:
             t.log("base", f"### Finished fixing messages --- {time.time() - start_time:.2f} seconds --- ###\n")
-            channel_list = t.load_from_json(c.CHANNEL_LIST)
-            channel_list["status"]["main"] = main_status
-            channel_list["status"]["messageFixStatus"] = step_status
-            t.save_to_json(channel_list, c.CHANNEL_LIST)
+            backup_info = t.load_from_json(c.BACKUP_INFO)
+            backup_info["status"] = main_status
+            backup_info["steps"]["messageFixStatus"] = step_status
+            t.save_to_json(backup_info, c.BACKUP_INFO)
 
         except Exception as e:
             t.log("error", f"\tFailed to save the status file: {e}\n")
