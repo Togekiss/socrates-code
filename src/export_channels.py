@@ -133,7 +133,7 @@ def set_export_date():
 
 
 """
-export_category(item, date, type)
+export_category(cat, date, type)
 
     Downloads set of channels or threads.
 
@@ -141,24 +141,24 @@ export_category(item, date, type)
     Downloads are run in parallel in groups of 3 or 5 to improve performance.
 
     Args:
-        item (dict): The category data in JSON format.
+        cat (dict): The category data in JSON format.
         date (str, optional): The timestamp of the last export in ISO format. If not provided, downloads the full history.
         type (str, optional): The type of channels to download, should be "channels" or "threads". Defaults to "channels".
 
     Returns:
         None, but saves the downloaded messages to JSON files.
 """
-def export_category(item, date, type="channels"):
+def export_category(cat, date, type="channels"):
 
     try:
-        category = item["category"].replace(":", "_")
+        category = cat["category"].replace(":", "_")
         folder = c.SERVER_NAME if date is None else "Update"
         date = "" if date is None else "--after " + date
 
-        path = f"{folder}/{item["position"]}# {category}/%p# %C.json" if type == "channels" else f"{folder}/{item["position"]}# {category}/Threads/%p# %C.json"
+        path = f"{folder}/{cat["position"]}# {category}/%p# %C.json" if type == "channels" else f"{folder}/{cat["position"]}# {category}/Threads/%p# %C.json"
         group_size = 3 if category in c.DM_CATEGORIES else 5
 
-        channels = item[type]
+        channels = cat[type]
         for i in range(0, len(channels), group_size):
 
             group = channels[i:i + group_size]
@@ -202,19 +202,19 @@ def download_exports(date=None):
         channel_count = 0
 
         # for each category, get channel and thread list
-        for item in backup_info["categories"]:
+        for cat in backup_info["categories"]:
 
-            channels_in_category = len(item["channels"])
-            threads_in_category = len(item["threads"])
+            channels_in_category = cat["numberOfChannels"]
+            threads_in_category = cat["numberOfThreads"]
             total_channels = channels_in_category + threads_in_category
 
-            t.log("info", f"\n\tExporting {total_channels} channels and threads from '{item['category']}'...")
+            t.log("info", f"\n\tExporting {total_channels} channels and threads from '{cat['category']}'...")
 
-            export_category(item, date, "channels")
+            export_category(cat, date, "channels")
             channel_count += channels_in_category
 
-            if len(item["threads"]) > 0:
-                export_category(item, date, "threads")
+            if threads_in_category > 0:
+                export_category(cat, date, "threads")
                 channel_count += threads_in_category
 
             t.log("info", f"\n\tExported {channel_count} channels out of {backup_info['numberOfChannels']}\n")

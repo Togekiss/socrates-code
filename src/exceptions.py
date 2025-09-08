@@ -12,7 +12,7 @@ def unwrap(exc: Exception):
 
         parts.append(f"({funcname}) {type(current).__name__}: {current}")
         current = current.__cause__
-    return " <- caused by <- ".join(parts)
+    return "\n^ caused by <- ".join(parts)
 
 class AlreadyRunningError(Exception):
     pass
@@ -60,4 +60,7 @@ class FixMessagesError(Exception):
     pass
 
 class UpdateInfoError(Exception):
+    pass
+
+class FindScenesError(Exception):
     pass

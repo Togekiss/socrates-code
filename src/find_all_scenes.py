@@ -1,11 +1,10 @@
-import json
 import os
-import re
 import time
-import unicodedata
 import tricks as t
+import exceptions as exc
 from assign_ids import get_character_name
 from find_scenes import find_character_scenes_in_channel
+from update_info import update_info
 t.set_path()
 from res import constants as c
 from create_scene_list import create_scene_list
@@ -30,6 +29,38 @@ Main function: find_all_scenes()
 """
 
 ################# Functions #################
+
+"""
+check_base_status()
+
+    Checks the status file, and raises exceptions if the backup is not ready to be sorted.
+
+"""
+def check_base_status():
+
+    try: 
+
+        update_info()
+
+        t.log("debug", "\nChecking the status of the backup...")
+
+        backup_info = t.load_from_json(c.BACKUP_INFO)
+
+        t.log("debug", "  Loaded the status file\n")
+
+        t.log("debug", f"  The current status of the backup is '{backup_info["status"]}'\n")
+
+        if backup_info["status"] == "running":
+            raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
+        
+        if backup_info["status"] != "success":
+            raise exc.DataNotReadyError("The data may be corrupted or incomplete. Ensure the backup downloaded successfully and try again.")
+
+    except (exc.AlreadyRunningError, exc.DataNotReadyError) as e:
+        raise e
+    
+    except Exception as e:
+        raise exc.FindScenesError("The export status file could not be read") from e
 
 
 """
@@ -164,41 +195,53 @@ def find_scenes_in_category(folder_path):
 
 def find_all_scenes():
 
-    start_time = time.time()
+    try:
+        start_time = time.time()
 
-    t.log("base", f"\n# Indexing all the scenes in {c.SEARCH_FOLDER}... #\n")
- 
-    full_scenes = []
+        t.log("base", f"\n# Indexing all the scenes in {c.SEARCH_FOLDER}... #\n")
 
-    # get all folders in folder c.SEARCH_FOLDER
-    folders = [f.path for f in os.scandir(c.SEARCH_FOLDER) if f.is_dir()]
+        check_base_status()
+    
+        full_scenes = []
 
-    # find all scenes in all folders
-    for folder in folders:
+        # get all folders in folder c.SEARCH_FOLDER
+        folders = [f.path for f in os.scandir(c.SEARCH_FOLDER) if f.is_dir()]
 
-        # create Scenes folder if it doesn't exist
-        if not os.path.exists(f"{folder}/Scenes"):
-            os.makedirs(f"{folder}/Scenes")
+        # find all scenes in all folders
+        for folder in folders:
 
-        scenes = find_scenes_in_category(folder)
+            # create Scenes folder if it doesn't exist
+            if not os.path.exists(f"{folder}/Scenes"):
+                os.makedirs(f"{folder}/Scenes")
 
-        full_scenes.extend(scenes)
-        t.log("info", f"  Found {len(scenes)} scenes in {folder}, adding up to {len(full_scenes)} total scenes\n")
+            scenes = find_scenes_in_category(folder)
 
-    # sort the scenes by start time
-    full_scenes.sort(key=lambda x: x["start"]["timestamp"])
+            full_scenes.extend(scenes)
+            t.log("info", f"  Found {len(scenes)} scenes in {folder}, adding up to {len(full_scenes)} total scenes\n")
 
-    # give the scenes new IDs
-    for i, scene in enumerate(full_scenes):
-        scene["sceneId"] = i+1
+        # sort the scenes by start time
+        full_scenes.sort(key=lambda x: x["start"]["timestamp"])
 
-    t.save_to_json(full_scenes, f"{c.SEARCH_FOLDER}\scenes.json")
+        # give the scenes new IDs
+        for i, scene in enumerate(full_scenes):
+            scene["sceneId"] = i+1
 
-    t.log("info", f"\n  Saved {len(full_scenes)} scenes to {c.SEARCH_FOLDER}\scenes.json")
+        t.save_to_json(full_scenes, f"{c.SEARCH_FOLDER}\scenes.json")
 
-    t.log("base", f"\n# Scene indexing finished --- {time.time() - start_time:.2f} seconds --- #\n")
+        t.log("info", f"\n  Saved {len(full_scenes)} scenes to {c.SEARCH_FOLDER}\scenes.json")
+
+    except Exception as e:
+        raise exc.FindScenesError("Failed to find all scenes") from e
+
+    finally:
+        t.log("base", f"\n# Scene indexing finished --- {time.time() - start_time:.2f} seconds --- #\n")
 
 
 if __name__ == "__main__":
-    find_all_scenes()
+    
+    try:
+        find_all_scenes()
+
+    except Exception as e:
+        t.log("error", f"\n{exc.unwrap(e)}\n")
     

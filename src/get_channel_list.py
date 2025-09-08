@@ -168,6 +168,7 @@ def parse_output(output):
                     "numberOfChannels": 0,
                     "numberOfThreads": 0,
                     "numberOfScenes": 0,
+                    "path": "",
                     "channels": [],
                     "threads": []
                 }

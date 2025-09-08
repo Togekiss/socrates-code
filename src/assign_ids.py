@@ -128,7 +128,7 @@ get_character_id(name)
 """
 def get_character_id(name):
 
-    characters_json = t.load_from_json(c.CHARACTER_IDS)
+    characters_json = t.load_from_json(c.CHARACTER_LIST)
 
     for character in characters_json:
         if name in character["names"]:
@@ -151,7 +151,7 @@ get_character_name(id)
 """
 def get_character_name(id):
 
-    characters_json = t.load_from_json(c.CHARACTER_IDS)
+    characters_json = t.load_from_json(c.CHARACTER_LIST)
 
     for character in characters_json:
         if id == character["id"]:
@@ -175,7 +175,7 @@ get_all_character_ids(name)
 """
 def get_all_character_ids(name):
 
-    characters_json = t.load_from_json(c.CHARACTER_IDS)
+    characters_json = t.load_from_json(c.CHARACTER_LIST)
 
     ids = []
 
@@ -248,7 +248,7 @@ def assign_ids_in_file(file_path, characters_json, lookup_map):
                 lookup_map[author_name] = new_id
 
                 t.log("info", f"\t  Found a new Tupper: {author_name} (ID: {new_id})")
-                t.save_to_json(characters_json, c.CHARACTER_IDS)
+                t.save_to_json(characters_json, c.CHARACTER_LIST)
          
             # Update the author's ID in the message
             message["author"]["id"] = f"{lookup_map[author_name]}"
@@ -270,11 +270,11 @@ def assign_ids(search_folder=c.SEARCH_FOLDER):
         main_status = check_base_status()
 
         # Open or create a dictionary to store character info
-        if os.path.exists(c.CHARACTER_IDS):
-            characters_json = t.load_from_json(c.CHARACTER_IDS)
+        if os.path.exists(c.CHARACTER_LIST):
+            characters_json = t.load_from_json(c.CHARACTER_LIST)
         else:
             characters_json = []
-            t.save_to_json(characters_json, c.CHARACTER_IDS)
+            t.save_to_json(characters_json, c.CHARACTER_LIST)
 
         t.log("info", f"\tLoaded {len(characters_json)} existing characters\n")
 

@@ -84,10 +84,11 @@ scene_info(start_message, end_message, scene_id, channel, status, characters=[])
     Returns:
         dict: Scene info in JSON format
 """
-def scene_info(start_message, end_message, scene_id, channel, status, characters=[]):
+def scene_info(start_message, end_message, scene_id, scene_index, channel, status, characters=[]):
 
     scene = {
         "sceneId": scene_id,
+        "index": scene_index,
         "category": channel['channel']['category'],
         "channel": channel['channel']['name'],
         "type": "channel" if channel['channel']['type'] == "GuildTextChat" else "thread",
@@ -291,7 +292,7 @@ def find_character_scenes_in_channel(channel, main_character_list, scene_id, bat
             start_msg = message_info(channel["messages"][0], channel, 0)
             end_msg = message_info(channel["messages"][-1], channel, len(channel["messages"]))
 
-            scenes.append(scene_info(start_msg, end_msg, scene_id, channel, status, characters))
+            scenes.append(scene_info(start_msg, end_msg, scene_id, scene_id, channel, status, characters))
             
 
     # if it's a channel, we will have to check the entirety of it
@@ -313,11 +314,12 @@ def find_character_scenes_in_channel(channel, main_character_list, scene_id, bat
                 main_missing_counter = 0
                 chara_search_counter = 0
                 scene_id = scene_id + 1
+                scene_index = scene_id
 
                 t.log(log_level, f"\n\tFound a scene in the channel [{channel['channel']['category']} - {channel['channel']['name']}]")
 
                 found_msg = message_info(message, channel, i)
-                found_scene = scene_info(found_msg, "", scene_id, channel, 'open', characters)
+                found_scene = scene_info(found_msg, "", scene_id, scene_index, channel, 'open', characters)
 
             # if we're already in an active scene, look for the end
             if active_scene: 
@@ -395,7 +397,7 @@ def find_scenes():
     characters_list = get_all_character_ids(c.CHARACTER)
 
     if not characters_list:
-        t.log("base", f"{t.RED}\nERROR: Could not find any versions of {c.CHARACTER} in {c.CHARACTER_IDS}.\nPlease check the character name and try again.\n")
+        t.log("base", f"{t.RED}\nERROR: Could not find any versions of {c.CHARACTER} in {c.CHARACTER_LIST}.\nPlease check the character name and try again.\n")
         return 1
 
     t.log("debug", f"\nFound {len(characters_list)} versions of {c.CHARACTER}: {characters_list}")

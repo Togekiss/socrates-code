@@ -1,9 +1,7 @@
 import os
 import time
-import re
 import tricks as t
 import exceptions as exc
-from sort_exported_files import super_normalize, find_channel_file
 t.set_path()
 from res import constants as c
 
@@ -108,18 +106,18 @@ def count_scenes_in_category(category=None):
     t.save_to_json(info, c.BACKUP_INFO)
 
 
-def count_scenes_in_channel(folder, channel):
+def count_scenes_in_channel(channel):
 
-    channel_name = super_normalize(channel["channel"])
-
-    channel_file = f"{folder}/{channel["position"]}# {channel_name}.json"
-    scenes_file = f"{folder}/Scenes/{channel["position"]}# {channel_name}_scenes.json"
+    channel_file = os.path.join(c.SERVER_NAME, channel["path"])
 
     # count the number of messages
     channel_data = t.load_from_json(channel_file)
     numberOfMessages = channel_data["messageCount"]
 
     t.log("debug", f"\t  Found {numberOfMessages} messages in {channel["channel"]}")
+
+    scenes_file = channel_file.replace(".json", "_scenes.json")
+    scenes_file = os.path.join(os.path.dirname(scenes_file), "Scenes", os.path.basename(scenes_file))
 
     # count the number of scenes
     try:
@@ -137,11 +135,9 @@ def count_scenes_in_channel(folder, channel):
     return numberOfMessages, numberOfScenes
 
 
-def count_scenes_in_thread(folder, channel):
+def count_scenes_in_thread(channel):
 
-    channel_name = f"{channel["position"]}-{channel["threadPosition"]}# {channel["thread"]}"
-
-    channel_file = f"{folder}/Threads/{find_channel_file(folder+"/Threads", channel_name)}"
+    channel_file = os.path.join(c.SERVER_NAME, channel["path"])
 
     # count the number of messages
     channel_data = t.load_from_json(channel_file)
@@ -177,18 +173,16 @@ def update_info():
 
             count_scenes_in_category(category)
 
-            folder = get_category_folder(category)
-
             t.log("debug", f"\n\t  Analyzing {category["category"]}... ###")
 
             for channel in category["channels"]:
 
-                channel["numberOfMessages"], channel["numberOfScenes"] = count_scenes_in_channel(folder, channel)
+                channel["numberOfMessages"], channel["numberOfScenes"] = count_scenes_in_channel(channel)
                 t.save_to_json(backup_info, c.BACKUP_INFO)
 
             for thread in category["threads"]:
 
-                thread["numberOfMessages"] = count_scenes_in_thread(folder, thread)
+                thread["numberOfMessages"] = count_scenes_in_thread(thread)
                 t.save_to_json(backup_info, c.BACKUP_INFO)
 
 

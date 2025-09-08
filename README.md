@@ -35,7 +35,7 @@ Once this is in working condition, the focus will shift to uploading the bot to 
   - `tokens.py`: contains the bot token. DO NOT SHARE!
   - `server_data.py`: contains the server ID and some category name. SHARE WITH CAUTION!
   - `constants.py`: configuration file with search parameters, output parameters, and more
-  - `character_ids.json`: a list of tupperbox characters and their associated IDs
+  - `character_list.json`: a list of tupperbox characters and their associated IDs
   - `backup_info.json`: list of channels and threads to be downloaded
   - `fixed_messages.json`: for each message known to have a bad formatting in the backup, a fixed version is stored here
 
@@ -70,7 +70,7 @@ Once this is in working condition, the focus will shift to uploading the bot to 
 
 - Run `src/export_channels.py`
 
-- Manually double check `res/character_ids.json`.
+- Manually double check `res/character_list.json`.
   - If a new character has been introduced, add known aliases, writer and tags manually
   - Changing the name of the tupper bot (for example, "John Doe" has been renamed to "John D") and aliases (another tupper for the same character, for example, if John Doe has a tupper of his secret identity "Jon Buck") is registered as a new character.
   If this happens, find the original character form and add the new character as an alias or an "other version".
@@ -120,28 +120,28 @@ After having gone through all channels, it will output a list of scenes, with th
   - ~~This will be especially useful to differenciate scenes from DMs~~ Use `TYPE` in `res/constants.py`
 - ~~Input a scene status (Closed, Active, Timed out)~~ Use `STATUS` in `res/constants.py`
 
-### Chat exporting
-- It'd be cool to add "number of messages, number of scenes" in `res/backup_info.json`
-- Avoid re-processing channels that have already been exported
-  - Keep a list of channels that did get updates (no empty message list)
-  - Run `assign_ids.py` against the update batch
+### Chanel exporting
+
+- Make a cumulative scene detection to not analyze the whole thing every time
   - Dry run `find_all_scenes.py` against the update batch *without* timeout protection to detect badly formatted messages
   - Manually check for timed out scenes, update `fixed_messages.json` and run `fix_bad_messages.py` against the update batch
   - Run `find_all_scenes.py` against the update batch
     - If the channel had no open scenes, add any new scenes to the corresponding `_scenes.json` files
     - If the channel had an open scene, try to detect its end and update the scene in the corresponding `_scenes.json` files
   - And THEN merge the backup files with `merge_exports.py`
+- ~~Order threads by creation date~~
+- ~~It'd be cool to add "number of messages, number of scenes" in `res/backup_info.json`~~
 
 ### Releasing it to the public
 - Investigate where it should be hosted
   - Requirements:
     - Always online
+    - Run both the bot and a web app
     - Be Discord-approved    
     - Have a way to securely store tokens
     - Get the code directly from the GitHub repo
     - Be able to run scheduled actions
     - Allow users to download zipped results (HTML scenes for users, Server backup files for admins)
-  - GitHub is a good choice, it has Github Actions and could even have a web interface to not have to search through Discord
   - Heroku is a no-go, it declines my european payments :(
 
 - Schedule a weekly backup of channels
