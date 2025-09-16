@@ -168,7 +168,7 @@ def parse_output(output):
                     "numberOfChannels": 0,
                     "numberOfThreads": 0,
                     "numberOfScenes": 0,
-                    "path": "",
+                    "path": f"{len(category_list) + 1}# {entry['category'].replace(':', '_')}",
                     "channels": [],
                     "threads": []
                 }

@@ -16,7 +16,7 @@ MODE = "end"                # start, end
 
 # Feedback settings
 INFO = True             # True if you want to know what the script is doing
-DEBUG = True           # True if you want to see an insane amount of information
+DEBUG = False           # True if you want to see an insane amount of information
 CONSOLE = False          # True if you want to see the output of DCE console commands
 LOG = True              # True if you want to save absolutely all the info into a log file
 
@@ -29,6 +29,8 @@ LOG_FILE = "out/log.txt"
 CHARACTER_LIST = "res/character_list.json"
 BACKUP_INFO = "res/backup_info.json"
 FIXED_MESSAGES = "res/fixed_messages.json"
+BAD_MESSAGES =  "res/bad_messages.json"
+BAD_END_MESSAGES = "res/bad_end_messages.json"
 
 # Discord parameters
 from res import server_data as s

@@ -3,6 +3,7 @@ import time
 import re
 import tricks as t
 import exceptions as exc
+from find_scenes import has_end_tag
 t.set_path()
 from res import constants as c
 
@@ -77,14 +78,16 @@ fix_messages_in_channel(file_path, fixed_messages)
 
     Args:
         file_path (str): The path to the channel JSON file.
-        fixed_messages (dict): A dictionary containing fixed versions of messages.
 
     Returns:
         channel (dict): The modified channel dictionary.
 """
-def fix_messages_in_channel(file_path, fixed_messages):
+def fix_messages_in_channel(file_path):
 
     channel = t.load_from_json(file_path)
+    fixed_messages = t.load_from_json(c.FIXED_MESSAGES)
+
+    messages_to_remove = []
 
     for message in channel["messages"]:
 
@@ -92,25 +95,66 @@ def fix_messages_in_channel(file_path, fixed_messages):
         if message["id"] in fixed_messages:
             
             t.log("debug", f"\tFound bad message {message['id']} from {message['author']['name']}.")
-            t.log("debug", f"\t    Replacing it with {fixed_messages[message['id']]['id']} from {fixed_messages[message['id']]['author']['name']}.")
+            t.log("debug", f"\t    Replacing it with fixed message from {fixed_messages[message['id']]['author']['name']}.")
 
             message["content"] = fixed_messages[message["id"]]["content"]
             message["author"] = fixed_messages[message["id"]]["author"]
         
+
+        # regex that match mentions
+        pattern = r"^@[\w ]+$"
+        pattern2 = r"^@deleted-role$"
+        pattern3 = r"^@unknown-role$"
+        
+        # if the message has a only a mention, remove it
+        if re.search(pattern, message["content"]) or re.search(pattern2, message["content"]) or re.search(pattern3, message["content"]):
+
+            t.log("debug", f"\tFound message with only a mention '{message['content']}' from {message['author']['name']}.")
+
+            # remove message from messages
+            messages_to_remove.append(message)
+
+
         # if message is from a non-tupper user
-        if message["type"] == "Default" and int(message["author"]["id"]) >= 100000:
+        if message["type"] == "Default" and int(message["author"]["id"]) >= 10000:
 
-            # regex that matches `@[more than one word]`
-            pattern = r"^@[\w ]+$"
+            t.log("debug", f"\tFound message from non-tupper user '{message['author']['name']}'.")
 
-            # if the message has a mention, remove it
-            if re.search(pattern, message["content"]):
+            if has_end_tag(message):
+                bad_end_list = t.load_from_json(c.BAD_END_MESSAGES)
+                bad_end_list[message["id"]] = {
+                    "content": message["content"],
+                    "author": message["author"],
+                    "link": f"https://discord.com/channels/{channel['guild']['id']}/{channel['channel']['id']}/{message['id']}"
+                }
+                t.save_to_json(bad_end_list, c.BAD_END_MESSAGES)
+                t.log("debug", f"\t    Saved message with an end tag to {c.BAD_END_MESSAGES}")
 
-                t.log("debug", f"\tFound message with only a mention '{message['content']}' from {message['author']['name']}.")
+            else:
+                # append to c.BAD_MESSAGES
+                bad_message_list = t.load_from_json(c.BAD_MESSAGES)
+                bad_message_list[message["id"]] = {
+                    "content": message["content"],
+                    "author": message["author"],
+                    "link": f"https://discord.com/channels/{channel['guild']['id']}/{channel['channel']['id']}/{message['id']}"
+                }
+                t.save_to_json(bad_message_list, c.BAD_MESSAGES)
+                t.log("debug", f"\t    Saved message to {c.BAD_MESSAGES}")
+        
+        # if message is a thread creation, delete it
+        if message["type"] == "ThreadCreated":
+            t.log("debug", f"\tFound thread creation message {message['id']} from {message['author']['name']}.")
+            messages_to_remove.append(message)
 
-                #remove message from messages
-                channel["messages"].remove(message)
-    
+    if len(messages_to_remove) > 0:
+        t.log("debug", f"\t      Found {len(messages_to_remove)} messages to remove.")
+        # remove messages from channel
+        for message in messages_to_remove:
+            channel["messages"].remove(message)
+
+    # save channel
+    t.log("debug", f"\tSaving channel to {file_path}")
+
     t.save_to_json(channel, file_path)
 
 ################# Main function #################
@@ -123,11 +167,15 @@ def fix_bad_messages():
 
         start_time = time.time()
 
-        main_status = check_base_status()
+        check_base_status()
 
         fixed_messages = t.load_from_json(c.FIXED_MESSAGES)
 
         t.log("info", f"    Found {len(fixed_messages)} messages to patch\n")
+
+        # clean the bad messages files
+        t.save_to_json({}, c.BAD_MESSAGES)
+        t.save_to_json({}, c.BAD_END_MESSAGES)
 
         # Iterate over all channel JSON files in the folder and its subfolders
         for root, dirs, files in os.walk(c.SEARCH_FOLDER):
@@ -139,9 +187,10 @@ def fix_bad_messages():
                     t.log("log", f"\t    Analysing {file_path}...")
 
                     # find and fix bad messages
-                    fix_messages_in_channel(file_path, fixed_messages)
+                    fix_messages_in_channel(file_path)
 
         step_status = "success"
+        main_status = "success"
 
     except Exception as e:
         main_status = "failed"
