@@ -10,3 +10,6 @@
 # And inside src/, allow everything
 !src/**
 !res/constants.py
+
+# But pycache:
+src/__pycache__
