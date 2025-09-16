@@ -276,7 +276,7 @@ def export_channels():
         t.log("info", "\n\tFixing bad messages...\n") 
         fix_bad_messages()
 
-        t.log("info", "\n\Updating information of the backup...\n")
+        t.log("info", "\n\nUpdating information of the backup...\n")
         update_info()
 
 

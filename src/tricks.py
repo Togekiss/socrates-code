@@ -110,6 +110,11 @@ def log(level="base", message=""):
     
     if c.LOG:
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        
+        # create directory if it doesn't exist
+        if not os.path.exists(os.path.dirname(c.LOG_FILE)):
+            os.makedirs(os.path.dirname(c.LOG_FILE))
+
         with open(c.LOG_FILE, "a", encoding="utf-8") as file:
             file.write(f"[{timestamp}]{level}: {clean(message)}\n")
 
