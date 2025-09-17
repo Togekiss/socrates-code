@@ -5,8 +5,8 @@ import tricks as t
 import exceptions as exc
 t.set_path()
 from res import constants as c
-from res import tokens
-from get_channel_list import get_channel_list 
+from get_channel_list import get_channel_list
+from download_channels import download_channels
 from merge_exports import merge_exports
 from assign_ids import assign_ids
 from fix_bad_messages import fix_bad_messages
@@ -18,9 +18,10 @@ from update_info import update_info
 
 """
 
-This module downloads a backup of all channels from the server.
+This module orchestrates all the steps of downloading a backup of the server
+and tidying up the resulting files.
 
-Main function: export_channels()
+Main function: backup_server()
 
     This script downloads all channels from the server specified in the constants.py file, either the full history or from a specified date.
     If there is no previous backup, downloads all channels from the server.
@@ -32,7 +33,13 @@ Main function: export_channels()
 
 ################# Functions #################
 
-def check_busy():
+"""
+check_base_status()
+
+    Checks the status file, and raises exceptions if the backup is not ready to start.
+
+"""
+def check_base_status():
 
     try: 
         t.log("debug", "\nChecking the status of the backup...")
@@ -50,11 +57,34 @@ def check_busy():
         raise e
      
     except OSError:
-        t.log("debug", '  No export status file was not found. Will create it with the list of channels.\n')
-    
+        t.log("debug", '  No export status file was not found. Creating a new one....\n')
+        backup_info = {
+            "status": "pending",
+            "steps": {
+                "updateStatus": "running",
+                "updateCleanStatus": "pending",
+                "downloadStatus": "pending",
+                "sortingReadStatus": "pending",
+                "sortingCleanStatus": "pending",
+                "sortingWriteStatus": "pending",
+                "mergeStatus": "pending",
+                "idAssignStatus": "pending",
+                "messageFixStatus": "pending"
+            }
+        }
+
+        t.save_to_json(backup_info, c.BACKUP_INFO)
+
     except Exception:
         t.log("debug", '  The export status file could not be read. Will create it with the list of channels.\n')
 
+
+"""
+clean()
+
+    Function to clean up old temporary files and logs.
+
+"""
 def clean():
 
     t.log("debug", "\n# Cleaning up old temporary files...  #\n")
@@ -95,7 +125,7 @@ def set_day_before(timestamp_str):
     return new_timestamp_str
 
 """
-get_export_date()
+set_export_date()
 
     Returns the date of the last export in ISO format as a string or None if there is no previous backup.
 
@@ -124,127 +154,25 @@ def set_export_date():
     else:
         t.log("info", '\tNo previous backup was found. Will download the full history\n')
 
-    # flag it as running in case another execution of the script is launched
-    backup_info["status"] = "running"
     t.save_to_json(backup_info, c.BACKUP_INFO)
     
     return date
 
+def skip_merge():
+    t.log("info", "\tNo previous backup was found. Skipping the merge step.\n")
 
-
-"""
-export_category(cat, date, type)
-
-    Downloads set of channels or threads.
-
-    For each channel, DCE is called to download the messages and store them in JSON format, either the full history or from a specified date.
-    Downloads are run in parallel in groups of 3 or 5 to improve performance.
-
-    Args:
-        cat (dict): The category data in JSON format.
-        date (str, optional): The timestamp of the last export in ISO format. If not provided, downloads the full history.
-        type (str, optional): The type of channels to download, should be "channels" or "threads". Defaults to "channels".
-
-    Returns:
-        None, but saves the downloaded messages to JSON files.
-"""
-def export_category(cat, date, type="channels"):
-
-    try:
-        category = cat["category"].replace(":", "_")
-        folder = c.SERVER_NAME if date is None else "Update"
-        date = "" if date is None else "--after " + date
-
-        path = f"{folder}/{cat["position"]}# {category}/%p# %C.json" if type == "channels" else f"{folder}/{cat["position"]}# {category}/Threads/%p# %C.json"
-        group_size = 3 if category in c.DM_CATEGORIES else 5
-
-        channels = cat[type]
-        for i in range(0, len(channels), group_size):
-
-            group = channels[i:i + group_size]
-
-            channel_ids = ""
-            for channel in group:
-                channel_ids = channel_ids + " " + channel["id"]
-
-            cli_command = f'dotnet DCE/DiscordChatExporter.Cli.dll export --parallel {group_size} -c {channel_ids} -t {tokens.DISCORD_BOT} -f Json -o "{path}" --locale "en-GB" {date} --fuck-russia'
-            t.run_command(cli_command, group_size)
-            t.log("info", f"\t\tExported {i+group_size} {type} out of {len(channels)}")
-    
-    except Exception as e:
-        raise exc.DownloadExportError(f"An error occurred while downloading '{category}' {type}") from e
-
-"""
-download_exports(date=None)
-
-    Opens the channel list in the file backup_info.json, and downloads the channels of each category.
-
-    Args:
-        date (str, optional): The timestamp of the last export in ISO format. If not provided, downloads the full history.
-
-    Returns:
-        None, but saves the downloaded messages to JSON files.
-"""
-def download_exports(date=None):
-
-    try:
-        t.log("base", "\tExporting channels... This may take several minutes\n") 
-
-        # saving the current timestamp before starting, since it can take a long time
-        now = datetime.now().astimezone().isoformat(sep='T', timespec='microseconds')
-
-        backup_info = t.load_from_json(c.BACKUP_INFO)
-
-        # flag it as running in case another execution of the script is launched
-        backup_info["steps"]["downloadStatus"] = "running"
-        t.save_to_json(backup_info, c.BACKUP_INFO)
-        
-        channel_count = 0
-
-        # for each category, get channel and thread list
-        for cat in backup_info["categories"]:
-
-            channels_in_category = cat["numberOfChannels"]
-            threads_in_category = cat["numberOfThreads"]
-            total_channels = channels_in_category + threads_in_category
-
-            t.log("info", f"\n\tExporting {total_channels} channels and threads from '{cat['category']}'...")
-
-            export_category(cat, date, "channels")
-            channel_count += channels_in_category
-
-            if threads_in_category > 0:
-                export_category(cat, date, "threads")
-                channel_count += threads_in_category
-
-            t.log("info", f"\n\tExported {channel_count} channels out of {backup_info['numberOfChannels']}\n")
-
-        backup_info["steps"]["downloadStatus"] = "success"
-        backup_info["status"] = "pending"
-        backup_info["dates"]["lastGoodExport"] = now
-
-    # this covers both ExportError and built-in exceptions like OSError and JSON-related ones
-    except Exception as e:
-        backup_info["steps"]["downloadStatus"] = "failed"
-        backup_info["status"] = "failed"
-        raise exc.ExportError(f"An error occurred while exporting the backup") from e
-    
-    finally:
-        try:
-            backup_info["dates"]["exportedAt"] = now
-            t.save_to_json(backup_info, c.BACKUP_INFO)
-        except Exception as e:
-            t.log("error", f"\tFailed to save the backup status: {e}\n")
-
+    backup_info = t.load_from_json(c.BACKUP_INFO)
+    backup_info["steps"]["mergeStatus"] = "success"
+    t.save_to_json(backup_info, c.BACKUP_INFO)
 
 
 ################# Main function ################
 
-def export_channels():
+def backup_server():
 
     t.log("base", f"\n# Exporting a backup of the server {c.SERVER_NAME}...  #\n")
 
-    check_busy()
+    check_base_status()
 
     try:
 
@@ -259,7 +187,7 @@ def export_channels():
         date = set_export_date()
  
         # run through channel list to download it all    
-        download_exports(date)
+        download_channels(date)
         
         # add position numbers to the exported filenames
         sort_exported_files(c.SERVER_NAME if date is None else "Update")
@@ -272,6 +200,8 @@ def export_channels():
         if date is not None:
             t.log("info", "\n\tMerging the update to the main backup...\n") 
             merge_exports()
+        else:
+            skip_merge()
 
         t.log("info", "\n\tFixing bad messages...\n") 
         fix_bad_messages()
@@ -290,7 +220,7 @@ def export_channels():
 if __name__ == "__main__":
     
     try:
-        export_channels()
+        backup_server()
 
     except Exception as e:
         t.log("error", f"\n{exc.unwrap(e)}\n")

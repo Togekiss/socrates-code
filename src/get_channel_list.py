@@ -56,8 +56,12 @@ def load_last_update():
         
         t.log("debug", f"\t  The current status of the backup is '{last_channel_list['status']}'\n")
 
-        last_update = last_channel_list["dates"]["updatedAt"]
-        last_export = last_channel_list["dates"]["exportedAt"]
+        try:
+            last_update = last_channel_list["dates"]["updatedAt"]
+            last_export = last_channel_list["dates"]["exportedAt"]
+        except Exception as e:
+            last_update = None
+            last_export = None
 
         t.log("debug", f"\t  The last update was downloaded at {last_update}")
 
@@ -240,15 +244,15 @@ def get_channel_list_from_discord():
     return backup_info
 
 """
-remove_categories(json_data, categories_to_remove), keep_categories(json_data, categories_to_keep)
+remove_categories(json_data), keep_categories(json_data)
     Functions to clean up the channel list.
 """
-def remove_categories(json_data, categories_to_remove):
-    return [entry for entry in json_data if entry["category"] not in categories_to_remove]
+def remove_categories(json_data):
+    return [entry for entry in json_data if entry["category"] not in c.CATEGORIES_TO_IGNORE]
     
 
-def keep_categories(json_data, categories_to_keep):
-    return [entry for entry in json_data if entry["category"] in categories_to_keep]
+def keep_categories(json_data):
+    return [entry for entry in json_data if entry["category"] in c.CATEGORIES_TO_KEEP]
 
 
 """
@@ -263,10 +267,13 @@ def clean_channel_list(backup_info):
 
     t.log("info", "\tCleaning the list of channels...")
 
-    try: 
-        backup_info["categories"] = remove_categories(backup_info["categories"], c.CATEGORIES_TO_IGNORE)
+    try:
+        if c.KEEP_MODE:
+            backup_info["categories"] = keep_categories(backup_info["categories"])
+        else:
+            backup_info["categories"] = remove_categories(backup_info["categories"])
 
-        t.log("info", f"\t  Removed {len(c.CATEGORIES_TO_IGNORE)} categories")
+        t.log("info", f"\t  Cleaned up categories")
 
         # Update the number of channels
         backup_info["numberOfChannels"] = 0

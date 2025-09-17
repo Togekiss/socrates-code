@@ -3,7 +3,7 @@ SEARCH_FOLDER = "Elysium"       # Same as SERVER_NAME, or a subfolder if you wan
 CHARACTER = "Ophelia"            # Character name. If looking for a canon, specify the writer i.e. "Laito Sakamaki (Meli)"
 # TIP: Most of the times, using the first name or nickname is enough i.e. "Lysander" or "Lys"
 
-INCLUDE_ALL_WRITERS = True     # True if you want to include all the versions of the character. Mostly useful for canons. Not recommended though
+INCLUDE_ALL_WRITERS = False     # True if you want to include all the versions of the character. Mostly useful for canons. Not recommended though
 INCLUDE_ALTER_EGOS = True       # True if you want to include all fake names and identities of the character in the search
 INCLUDE_FAMILIARS = True        # True if you want to include the familiars of the character in the search
 INCLUDE_NPCS = True             # True if you want to include the NPCs of the character in the search
@@ -16,13 +16,13 @@ MODE = "end"                # start, end
 
 # Feedback settings
 INFO = True             # True if you want to know what the script is doing
-DEBUG = False           # True if you want to see an insane amount of information
+DEBUG = True           # True if you want to see an insane amount of information
 CONSOLE = False          # True if you want to see the output of DCE console commands
 LOG = True              # True if you want to save absolutely all the info into a log file
 
 # Result file parameters
-OUTPUT_SCENES = "Elysium/scenes.json"
-OUTPUT_LINKS = "Elysium/scene-links.txt"
+OUTPUT_SCENES = "f{SEARCH_FOLDER}/scenes.json"
+OUTPUT_LINKS = "f{SEARCH_FOLDER}/scene-links.txt"
 LOG_FILE = "out/log.txt"
 
 # File parameters
@@ -38,3 +38,5 @@ SERVER_NAME = s.SERVER_NAME
 SERVER_ID = s.SERVER_ID
 DM_CATEGORIES = s.DM_CATEGORIES
 CATEGORIES_TO_IGNORE = s.CATEGORIES_TO_IGNORE
+CATEGORIES_TO_KEEP = s.CATEGORIES_TO_KEEP
+KEEP_MODE = s.KEEP_MODE

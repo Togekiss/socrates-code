@@ -5,7 +5,6 @@ import tricks as t
 t.set_path()
 from res import constants as c
 from res import tokens
-from src.export_channels import set_day_before
 
 ################# File summary #################
 

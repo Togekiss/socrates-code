@@ -169,7 +169,11 @@ def fix_bad_messages():
 
         check_base_status()
 
-        fixed_messages = t.load_from_json(c.FIXED_MESSAGES)
+        try:
+            fixed_messages = t.load_from_json(c.FIXED_MESSAGES)
+        except FileNotFoundError:
+            fixed_messages = {}
+            t.save_to_json(fixed_messages, c.FIXED_MESSAGES)
 
         t.log("info", f"    Found {len(fixed_messages)} messages to patch\n")
 
