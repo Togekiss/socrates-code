@@ -148,7 +148,7 @@ def run_command(command: str, show_lines: int = None):
         )
 
         full_output = []
-        tail_buffer = deque(maxlen=show_lines if show_lines else 0)
+        tail_buffer = deque(maxlen=show_lines+2 if show_lines else 0)
 
         try:
             for line in process.stdout:
@@ -161,7 +161,7 @@ def run_command(command: str, show_lines: int = None):
                     tail_buffer.append(line)
                     
                     for l in tail_buffer:
-                        print(f">\t{l.strip():<80}")  # Print line padded to overwrite
+                        print(f"\t> {l.strip():<80}")  # Print line padded to overwrite
                         log("consolelog", f">\t{l}")
                 else:
                     log("console", f">\t{line}")

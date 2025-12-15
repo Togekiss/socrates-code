@@ -9,10 +9,10 @@ from res import constants as c
 
 """
 
-'export_channels' can numerate categories just fine, but not channels or threads.
-This module renames the exported JSON files to reflect channel positions inside the category.
+TODO 'download_channels' now can numerate channels and threads on its own.
+This module is now deprecated. It will be replaced by an update consistency check.
 
-This module is meant to be run after `src/export_channels.py`. It will assume the backup folder contains the channels of backup_info.json.
+This module is meant to be run after `src/download_channels.py`. It will assume the backup folder contains the channels of backup_info.json.
 
 Main function: sort_exported_files(base_folder)
 
@@ -52,12 +52,21 @@ check_base_status()
 """
 def check_base_status():
 
+    is_update = False
+
     try: 
         t.log("debug", "\nChecking the status of the backup...")
 
         backup_info = t.load_from_json(c.BACKUP_INFO)
 
-        t.log("debug", "  Loaded the status file\n")
+        t.log("debug", "  Loaded the main status file\n")
+
+        if backup_info["steps"].get("updateStatus") == "running":
+
+            is_update = True
+
+            t.log("debug", "An update is running. Using the update info file\n")
+            backup_info = t.load_from_json(c.BACKUP_INFO_UPDATE)
 
         if backup_info["status"] == "running":
             raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
@@ -74,7 +83,7 @@ def check_base_status():
         raise exc.FileSortingError("The export status file could not be read") from e
     
     finally:
-        return backup_info["status"]
+        return backup_info["status"], is_update
 
 """
 check_read_status()
@@ -471,7 +480,6 @@ write_order_to_files(search_folder, main_status)
         main_status (str): The main status of the program.
 
 """
-
 def write_order_to_files(search_folder, main_status):
 
     # function to write into channels
@@ -555,21 +563,72 @@ def write_order_to_files(search_folder, main_status):
             t.log("error", f"\tFailed to save the status file: {e}\n")
 
 
+def get_dictionary_by_channel(info):
+
+    channel_dict = {}
+
+    for i, category in enumerate(info["categories"]):
+
+        for j, channel in enumerate(category["channels"]):
+            channel_dict[channel["id"]] = channel
+            channel_dict[channel["id"]]["categoryIndex"] = i
+            channel_dict[channel["id"]]["channelIndex"] = j
+
+        for j, thread in enumerate(category.get("threads", [])):
+            channel_dict[thread["id"]] = thread
+            channel_dict[thread["id"]]["categoryIndex"] = i
+            channel_dict[thread["id"]]["channelIndex"] = j
+
+    return channel_dict
+
+def match_update_files():
+
+    base_info = t.load_from_json(c.BACKUP_INFO)
+    update_info = t.load_from_json(c.BACKUP_INFO_UPDATE)
+
+    base_channels = get_dictionary_by_channel(base_info)
+    update_channels = get_dictionary_by_channel(update_info)
+
+    new_channels = {}
+    edited_channels = {}
+
+    for id in update_channels:
+
+        # if the channel doesn't exist in the base file, mark it as new
+        if id not in base_channels:
+            new_channels[id] = update_channels[id]
+        
+        # if it exists, check if they are the same
+        else:
+            if base_channels[id]["channel"] != update_channels[id]["channel"]:
+                edited_channels[id] = update_channels[id]
+        
+    t.log("info", f"\n\tFound {len(new_channels)} new channel(s)")
+
+    t.log("info", f"\n\tFound {len(edited_channels)} edited channel(s)\n")
+
+
+        
+
 ################# Main function #################
 
 def sort_exported_files(base_folder=c.SEARCH_FOLDER):
 
     t.log("base", f"\n###  Sorting channel files in {base_folder}...  ###\n")
 
+    main_status, is_update = check_base_status()
+
     try:
 
-        main_status = check_base_status()
+        if is_update:
+            match_update_files()
 
-        read_order_from_files(base_folder, main_status)
+        else:
+            read_order_from_files(base_folder, main_status)
 
-        remove_order_from_files(base_folder)
+            remove_order_from_files(base_folder)
 
-        write_order_to_files(base_folder, main_status)
+            write_order_to_files(base_folder, main_status)
     
     except Exception as e:
         raise exc.FileSortingError(f"An error occurred while sorting channel files in {base_folder}:") from e
