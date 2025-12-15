@@ -181,17 +181,23 @@ def fix_bad_messages():
         t.save_to_json({}, c.BAD_MESSAGES)
         t.save_to_json({}, c.BAD_END_MESSAGES)
 
-        # Iterate over all channel JSON files in the folder and its subfolders
-        for root, dirs, files in os.walk(c.SEARCH_FOLDER):
-            for filename in files:
-                if filename.endswith(".json") and not filename.endswith("scenes.json"):
 
-                    file_path = os.path.join(root, filename)
+        backup_info = t.load_from_json(c.BACKUP_INFO)
 
-                    t.log("log", f"\t    Analysing {file_path}...")
+        for category in backup_info["categories"]:
 
-                    # find and fix bad messages
-                    fix_messages_in_channel(file_path)
+            for channel in category["channels"]:
+
+                file_path = os.path.join(c.SEARCH_FOLDER, channel["path"])
+                t.log("log", f"\t    Analysing {file_path}...")
+                fix_messages_in_channel(file_path)
+
+            for thread in channel.get("threads", []):
+
+                file_path = os.path.join(c.SEARCH_FOLDER, thread["path"])
+                t.log("log", f"\t    Analysing {file_path}...")
+                fix_messages_in_channel(file_path)
+
 
         step_status = "success"
         main_status = "success"

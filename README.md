@@ -21,10 +21,17 @@ Once this is in working condition, the focus will shift to uploading the bot to 
 
  ## Folder structure
 
-- `DCE`: contains the CLI version of https://github.com/Tyrrrz/DiscordChatExporter
+- `DCE`: contains a CLI version of https://github.com/Tyrrrz/DiscordChatExporter with custom parameters found in https://github.com/Togekiss/DiscordChatExporter
 
 - `[Server name]`: contains the server backup downloaded with DCE
-  - Each folder represents a category, and contains:
+  - `0# Info` folder: contains several metadata files:
+    - `backup_info.json`: status of each backup step, and list of channels with info like IDs, position, number of messages, etc.
+    - `backup_info_update.json`: same as `backup_info.json` to keep track of the status of an update batch
+    - `character_list.json`: a list of tupperbox characters with their IDs and metadata
+    - `bad_messages.json`: a list of messages known to have a bad formatting
+    - `bad_end_messages.json`: a list of messages known to be the end of a scene, but with no end tag
+    - `fixed_messages.json`: for each message known to have a bad formatting in the backup, a fixed version is stored here
+  - Each other folder represents a category, and contains:
     - `[num]# [channel name].json`: the backup file of a channel
     - `Threads` folder: contains the backup files of threads, with format `[channel num]-[thread num]# [thread name].json`
     - `Scenes` folder: contains a `_scenes.json` file for each channel and thread, with the list of all detected scenes in that file
@@ -32,32 +39,33 @@ Once this is in working condition, the focus will shift to uploading the bot to 
   - The root folder also contains a `scenes.json` file with the list of all detected scenes in the whole server
 
 - `res`: contains configuration files and metadata files the bot uses to download and navigate through channels
-  - `tokens.py`: contains the bot token. DO NOT SHARE!
-  - `server_data.py`: contains the server ID and some category name. SHARE WITH CAUTION!
+  - `tokens.py`: contains the bot token. DO NOT SHARE THIS ONE! UPLOAD ONLY A SAMPLE VERSION!
+  - `server_data.py`: contains the server ID and some category names. SHARE WITH CAUTION!
   - `constants.py`: configuration file with search parameters, output parameters, and more
-  - `character_list.json`: a list of tupperbox characters and their associated IDs
-  - `backup_info.json`: list of channels and threads to be downloaded
-  - `fixed_messages.json`: for each message known to have a bad formatting in the backup, a fixed version is stored here
 
 - `out`: contains the results of scene searches, both for link lists and full scene extractions
   - `[Character name]` folder: contains extracted scenes for a specific character, in HTML format
   - `scene-links.txt`: contains a list of scenes with links to their messages, according to the filters set in `res/constants.py`
-  - `scenes.json`: contains all the data for all the scenes found
+  - `log.txt`: contains a log of the bot's actions
 
 - `src`: contains the scripts to download channels, parse them, and extract scenes. 
-  - `export_channels.py`: updates the server backup by downloading new content from Discord with DCE
-  - `get_channel_list.py`: updates the list of channels to be downloaded by `export_channels.py`
+  - `backup_server.py`: orchestrates all the steps to download or update a server backup
+  - `get_server_info.py`: updates the list of channels to be downloaded
+  - `download_channels.py`: downloads new content from Discord with DCE
   - `sort_exported_files.py`: adds numbers to the backup files so they are in the same order as in the server
   - `merge_exports.py`: merges the downloaded updates to the main server backup files
   - `assign_ids.py`: parses the server backup and assigns a unique ID to each tupperbox bot
   - `fix_bad_messages.py`: parses the server backup and fixes bad messages
   - `find_all_scenes.py`: parses the server backup and creates a complete list of scenes
   - `find_scenes.py`: parses the server backup and gathers a list of scenes for the specified character
+  - `update_info.py`: adds scene count metadata to the info files
   - `export_scenes.py`: uses the list of found scenes to download the full scenes with DCE in HTML format
   - `create_scene_list.py`: helper function to create URLs that link to the starting messages of found scenes
   - `tricks.py`: helper functions to do a variety of things
   - `test_regex.py`: helper script to test new regex patterns against the server backup
   - `test_discord.py`: helper script to test connection with Discord
+  - `exceptions.py`: helper script to log exceptions
+  - `main.py`: WIP of a main menu to see and edit configs, status, and launch the bot
 
 
 ## How to use in local (in case you want to help or play with it!)
@@ -65,10 +73,11 @@ Once this is in working condition, the focus will shift to uploading the bot to 
 (Note: These instructions are for its current state of development. They will change when the code is clean and adapted to use on other servers. They're a mess, I know. Ask me for more info if you need!)
 
 - Create a folder named `DCE` and download the CLI version of https://github.com/Tyrrrz/DiscordChatExporter
+ - ***IMPORTANT UPDATE:*** Now it uses custom parameters only found in my fork: https://github.com/Togekiss/DiscordChatExporter. It will not work with the original version of the program. And releases aren't working well, so download and compile the "Release" branch!
 
 - Fill in `res/tokens.py` and `res/server_data.py` with your bot token and server info
 
-- Run `src/export_channels.py`
+- Run `src/backup_server.py`
 
 - Manually double check `res/character_list.json`.
   - If a new character has been introduced, add known aliases, writer and tags manually

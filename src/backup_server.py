@@ -5,7 +5,7 @@ import tricks as t
 import exceptions as exc
 t.set_path()
 from res import constants as c
-from get_channel_list import get_channel_list
+from get_server_info import get_server_info
 from download_channels import download_channels
 from merge_exports import merge_exports
 from assign_ids import assign_ids
@@ -44,6 +44,10 @@ def check_base_status():
     try: 
         t.log("debug", "\nChecking the status of the backup...")
 
+        #check if a SERVER_NAME/INFO folder exists, if not, create it
+        if not os.path.exists(c.INFO_FOLDER):
+            os.makedirs(c.INFO_FOLDER, exist_ok=True)
+
         backup_info = t.load_from_json(c.BACKUP_INFO)
 
         t.log("debug", "  Loaded the status file\n")
@@ -56,27 +60,11 @@ def check_base_status():
     except exc.AlreadyRunningError as e:
         raise e
      
-    except OSError:
-        t.log("debug", '  No export status file was not found. Creating a new one....\n')
-        backup_info = {
-            "status": "pending",
-            "steps": {
-                "updateStatus": "running",
-                "updateCleanStatus": "pending",
-                "downloadStatus": "pending",
-                "sortingReadStatus": "pending",
-                "sortingCleanStatus": "pending",
-                "sortingWriteStatus": "pending",
-                "mergeStatus": "pending",
-                "idAssignStatus": "pending",
-                "messageFixStatus": "pending"
-            }
-        }
+    except FileNotFoundError:
+        t.log("debug", '  No backup info file was found. Will start one from scratch.\n')
 
-        t.save_to_json(backup_info, c.BACKUP_INFO)
-
-    except Exception:
-        t.log("debug", '  The export status file could not be read. Will create it with the list of channels.\n')
+    except Exception as e:
+        raise exc.BackupError("The backup process could not start") from e
 
 
 """
@@ -141,14 +129,13 @@ def set_export_date():
     backup_info = t.load_from_json(c.BACKUP_INFO)
 
     # if the previous export failed, use the last good export date
-    if backup_info["steps"]["downloadStatus"] == "failed":
-        backup_info["dates"]["exportedAt"] = backup_info["dates"]["lastGoodExport"]
+    # TODO
 
     # Check if there is a previous backup
-    if backup_info["dates"]["exportedAt"] is not None:
+    if backup_info["exportedAt"] is not "":
 
-        t.log("info", f'\tThe last backup was downloaded at {backup_info["dates"]["exportedAt"]}')
-        date = set_day_before(backup_info["dates"]["exportedAt"])
+        t.log("info", f'\tThe last backup was downloaded at {backup_info["exportedAt"]}')
+        date = set_day_before(backup_info["exportedAt"])
         t.log("info", f'\tWill download updates after {date}\n')
 
     else:
@@ -181,7 +168,7 @@ def backup_server():
         start_time = time.time()
 
         # refresh the list of channels to download to find new channels
-        get_channel_list()
+        is_update = get_server_info()
 
         # calculate the date to export from, either the day before the last export or "None"
         date = set_export_date()

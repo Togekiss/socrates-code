@@ -14,16 +14,19 @@ def unwrap(exc: Exception):
         current = current.__cause__
     return "\n^ caused by <- ".join(parts)
 
-class AlreadyRunningError(Exception):
+class BackupError(Exception):
     pass
 
-class ConsoleCommandError(Exception):
+class AlreadyRunningError(BackupError):
     pass
 
-class DataNotReadyError(Exception):
+class ConsoleCommandError(BackupError):
     pass
 
-class ChannelListError(Exception):
+class DataNotReadyError(BackupError):
+    pass
+
+class ChannelListError(BackupError):
     pass
 
 class GetChannelListError(ChannelListError):
@@ -32,13 +35,13 @@ class GetChannelListError(ChannelListError):
 class CleanChannelListError(ChannelListError):
     pass
 
-class ExportError(Exception):
+class ExportError(BackupError):
     pass
 
 class DownloadExportError(ExportError):
     pass
 
-class FileSortingError(Exception):
+class FileSortingError(BackupError):
     pass
 
 class FileSortingReadError(FileSortingError):
@@ -50,17 +53,17 @@ class FileSortingCleanError(FileSortingError):
 class FileSortingWriteError(FileSortingError):
     pass
 
-class AssignIDError(Exception):
+class AssignIDError(BackupError):
     pass
 
-class MergeError(Exception):
+class MergeError(BackupError):
     pass
 
-class FixMessagesError(Exception):
+class FixMessagesError(BackupError):
     pass
 
-class UpdateInfoError(Exception):
+class UpdateInfoError(BackupError):
     pass
 
-class FindScenesError(Exception):
+class FindScenesError(BackupError):
     pass

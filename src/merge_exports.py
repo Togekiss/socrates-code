@@ -164,6 +164,29 @@ def merge_channel(old, update):
     # save merged data to json
     t.save_to_json(old_data, old)
 
+def merge_file(path, update_folder, old_folder):
+
+    update_file_path = os.path.join(update_folder, path)
+    old_file_path = os.path.join(old_folder, path)
+
+    # Check if an equivalent file exists in the "Old" folder
+    
+    # If it does, merge the two files
+    if os.path.exists(old_file_path) and os.path.exists(update_file_path):
+        t.log("debug", f"\tMerging {update_file_path} into {old_file_path}")
+        merge_channel(old_file_path, update_file_path)
+
+    elif os.path.exists(update_file_path) and not os.path.exists(old_file_path):
+        # If not, create the necessary subfolders in "Old" to maintain the same directory tree
+        os.makedirs(os.path.dirname(old_file_path), exist_ok=True)
+
+        # Copy the file from "Update" to "Old"
+        shutil.copy2(update_file_path, old_file_path)
+        t.log("info", f"\tFound new file: Moving {update_file_path} to {old_file_path}")
+    
+    else:
+        t.log("debug", f"\t{old_file_path} doesn't have an update. Skipping...")
+
 
 ################# Main function ################
 
@@ -180,26 +203,16 @@ def merge_exports():
 
         main_status = check_base_status()
 
-        for foldername, subfolders, filenames in os.walk(update_folder):
-            for filename in filenames:
-                update_file_path = os.path.join(foldername, filename)
-                old_file_path = os.path.join(old_folder, os.path.relpath(update_file_path, start=update_folder))
+        backup_info = t.load_from_json(c.BACKUP_INFO)
 
-                # Check if an equivalent file exists in the "Old" folder
-                
-                # If it does, merge the two files
-                if os.path.exists(old_file_path):
-                    t.log("debug", f"\tMerging {update_file_path} into {old_file_path}")
-                    merge_channel(old_file_path, update_file_path)
+        for category in backup_info["categories"]:
+            
+            for channel in category["channels"]:
+                merge_file(channel["path"], update_folder, old_folder)
+            
+            for thread in category.get("threads", []):
+                merge_file(thread["path"], update_folder, old_folder)
 
-                else:
-                    # If not, create the necessary subfolders in "Old" to maintain the same directory tree
-                    os.makedirs(os.path.dirname(old_file_path), exist_ok=True)
-
-                    # Copy the file from "Update" to "Old"
-                    shutil.copy2(update_file_path, old_file_path)
-                    t.log("info", f"\tFound new file: Moving {update_file_path} to {old_file_path}")
-    
         step_status = "success"
 
     except Exception as e:

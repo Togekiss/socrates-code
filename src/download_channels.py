@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import tricks as t
 import exceptions as exc
@@ -37,17 +37,29 @@ check_base_status()
 """
 def check_base_status():
 
+    is_update = False
+    date = None
+
     try: 
         t.log("debug", "\nChecking the status of the backup...")
 
         backup_info = t.load_from_json(c.BACKUP_INFO)
 
-        t.log("debug", "  Loaded the status file\n")
+        t.log("debug", "  Loaded the main status file\n")
+        
+        # If it's in update mode, we'll use the update info file
+        if backup_info["steps"].get("updateStatus") == "running":
+
+            is_update = True
+            date = backup_info["exportedAt"]
+
+            t.log("debug", "An update is running. Using the update info file\n")
+            backup_info = t.load_from_json(c.BACKUP_INFO_UPDATE)
 
         if backup_info["status"] == "running":
             raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
         
-        if backup_info["steps"]["updateCleanStatus"] != "success":
+        if backup_info["steps"]["cleanInfoStatus"] != "success":
             raise exc.DataNotReadyError("The channel list is not up to date. Ensure the previous step ran and try again.")
 
 
@@ -57,16 +69,47 @@ def check_base_status():
         backup_info["status"] = "running"
         backup_info["steps"]["downloadStatus"] = "running"
 
-        t.save_to_json(backup_info, c.BACKUP_INFO)
+        t.save_to_json(backup_info, c.BACKUP_INFO_UPDATE if is_update else c.BACKUP_INFO)
 
     except (exc.DataNotReadyError, exc.AlreadyRunningError) as e:
         raise e
      
     except Exception as e:
         raise exc.ExportError("The export status file could not be read") from e
+    
+    finally:
+        return is_update, date
+    
+
+"""
+set_day_before(timestamp_str)
+
+    Adjusts the given timestamp by subtracting one day to ensure downloading the whole update.
+
+    Args:
+        timestamp_str (str): The original timestamp in ISO format.
+
+    Returns:
+        str: The adjusted timestamp in ISO format, representing the day before the original.
+"""
+def set_day_before(timestamp_str):
+
+    # Parse the timestamp into a datetime object
+    timestamp = datetime.fromisoformat(timestamp_str)
+
+    # Subtract one day (24 hours) from the timestamp
+    new_timestamp = timestamp - timedelta(days=1)
+
+    # Format the new timestamp back into the original format
+    new_timestamp_str = new_timestamp.isoformat()
+
+    return new_timestamp_str
+
 
 """
 download_category(cat, date, type)
+
+    THIS FUNCTION IS DEPRECATED. If you're using the DCE fork, use download_whole_category(cat, date) instead.
 
     Downloads set of channels or threads.
 
@@ -85,7 +128,7 @@ def download_category(cat, date, type="channels"):
 
     try:
         category = cat["category"].replace(":", "_")
-        folder = c.SERVER_NAME if date is None else "Update"
+        folder = c.SERVER_NAME if date is None else f"{c.SERVER_NAME}/Update"
         date = "" if date is None else "--after " + date
 
         path = f"{folder}/{cat["position"]}# {category}/%p# %C.json" if type == "channels" else f"{folder}/{cat["position"]}# {category}/Threads/%p# %C.json"
@@ -107,27 +150,61 @@ def download_category(cat, date, type="channels"):
     except Exception as e:
         raise exc.DownloadExportError(f"An error occurred while downloading '{category}' {type}") from e
 
+"""
+download_full_category(cat, date)
 
+    Downloads an entire category in one go.
+
+    DCE is called to download the messages and store them in JSON format, either the full history or from a specified date.
+    Downloads are run in parallel in groups of 3 or 5 to improve performance.
+
+    Args:
+        cat (dict): The category data in JSON format.
+        date (str, optional): The timestamp of the last export in ISO format. If not provided, downloads the full history.
+
+    Returns:
+        None, but saves the downloaded messages to JSON files.
+"""
+def download_full_category(cat, date):
+
+    try:
+        category = cat["category"].replace(":", "_")
+        folder = c.SERVER_NAME if date is None else f"{c.SERVER_NAME}/Update"
+        date = "" if date is None else "--after " + date
+        group_size = 3 if category in c.DM_CATEGORIES else 5
+
+        output_paths = f"-o \"{folder}/%P# %T/%p# %C.json\" --threads-output \"{folder}/%N# %M/Threads/%P-%p# %C.json\""
+        
+        cli_command = f'dotnet DCE/DiscordChatExporter.Cli.dll export --parallel {group_size} -c {cat["id"]} -t {tokens.DISCORD_BOT} -f Json {output_paths} --locale "en-GB" {date} --fuck-russia --include-threads all --relative-positions'
+        t.run_command(cli_command, group_size)
+               
+    
+    except Exception as e:
+        raise exc.DownloadExportError(f"An error occurred while downloading '{category}' {type}") from e
 
 ################# Main function ################
 
 
-def download_channels(date=None):
+def download_channels():
+
+    is_update, date = check_base_status()
 
     try:
         t.log("base", "\tExporting channels... This may take several minutes\n") 
-
+        
+        info_file = c.BACKUP_INFO_UPDATE if is_update else c.BACKUP_INFO
+        backup_info = t.load_from_json(info_file)
+        
         # saving the current timestamp before starting, since it can take a long time
         now = datetime.now().astimezone().isoformat(sep='T', timespec='microseconds')
         start_time = time.time()
-
-        check_base_status()
-
-        backup_info = t.load_from_json(c.BACKUP_INFO)
         
+        date = set_day_before(date) if is_update else None
+
         channel_count = 0
 
         # for each category, get channel and thread list
+        
         for cat in backup_info["categories"]:
 
             channels_in_category = cat["numberOfChannels"]
@@ -136,30 +213,40 @@ def download_channels(date=None):
 
             t.log("info", f"\n\tExporting {total_channels} channels and threads from '{cat['category']}'...")
 
+            download_full_category(cat, date)
+
+            # deprecated, left for backwards compatibility if using the vanilla DCE
+            """
             download_category(cat, date, "channels")
             channel_count += channels_in_category
 
             if threads_in_category > 0:
                 download_category(cat, date, "threads")
                 channel_count += threads_in_category
+            """
 
-            t.log("info", f"\n\tExported {channel_count} channels out of {backup_info['numberOfChannels']}\n")
-
+            t.log("info", f"\n\tFinished exporting {total_channels} channels and threads from '{cat['category']}'\n")
+        
         backup_info["steps"]["downloadStatus"] = "success"
         backup_info["status"] = "pending"
-        backup_info["dates"]["lastGoodExport"] = now
 
     # this covers both ExportError and built-in exceptions like OSError and JSON-related ones
     except Exception as e:
         backup_info["steps"]["downloadStatus"] = "failed"
         backup_info["status"] = "failed"
+        now = ""
         raise exc.ExportError(f"An error occurred while exporting the backup") from e
     
     finally:
         try:
             t.log("base", f"### Downloading finished --- {time.time() - start_time:.2f} seconds --- ###\n")
-            backup_info["dates"]["exportedAt"] = now
-            t.save_to_json(backup_info, c.BACKUP_INFO)
+            backup_info["exportedAt"] = now
+            t.save_to_json(backup_info, info_file)
+
+            if is_update and backup_info["status"] == "failed":
+                base_info = t.load_from_json(c.BACKUP_INFO)
+                base_info["steps"]["updateStatus"] = "failed"
+                t.save_to_json(base_info, c.BACKUP_INFO)
 
         except Exception as e:
             t.log("error", f"\tFailed to save the backup status: {e}\n")

@@ -1,5 +1,7 @@
+from res import server_data as s
+
 # Search parameters
-SEARCH_FOLDER = "Elysium"       # Same as SERVER_NAME, or a subfolder if you want to search in a specific category
+SEARCH_FOLDER = s.SERVER_NAME    # Same as SERVER_NAME, or a subfolder if you want to search in a specific category
 CHARACTER = "Ophelia"            # Character name. If looking for a canon, specify the writer i.e. "Laito Sakamaki (Meli)"
 # TIP: Most of the times, using the first name or nickname is enough i.e. "Lysander" or "Lys"
 
@@ -21,19 +23,20 @@ CONSOLE = False          # True if you want to see the output of DCE console com
 LOG = True              # True if you want to save absolutely all the info into a log file
 
 # Result file parameters
-OUTPUT_SCENES = "f{SEARCH_FOLDER}/scenes.json"
-OUTPUT_LINKS = "f{SEARCH_FOLDER}/scene-links.txt"
+OUTPUT_SCENES = f"{SEARCH_FOLDER}/scenes.json"
+OUTPUT_LINKS = f"{SEARCH_FOLDER}/scene-links.txt"
 LOG_FILE = "out/log.txt"
 
 # File parameters
-CHARACTER_LIST = "res/character_list.json"
-BACKUP_INFO = "res/backup_info.json"
-FIXED_MESSAGES = "res/fixed_messages.json"
-BAD_MESSAGES =  "res/bad_messages.json"
-BAD_END_MESSAGES = "res/bad_end_messages.json"
+INFO_FOLDER = f"{s.SERVER_NAME}/0# Info"
+BACKUP_INFO = f"{INFO_FOLDER}/backup_info.json"
+BACKUP_INFO_UPDATE = f"{INFO_FOLDER}/backup_info_update.json"
+CHARACTER_LIST = f"{INFO_FOLDER}/character_list.json"
+FIXED_MESSAGES = f"{INFO_FOLDER}/fixed_messages.json"
+BAD_MESSAGES =  f"{INFO_FOLDER}/bad_messages.json"
+BAD_END_MESSAGES = f"{INFO_FOLDER}/bad_end_messages.json"
 
 # Discord parameters
-from res import server_data as s
 SERVER_NAME = s.SERVER_NAME
 SERVER_ID = s.SERVER_ID
 DM_CATEGORIES = s.DM_CATEGORIES

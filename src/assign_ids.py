@@ -284,15 +284,17 @@ def assign_ids(search_folder=c.SEARCH_FOLDER):
 
         t.log("debug", f"\tIterating over backup files in {search_folder}...\n")  
 
-        # Iterate over all channel JSON files in the folder and its subfolders
-        for root, dirs, files in os.walk(search_folder):
-            for filename in files:
-                if filename.endswith(".json") and not filename.endswith("scenes.json"):
+        # Iterate over all channel files
 
-                    file_path = os.path.join(root, filename)
+        backup_info = t.load_from_json(c.BACKUP_INFO)
+        
+        for category in backup_info["categories"]:
 
-                    # Assign unique IDs to authors in the JSON data
-                    assign_ids_in_file(file_path, characters_json, lookup_map)
+            for channel in category["channels"]:
+                assign_ids_in_file(os.path.join(search_folder, channel["path"]), characters_json, lookup_map)
+
+            for thread in category.get("threads", []):
+                assign_ids_in_file(os.path.join(search_folder, thread["path"]), characters_json, lookup_map)
 
 
         # debug the dictionary

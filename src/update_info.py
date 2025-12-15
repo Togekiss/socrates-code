@@ -13,8 +13,8 @@ This module updates the file with information about the status of the backup.
 
 Main function: update_info()
 
-    This function traverses all JSON files in the specified folder and its subdirectories to
-    find messages with bad formatting and replace them with the corresponding fixed versions.
+    This function checks the overall status of the backup
+    and updates the status file with a count of scenes.
 
 """
 

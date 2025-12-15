@@ -261,18 +261,12 @@ def sort_threads_in_channel(threads, search_folder=c.SEARCH_FOLDER):
     max = 1
 
     for thread in threads:
-
-        # get the date of the first message
-        file_path = os.path.join(search_folder, thread["path"])
-        data = t.load_from_json(file_path)
-        thread["date"] = data["messages"][0]["timestamp"]
-
         # get the largest value of "position" in the list
         if thread["position"] > max:
             max = thread["position"]
 
-    # sort the list by position, then by timestamp
-    threads.sort(key=lambda x: (x["position"], x["date"]))
+    # sort the list by position, then by ID (IDs are in order of creation)
+    threads.sort(key=lambda x: (x["position"], int(x["id"])))
 
     # for each position (associated with a channel), assing thread positions
     for i in range(1, max+1):
@@ -284,9 +278,6 @@ def sort_threads_in_channel(threads, search_folder=c.SEARCH_FOLDER):
             if thread["position"] == i:
                 thread["threadPosition"] = threadPos
                 threadPos += 1
-
-                #remove date
-                thread.pop("date")
 
 """
 read_order_in_category(category, search_folder, backup_info)    
