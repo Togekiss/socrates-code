@@ -4,12 +4,12 @@
 # But not these
 !.gitignore
 !README.md
+
 !src/
-!res/
-
-# And inside src/, allow everything
 !src/**
-!res/constants.py
-
 # But pycache:
 src/__pycache__
+
+!res/
+!res/constants.py
+!res/config.json

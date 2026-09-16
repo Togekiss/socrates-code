@@ -1,3 +1,4 @@
+""" Likely outdated
 # Discord parameters
 SERVER_NAME = "your-server-name-here"         # Doesn't need to be accurate, it's for file naming
 SERVER_ID = "your-server-id-here"
@@ -7,3 +8,4 @@ CATEGORIES_TO_IGNORE = [                      # Categories in the server that ar
     "Writing Resources",
     "RP discussion"
 ]
+"""

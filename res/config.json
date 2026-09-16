@@ -1,0 +1,38 @@
+{
+    "admin": {
+        "serverName": "XXXX",
+        "serverId": "12345",
+        "dmCategories": [
+            "Text"
+        ],
+        "categoriesToIgnore": [
+            "Staff Only",
+            "Spoilers"
+        ],
+        "categoriesToKeep": [
+            "Main"
+        ],
+        "keepMode": true,
+        "verbosity": {
+            "info": true,
+            "debug": false,
+            "console": false,
+            "log": false,
+            "dryRun": true,
+            "debugFiles": true
+        }
+    },
+    "user": {
+        "searchFolder": "",
+        "character": "John Doe",
+        "includeAllWriters": false,
+        "includeAlterEgos": true,
+        "includeFamiliars": true,
+        "includeNpcs": true,
+        "filters": {
+            "status": "all",
+            "type": "all",
+            "mode": "end"
+        }
+    }
+}
