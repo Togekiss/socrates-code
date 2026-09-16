@@ -1,17 +1,21 @@
 from datetime import datetime, timedelta
 import time
 import os
-import tricks as t
-import exceptions as exc
+import shutil
+import threading
+import utils.tricks as t
+import utils.exceptions as exc
+from models import ServerBackup
 t.set_path()
 from res import constants as c
 from get_server_info import get_server_info
 from download_channels import download_channels
+from update_paths import update_paths
 from merge_exports import merge_exports
 from assign_ids import assign_ids
 from fix_bad_messages import fix_bad_messages
-from sort_exported_files import sort_exported_files
-from update_info import update_info
+from verify_download import verify_download
+from index_scenes import index_scenes
 
 
 ################# File summary #################
@@ -44,18 +48,17 @@ def check_base_status():
     try: 
         t.log("debug", "\nChecking the status of the backup...")
 
-        #check if a SERVER_NAME/INFO folder exists, if not, create it
-        if not os.path.exists(c.INFO_FOLDER):
-            os.makedirs(c.INFO_FOLDER, exist_ok=True)
+        if not os.path.exists(c.BACKUP_INFO):
+            raise FileNotFoundError
 
-        backup_info = t.load_from_json(c.BACKUP_INFO)
+        backup = ServerBackup.from_json(c.BACKUP_INFO)
 
         t.log("debug", "  Loaded the status file\n")
 
-        if backup_info["status"] == "running":
+        if backup.is_running():
             raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
         
-        t.log("debug", f"  The current status of the backup is '{backup_info["status"]}'\n")
+        t.log("debug", f"  The current status of the backup is '{backup.status}'\n")
 
     except exc.AlreadyRunningError as e:
         raise e
@@ -126,31 +129,62 @@ def set_export_date():
     
     date = None
 
-    backup_info = t.load_from_json(c.BACKUP_INFO)
+    backup = ServerBackup.from_json(c.BACKUP_INFO)
 
     # if the previous export failed, use the last good export date
     # TODO
 
     # Check if there is a previous backup
-    if backup_info["exportedAt"] is not "":
+    if backup.exported_at != "":
 
-        t.log("info", f'\tThe last backup was downloaded at {backup_info["exportedAt"]}')
-        date = set_day_before(backup_info["exportedAt"])
+        t.log("info", f'\tThe last backup was downloaded at {backup.exported_at}')
+        date = set_day_before(backup.exported_at)
         t.log("info", f'\tWill download updates after {date}\n')
 
     else:
         t.log("info", '\tNo previous backup was found. Will download the full history\n')
-
-    t.save_to_json(backup_info, c.BACKUP_INFO)
-    
+  
     return date
 
-def skip_merge():
-    t.log("info", "\tNo previous backup was found. Skipping the merge step.\n")
+def finish_update():
 
-    backup_info = t.load_from_json(c.BACKUP_INFO)
-    backup_info["steps"]["mergeStatus"] = "success"
-    t.save_to_json(backup_info, c.BACKUP_INFO)
+    update_info = ServerBackup.from_json(c.BACKUP_INFO_UPDATE)
+    main_info = ServerBackup.from_json(c.BACKUP_INFO)
+
+    if main_info.is_updating() and update_info.can_finish_update():
+
+        update_info.finish_update()
+        main_info.updated_at = update_info.updated_at
+        main_info.exported_from = update_info.exported_from
+        main_info.exported_at = update_info.exported_at
+        main_info.finish_update()
+
+        t.log("info", f"\nFinished the update! The backup is now up to date as of {main_info.updated_at}\n")
+    
+        try:
+            # Rename the c.DATA_FOLDER to "Old Data" and the c.MERGE_FOLDER to c.DATA_FOLDER
+            os.rename(c.DATA_FOLDER, f"{c.DATA_FOLDER}_Old")
+            os.rename(c.MERGE_FOLDER, c.DATA_FOLDER)
+
+            t.log("debug", f"\tRenamed '{c.DATA_FOLDER}' to '{c.DATA_FOLDER}_Old' and '{c.MERGE_FOLDER}' to '{c.DATA_FOLDER}'")
+
+        except Exception as e:
+            raise exc.BackupError(f"The data or merge folder could not be renamed: {e}") from e
+
+        if not c.DEBUG_FILES:
+            try:
+                # Delete the old data and update folders
+                shutil.rmtree(f"{c.DATA_FOLDER}_Old")
+                t.log("debug", f"\tDeleted old data folder: '{c.DATA_FOLDER}_Old'")
+                shutil.rmtree(c.UPDATE_FOLDER)
+                t.log("debug", f"\tDeleted update folder: '{c.UPDATE_FOLDER}'")
+
+                # Delete the backup_info_update.json file
+                os.remove(c.BACKUP_INFO_UPDATE)
+                t.log("debug", f"\tDeleted backup_info_update.json")
+
+            except Exception as e:
+                raise exc.BackupError(f"The old folders could not be deleted: {e}") from e
 
 
 ################# Main function ################
@@ -170,32 +204,41 @@ def backup_server():
         # refresh the list of channels to download to find new channels
         is_update = get_server_info()
 
-        # calculate the date to export from, either the day before the last export or "None"
-        date = set_export_date()
- 
+        # start thread to create the merge folder while we download channels
+        merge_thread = None
+        if is_update:
+            merge_thread = threading.Thread(target=t.create_merge_folder)
+            merge_thread.start()
+
         # run through channel list to download it all    
-        download_channels(date)
+        download_channels()
         
         # add position numbers to the exported filenames
-        sort_exported_files(c.SERVER_NAME if date is None else "Update")
+        verify_download()
 
         # assign a proper ID to each character
-        t.log("info", "\n\tGenerating IDs for character bots...\n") 
-        assign_ids(c.SERVER_NAME if date is None else "Update")
+        assign_ids()
+
+        # wait for thread to end
+        if merge_thread is not None:
+            merge_thread.join()
+
+        # update the paths of the backup
+        update_paths()
 
         # merge the updates to the main files
-        if date is not None:
-            t.log("info", "\n\tMerging the update to the main backup...\n") 
-            merge_exports()
-        else:
-            skip_merge()
+        merge_exports()
 
-        t.log("info", "\n\tFixing bad messages...\n") 
+        # mark the update as finished 
+        if is_update:
+            finish_update()
+
+        # use the fixed_messages list to fix any messages 
         fix_bad_messages()
 
-        t.log("info", "\n\nUpdating information of the backup...\n")
-        update_info()
-
+        # find and index all scenes in the backup
+        index_scenes()
+        
 
     except Exception as e:
         raise e

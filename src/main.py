@@ -1,5 +1,5 @@
 import os
-import tricks as t
+import utils.tricks as t
 t.set_path()
 from res import constants as c
 

@@ -5,7 +5,8 @@ import subprocess
 import json
 import re
 import inspect
-import exceptions as exc
+import shutil
+from . import exceptions as exc
 from collections import deque
 
 GRAY = '\033[90m'
@@ -33,7 +34,7 @@ set_path()
 
 """
 def set_path():
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
     if project_root not in sys.path:
         sys.path.append(project_root)
 
@@ -52,6 +53,27 @@ def save_to_json(data, file_path):
     with open(file_path, "w", encoding="utf-8") as file:
         json.dump(data, file, indent=4)
 
+def get_backups_index():
+    index_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'res', 'backups_index.json')
+    if not os.path.exists(index_path):
+        return []
+    with open(index_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+def add_backup_to_index(backup_id, backup_name, server_id, path):
+    index = get_backups_index()
+    if not any(b["path"] == path for b in index):
+        index.append({
+            "backup_id": backup_id,
+            "backup_name": backup_name,
+            "server_id": server_id,
+            "path": path
+        })
+        index_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'res', 'backups_index.json')
+        with open(index_path, 'w', encoding='utf-8') as f:
+            json.dump(index, f, indent=4)
+        return True
+    return False
 
 
 """
@@ -115,8 +137,29 @@ def log(level="base", message=""):
         if not os.path.exists(os.path.dirname(c.LOG_FILE)):
             os.makedirs(os.path.dirname(c.LOG_FILE))
 
+        log_line = f"[{timestamp}]{level}: {clean(message)}\n"
+        
         with open(c.LOG_FILE, "a", encoding="utf-8") as file:
-            file.write(f"[{timestamp}]{level}: {clean(message)}\n")
+            file.write(log_line)
+
+def global_log(level="base", message=""):
+    set_path()
+    from res import constants as c
+    
+    if level == "base":
+        print(GREEN + message + RESET)
+    elif level == "error":
+        print(RED + message + RESET)
+    else:
+        print(message)
+        
+    timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+    
+    if not os.path.exists(os.path.dirname(c.GLOBAL_LOG_FILE)):
+        os.makedirs(os.path.dirname(c.GLOBAL_LOG_FILE))
+
+    with open(c.GLOBAL_LOG_FILE, "a", encoding="utf-8") as file:
+        file.write(f"[{timestamp}]{level}: {clean(message)}\n")
 
 """
 run_command(command: str, show_lines: int = 0)
@@ -178,6 +221,34 @@ def run_command(command: str, show_lines: int = None):
     except Exception as e:
         raise exc.ConsoleCommandError("An error occurred while running the command") from e
 
+"""
+create_merge_folder()
+
+    Copies the c.DATA_FOLDER to c.MERGE_FOLDER.
+    Then deletes all the files that end with "_scenes.json" from the c.MERGE_FOLDER.
+"""
+def create_merge_folder():
+    set_path()
+    from res import constants as c  
+
+    if os.path.exists(c.MERGE_FOLDER):
+        log("base", f"Deleting old merge folder: {c.MERGE_FOLDER}")
+        shutil.rmtree(c.MERGE_FOLDER)
+
+    log("base", f"Creating merge folder by copying {c.DATA_FOLDER} to {c.MERGE_FOLDER}")
+    shutil.copytree(c.DATA_FOLDER, c.MERGE_FOLDER, dirs_exist_ok=True)
+
+
+    # delete all the folders named "Scenes" and all the files that end with "_scenes.json" from the "Merge" folder
+    for root, dirs, files in os.walk(c.MERGE_FOLDER):
+        for dir in dirs:
+            if dir == "Scenes":
+                shutil.rmtree(os.path.join(root, dir))
+        for file in files:
+            if file.endswith("_scenes.json"):
+                os.remove(os.path.join(root, file)) 
+    
+    log("base", f"Finished creating merge folder: {c.MERGE_FOLDER}\n")
 
 ################ End Functions ################
 

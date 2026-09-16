@@ -17,6 +17,12 @@ def unwrap(exc: Exception):
 class BackupError(Exception):
     pass
 
+class ServerBackupClassError(BackupError):
+    pass
+
+class LoadFileError(BackupError):
+    pass
+
 class AlreadyRunningError(BackupError):
     pass
 
@@ -41,6 +47,12 @@ class ExportError(BackupError):
 class DownloadExportError(ExportError):
     pass
 
+class VerifyError(BackupError):
+    pass
+
+class VerifyPathsError(VerifyError):
+    pass
+
 class FileSortingError(BackupError):
     pass
 
@@ -56,6 +68,9 @@ class FileSortingWriteError(FileSortingError):
 class AssignIDError(BackupError):
     pass
 
+class UpdatePathsError(BackupError):
+    pass
+
 class MergeError(BackupError):
     pass
 
@@ -65,5 +80,8 @@ class FixMessagesError(BackupError):
 class UpdateInfoError(BackupError):
     pass
 
-class FindScenesError(BackupError):
+class IndexScenesError(BackupError):
+    pass
+
+class FindCharacterScenesError(BackupError):
     pass

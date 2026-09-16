@@ -1,11 +1,13 @@
 import time
 import os
 from datetime import datetime
-import tricks as t
-import exceptions as exc
+import utils.tricks as t
+import utils.exceptions as exc
+from models import ServerBackup, Category, Channel, Thread
 t.set_path()
 from res import constants as c
 from res import tokens
+
 
 ############### File summary #################
 
@@ -28,256 +30,194 @@ Main function: get_server_info()
 """
 
 ############### Functions #################
-"""
-check_base_status()
-
-    Checks the status file, and raises exceptions if the backup is not ready to start.
 
 """
-def check_base_status():
+load_status()
 
-    try: 
-        t.log("debug", "\nChecking the status of the backup...")
-
-        #check if a SERVER_NAME/INFO folder exists, if not, create it
-        if not os.path.exists(c.INFO_FOLDER):
-            os.makedirs(c.INFO_FOLDER, exist_ok=True)
-
-        backup_info = t.load_from_json(c.BACKUP_INFO)
-
-        t.log("debug", "  Loaded the status file\n")
-
-        if backup_info["status"] == "running":
-            raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
-        
-        t.log("debug", f"  The current status of the backup is '{backup_info["status"]}'\n")
-
-    except exc.AlreadyRunningError as e:
-        raise e
-     
-    except FileNotFoundError:
-        t.log("debug", '  No backup info file was found. Creating a new one....\n')
-        
-        backup_info = {
-            "status": "pending",
-            "steps": {
-                "getInfoStatus": "pending",
-                "cleanInfoStatus": "pending",
-                "downloadStatus": "pending",
-                "sortingReadStatus": "pending",
-                "sortingCleanStatus": "pending",
-                "sortingWriteStatus": "pending",
-                "idAssignStatus": "pending",
-                "mergeStatus": "pending",
-                "messageFixStatus": "pending"
-            }
-        }
-
-        t.save_to_json(backup_info, c.BACKUP_INFO)
-
-    except Exception as e:
-        raise exc.GetChannelListError("The backup process could not start") from e
-
-"""
-load_last_update()
-
-    Loads the previous list of channels from a JSON file.
-    If there is no previous list of channels, returns None.
-
-    Args:
-        None
+    Checks that the info folder and file exist, and loads the backup status from the JSON file.
+    It ensures the backup isn't already running in another process, and checks if it should be in update mode.
+    Then, it prepares the backup info file for the export.
 
     Returns:
-        tuple: A tuple containing the previous update timestamp and the previous export timestamp.
+        ServerBackup: The ServerBackup object with the loaded status.
+        bool: True if the backup is in update mode, False otherwise.    
+"""
+def load_status():
+
+    is_update = False
+
+    # check if a SERVER_NAME/INFO folder exists, if not, create it
+    if not os.path.exists(c.INFO_FOLDER):
+        t.log("debug", f'  Info folder "{c.INFO_FOLDER}" does not exist. Creating it...')
+        os.makedirs(c.INFO_FOLDER, exist_ok=True)
+        
+        # Add to global index if not present
+        import time
+        import shutil
+        new_id = f"b_{int(time.time())}"
+        if t.add_backup_to_index(new_id, c.SERVER_NAME, c.SERVER_ID, c.BACKUP_BASE):
+            t.log("debug", f"  Added new backup to global index with ID {new_id}")
+            
+        # Seed backup_config.json
+        config_path = f"{c.BACKUP_BASE}/backup_config.json"
+        if not os.path.exists(config_path):
+            global_config = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'res', 'config.json')
+            if os.path.exists(global_config):
+                shutil.copy(global_config, config_path)
+                t.log("debug", "  Seeded backup_config.json from global config.")
+    
+    t.log("debug", f'  Info folder "{c.INFO_FOLDER}" is ready.')
+    
+    try: 
+        # Load the JSON file 
+        t.log("debug", f'  Loading backup info from file: {c.BACKUP_INFO}')
+        backup = ServerBackup.from_json(c.BACKUP_INFO)
+
+        if backup.is_running():
+            raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
+        
+        t.log("debug", f"  The current status of the backup is '{backup.status}'")
+
+        # If there already is a completed export, it will be an update
+        if backup.needs_update():
+            is_update = True
+
+            t.log("debug", "  The backup was completed. It will be an update.")
+
+            # We save the update status in the main file
+            backup.start_update()
+
+    except FileNotFoundError:
+        t.log("debug", '  No backup info file was found. Will start one from scratch.')
+
+    t.log("debug", "  Preparing the backup info file for the export...\n")
+
+    # If we can start, we'll create a new info file
+    backup = ServerBackup(
+        path = c.BACKUP_INFO_UPDATE if is_update else c.BACKUP_INFO,
+        id = c.SERVER_ID,
+        name = c.SERVER_NAME,
+        updated_at = datetime.now().astimezone().isoformat(sep='T', timespec='microseconds')
+    )
+
+    backup.start_get_info()
+
+    t.log("debug", "  Backup info file is ready.\n")
+
+    return backup, is_update
+
+
 
 """
-def has_previous_export():
-
-    t.log("debug", "\t\nLoading the info of the last update...")
-
-    # Load the JSON file
-    backup_info = t.load_from_json(c.BACKUP_INFO)
-
-    t.log("debug", "\t  Loaded the status file\n")
-
-    base_status = backup_info["status"]
-
-    # if there's already a completed export
-    if backup_info.get("updatedAt") is not None and backup_info["steps"]["downloadStatus"] == "success":
-
-        # Disabled now that i'm testing the code in pieces to not block myself all the time
-        # TODO backup_info["status"] = "running"
-        backup_info["steps"]["updateStatus"] = "running"
-        t.save_to_json(backup_info, c.BACKUP_INFO)
-
-        return True, base_status
-
-    # if there's no previous export
-    return False, base_status
-
-
-
-
-"""
-parse_output(output)
+parse_output(output, backup: ServerBackup)
 
     Parses the output of the DiscordChatExporter CLI tool and returns a list of channel data.
 
     Args:
         output (str): The output of the DiscordChatExporter CLI tool.
+        backup (ServerBackup): The ServerBackup object to store parsed data.
 
-    Returns:
-        dict: A list of channel data in JSON format.
 """
-def parse_output(output):
+def parse_output(output, backup: ServerBackup):
 
     t.log("info", "\tParsing the list of channels...")
-
-    categories = []
-
-    category_names = []
 
     lines = []
     
     try:
         lines = output.strip().split("\n")
 
-        # Saving the 'parent channel' in case we encounter threads  
-        parent_channel = None
-        thread_counter = 0
+        t.log("debug", f"\t\t We got {len(lines)} lines from DCE. Analyzing...")
 
         for line in lines:
+            if not line.strip():
+                continue
 
             t.log("debug", f"\t\t Analyzing line: {line}")
 
             parts = line.split(" | ")
 
             # If it's a category
-            if len(parts) < 2:
+            if len(parts) < 2 and " \\ " in parts[0]:
                 t.log("debug", "\t\t\t It's a category")
 
-                cat_id = parts[0].split(" \\ ")[0].strip()
-                cat_name = parts[0].split(" \\ ")[1].strip()
+                cat_info = parts[0].split(" \\ ",1)[1].strip()
+                pos_str, cat_name = cat_info.split("#", 1)
+                cat_position = int(pos_str.strip())
+                cat_name = cat_name.strip()
 
-                # Add it to the list
-                category_names.append(cat_name)
-
-                # Create a new category
-                new_category = {
-                    "id": cat_id,
-                    "category": cat_name,
-                    "position": len(category_names),
-                    "numberOfChannels": 0,
-                    "numberOfThreads": 0,
-                    "numberOfScenes": 0,
-                    "path": f"{len(category_names)}# {cat_name.replace(':', '_')}",
-                    "channels": [],
-                    "threads": []
-                }
+                new_category = Category(
+                    id = parts[0].split(" \\ ")[0].strip(),
+                    name = cat_name,
+                    position = cat_position,
+                    path = f"{cat_position}# {cat_name.replace(':', '_')}"
+                )
+                
+                t.log("debug", f"\t\t\t Created new category: {new_category.name} (ID: {new_category.id})")
 
                 # Add it to the data
-                categories.append(new_category)
-                thread_counter = 0
+                backup.add_new_category(new_category)
 
-                continue
-            
+
             # If it's a channel
-            if len(parts) == 2:
+            elif len(parts) == 2:
 
                 t.log("debug", "\t\t\t It's a channel")
 
-                entry = {
-                    "id": parts[0].strip(),
-                    "category": parts[1].split(" / ")[0].strip(),
-                    "channel": parts[1].split(" / ")[1].strip(),
-                    "isThread": False,
-                    "thread": "",
-                }
-                # save it as a reference
-                parent_channel = entry
-                thread_counter = 0
+                pos_str, ch_info = parts[1].split("#", 1)
+
+                new_channel = Channel(
+                    id = parts[0].strip(),
+                    name = ch_info.split(" / ", 1)[1].strip(),
+                    position = int(pos_str.strip())
+                )
+
+                t.log("debug", f"\t\t\t Created new channel: {new_channel.name} (ID: {new_channel.id})")
+
+                # Add it to the data
+                backup.add_new_channel(new_channel)
             
+
             # If it's a thread
-            if len(parts) == 3:
+            elif len(parts) == 3:
 
                 t.log("debug", "\t\t\t It's a thread")
 
-                entry = {
-                    "id": parts[0].replace('*', '').strip(),
-                    "category": parent_channel["category"],
-                    "channel": parent_channel["channel"],
-                    "isThread": True,
-                    "thread": parts[1].split(" / ")[1].strip(),
-                }
-                thread_counter += 1
+                pos_str, th_info = parts[1].split("#", 1)
 
-            # this should not trigger if --include-categories is used, but we can leave it for compatibility
-            if entry["category"] not in category_names:
-
-                t.log("debug", f"\t\t\t It's a new category: {entry['category']}")
-
-                # Save it in the list
-                category_names.append(entry["category"])
-
-                # Create a new category
-                new_category = {
-                    "category": entry["category"],
-                    "position": len(category_names),
-                    "numberOfChannels": 0,
-                    "numberOfThreads": 0,
-                    "numberOfScenes": 0,
-                    "path": f"{len(category_names)}# {entry['category'].replace(':', '_')}",
-                    "channels": [],
-                    "threads": []
-                }
+                new_thread = Thread(
+                    id = parts[0].replace('*', '').strip(),
+                    name = th_info.split(" / ", 1)[1].strip(),
+                    position = int(pos_str.strip())
+                )
+                
+                t.log("debug", f"\t\t\t Created new thread: {new_thread.name} (ID: {new_thread.id})")
 
                 # Add it to the data
-                categories.append(new_category)
+                backup.add_new_thread(new_thread)
 
-            # create the base for the new channel
-            new_channel = {
-                "id": entry["id"],
-                "channel": entry["channel"]
-            }
-
-            # add extra info if it's a thread
-            if entry["isThread"]:
-                new_channel["position"] = categories[-1]["numberOfChannels"]
-                new_channel["thread"] = entry["thread"]
-                new_channel["threadPosition"] = thread_counter
-                new_channel["numberOfMessages"] = 0
-                
-                categories[-1]["numberOfThreads"] += 1
-                categories[-1]["threads"].append(new_channel)
             
             else:
-                categories[-1]["numberOfChannels"] += 1
-                new_channel["position"] = categories[-1]["numberOfChannels"]
-                new_channel["numberOfScenes"] = 0
-                new_channel["numberOfMessages"] = 0
+                t.log("debug", "\t\t\tThe line format was not recognized.")
 
-                
-                categories[-1]["channels"].append(new_channel)
 
-        t.log("info", f"\tFound {len(lines)} channels in {len(categories)} categories\n")
+        t.log("info", f"\tAnalyzed {len(lines)} lines and found {backup.number_of_categories} categories, {backup.number_of_channels} channels and {backup.number_of_threads} threads \n")
     
     except Exception as e:
         raise exc.GetChannelListError("Failed to parse the list of channels") from e
     
-    finally:
-        return categories, len(lines)
 
 """
-get_server_info_from_discord()
+get_server_info_from_discord(backup: ServerBackup)
 
     Gets a list of channels from Discord using the DiscordChatExporter CLI tool,
-    then parses the output into a JSON format.
+    then parses the output to save it in the ServerBackup object and a JSON file.
 
-    Returns:
-        dict: A list of channel data in JSON format.
+    Args:
+        backup (ServerBackup): The ServerBackup object that holds the data.
 
 """
-def get_server_info_from_discord(info_file):
+def get_server_info_from_discord(backup: ServerBackup):
 
     try: 
         t.log("base", "  #  This may take a few minutes...  #\n")
@@ -285,112 +225,57 @@ def get_server_info_from_discord(info_file):
         t.log("info", "\tGetting a list of channels from Discord...")
 
         # Call the CLI command and capture its output
-        cli_command = f"dotnet DCE/DiscordChatExporter.Cli.dll channels -g {c.SERVER_ID} -t {tokens.DISCORD_BOT} --include-threads all --include-categories --relative-positions"
+        cli_command = f"dotnet DCE/DiscordChatExporter.Cli.dll channels -g {c.SERVER_ID} -t {tokens.DISCORD_BOT} --include-threads all --include-categories --relative-positions --show-positions"
         code, output = t.run_command(cli_command)
 
         if code != 0:
-            raise exc.ConsoleCommandError("DCE command failed")
+            raise exc.ConsoleCommandError(f"DCE command failed with code '{code}'")
 
-        t.log("info", f"\tGot a list of channels from DCE: {code}\n")
+        t.log("info", f"\tGot a list of channels from DCE. Parsing...\n")
 
         # Process the output and create the desired JSON format
-        categories, channel_num = parse_output(output)
+        parse_output(output, backup)
 
-        backup_info = t.load_from_json(info_file)
+        backup.finish_get_info()
 
-        backup_info["numberOfCategories"] = len(categories)
-        backup_info["numberOfChannels"] = channel_num
-        backup_info["categories"] = categories
-
-        backup_info["steps"]["getInfoStatus"] = "success"
-
-        t.save_to_json(backup_info, info_file)
+        t.log("info", "\tFinished saving the list of channels\n")
 
     except Exception as e:
+        backup.finish_get_info(success=False)
         raise exc.GetChannelListError("Failed to get the list of channels") from e
 
         
-
-
-def prepare_info_file(info_file):
-
-    t.log("info", "\tPreparing the info file...")
-
-    backup_info = {
-            "id": c.SERVER_ID,
-            "name": c.SERVER_NAME,
-            "updatedAt": datetime.now().astimezone().isoformat(sep='T', timespec='microseconds'),
-            "exportedAt": "",
-            "status": "running",
-            "steps": {
-                "getInfoStatus": "running",
-                "cleanInfoStatus": "pending",
-                "downloadStatus": "pending",
-                "sortingReadStatus": "pending",
-                "sortingCleanStatus": "pending",
-                "sortingWriteStatus": "pending",
-                "idAssignStatus": "pending",
-                "mergeStatus": "pending",
-                "messageFixStatus": "pending"
-            }
-        }
-    
-    t.save_to_json(backup_info, info_file)
-
-    return backup_info
-
 """
-remove_categories(json_data), keep_categories(json_data)
-    Functions to clean up the channel list.
-"""
-def remove_categories(json_data):
-    return [entry for entry in json_data if entry["category"] not in c.CATEGORIES_TO_IGNORE]
-    
-def keep_categories(json_data):
-    return [entry for entry in json_data if entry["category"] in c.CATEGORIES_TO_KEEP]
-
-
-"""
-clean_channel_list(backup_info)
+clean_channel_list(backup: ServerBackup)
 
     Cleans up the channel list by removing categories and updating the number of channels.
 
-    Returns:
-        dict: A cleaned up list of channel data in JSON format.
+    Args:
+        backup (ServerBackup): The ServerBackup object that holds the data.
 """
-def clean_channel_list(info_file):
+def clean_channel_list(backup: ServerBackup):
 
     t.log("info", "\tCleaning the list of channels...")
 
     try:
 
-        backup_info = t.load_from_json(info_file)
-
-        backup_info["steps"]["cleanInfoStatus"] = "running"
-        t.save_to_json(backup_info, info_file)
+        backup.start_clean_info()
 
         if c.KEEP_MODE:
-            backup_info["categories"] = keep_categories(backup_info["categories"])
+            t.log("debug", f"\t  Keeping only the specified categories...")
+            backup.keep_categories(c.CATEGORIES_TO_KEEP)
         else:
-            backup_info["categories"] = remove_categories(backup_info["categories"])
+            t.log("debug", f"\t  Removing the specified categories...")
+            backup.remove_categories(c.CATEGORIES_TO_IGNORE)
 
-        t.log("info", f"\t  Cleaned up categories")
+        t.log("info", f"\t  Kept {backup.number_of_channels} channels across {backup.number_of_categories} categories\n")
 
-        # Update the number of channels
-        backup_info["numberOfChannels"] = 0
+        backup.finish_clean_info()
 
-        for category in backup_info["categories"]:
-            category["numberOfChannels"] = len(category["channels"])
-            category["numberOfThreads"] = len(category["threads"])
-            backup_info["numberOfChannels"] += len(category["channels"]) + len(category["threads"])
-        backup_info["numberOfCategories"] = len(backup_info["categories"])
-            
-        t.log("info", f"\t  Kept {backup_info['numberOfChannels']} channels across {len(backup_info['categories'])} categories\n")
-
-        backup_info["steps"]["cleanInfoStatus"] = "success"
-        t.save_to_json(backup_info, info_file)
+        t.log("info", "\t  Finished cleaning the list of channels\n")
 
     except Exception as e:
+        backup.finish_clean_info(success=False)
         raise exc.CleanChannelListError("Failed to clean the list of channels") from e
 
 
@@ -401,69 +286,43 @@ def get_server_info():
 
     t.log("base", f"\n###  Getting a list of all channels from the server {c.SERVER_NAME}...  ###\n")
     
-    main_status = "pending"
-    info_status = "pending"
-    clean_status = "pending"
     is_update = False
     
-    check_base_status()
+    backup, is_update = load_status()
 
     try:
 
         start_time = time.time()
 
-        is_update, base_status = has_previous_export()
-        info_file = c.BACKUP_INFO_UPDATE if is_update else c.BACKUP_INFO
+        get_server_info_from_discord(backup)
 
-        prepare_info_file(info_file)
-
-        get_server_info_from_discord(info_file)
-
-        info_status = "success"
-
-        clean_channel_list(info_file)
-
-        clean_status = "success"
-        main_status = "pending"
+        clean_channel_list(backup)
 
     except exc.CleanChannelListError as e:
-
-        clean_status = "failed"
-        main_status = "failed"
 
         raise exc.ChannelListError from e
     
     except Exception as e:
 
-        info_status = "failed"
-        clean_status = "pending"
-        main_status = "failed"
-
         raise exc.ChannelListError from e
 
     finally:
         try:
-            backup_info = t.load_from_json(info_file)
-            
-            backup_info["status"] = main_status
-            backup_info["steps"]["getInfoStatus"] = info_status
-            backup_info["steps"]["cleanInfoStatus"] = clean_status
+            if is_update and backup.is_failed():
 
-            t.save_to_json(backup_info, info_file)
-            t.log("info", f"\t\nSaved the new list of channels to {info_file}\n")
-
-            if is_update and main_status == "failed":
-                base_info = t.load_from_json(c.BACKUP_INFO)
-                base_info["status"] = base_status
-                base_info["steps"]["updateStatus"] = main_status
-                t.save_to_json(base_info, c.BACKUP_INFO)
-            
+                main_backup = ServerBackup.from_json(c.BACKUP_INFO)
+                main_backup.finish_update(success=False)
+    
         except Exception as e:
-            t.log("error", f"\tFailed to save the list of channels: {e}\n")
+            t.log("error", f"\tFailed to save the failed update status to the main file: {e}\n")
 
         t.log("base", f"\n### Channel list finished --- {time.time() - start_time:.2f} seconds --- ###\n")
 
-        return is_update
+        # if there was an exception, raise it again
+        if 'e' in locals() and e is not None:
+            raise e
+    
+    return is_update
 
 
 if __name__ == "__main__":

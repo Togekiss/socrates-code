@@ -1,11 +1,16 @@
 import re
+import os
 import time
 import unicodedata
-import tricks as t
+import utils.tricks as t
+import utils.exceptions as exc
 from assign_ids import get_all_character_ids
+from create_scene_list import create_scene_list
+from models import ServerBackup, Category, Channel, Thread
 t.set_path()
 from res import constants as c
-from create_scene_list import create_scene_list
+
+
 
 ################ File summary #################
 
@@ -13,7 +18,7 @@ from create_scene_list import create_scene_list
 
 This module finds all the scenes involving the specified character in the server backup.
 
-Main function: find_scenes()
+Main function: find_character_scenes()
 
     This function finds the specified character's ID, and creates an empty list to store scenes.
 
@@ -26,6 +31,39 @@ Main function: find_scenes()
 
 ################# Functions #################
 
+"""
+load_status()
+
+    Loads backup information from a JSON file, and checks if it's ready to work with.
+
+    Returns:
+        ServerBackup: The current status of the backup.
+"""
+def load_status():
+
+    try: 
+        t.log("debug", f'  Loading backup info from file: {c.BACKUP_INFO}')
+
+        backup = ServerBackup.from_json(c.BACKUP_INFO)
+
+        if backup.is_running():
+            raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
+        
+        if not backup.can_find_scenes():
+            raise exc.DataNotReadyError("The scene index is not ready. Ensure the backup downloaded successfully and try again.")
+
+
+        t.log("debug", f"  The current status of the backup is '{backup.status}'\n")
+
+        t.log("debug", "  Backup is ready.\n")
+
+    except (exc.DataNotReadyError, exc.AlreadyRunningError) as e:
+        raise e
+     
+    except Exception as e:
+        raise exc.FindCharacterScenesError("The export status file could not be read") from e
+    
+    return backup
 
 """
     This regex pattern is used to detect the end of a scene.
@@ -118,7 +156,7 @@ find_real_start(messages, found_scene, batch=False):
     Args:
         channel (dict): The channel.
         found_scene (dict): The found scene info.
-        batch (bool): Whether the function is being called from 'find_all_scenes'
+        batch (bool): Whether the function is being called from 'index_scenes'
 
     Returns:
         int: The index of the real start of the scene.
@@ -181,7 +219,7 @@ find_real_end(messages, found_scene, batch=False):
     Args:
         channel (dict): The channel.
         found_scene (dict): The found scene info.
-        batch (bool): Whether the function is being called from 'find_all_scenes'
+        batch (bool): Whether the function is being called from 'index_scenes'
 
     Returns:
         int: The index of the real end of the scene.
@@ -281,9 +319,9 @@ find_character_scenes_in_channel(channel, main_character, scene_id, batch=False)
 
     Args:
         channel (dict): The channel.
-        main_character (int): The ID of the target character.
+        main_character_list (int[]): The IDs of the target characters.
         scene_id (int): The ID of the scene to be searched.
-        batch (bool): Whether the function is being called from 'find_all_scenes'
+        batch (bool): Whether the function is being called from 'index_scenes'
 
     Returns:
         list: A list of scene starts and ends in the channel, in the format of a JSON object.
@@ -392,69 +430,85 @@ def find_character_scenes_in_channel(channel, main_character_list, scene_id, bat
                     find_real_start(channel, found_scene, batch)
                     scenes.append(found_scene)
 
-                    
+                
     return scenes, scene_id
+
+
+"""
+find_character_scenes_in_folder(folder_path, characters_list):
+
+    Loads the _scenes.json of a specific folder and filters scenes
+    that include any of the characters in the specified list.
+
+    Args:
+        folder_path (str): The path of the folder to search for scenes.
+        characters_list (list): A list of character IDs to filter scenes by.
+
+    Returns:
+        list: A list of filtered scenes.
+"""
+def find_character_scenes_in_folder(folder_path, characters_list):
+    scenes_file = os.path.join(folder_path, "_scenes.json")
+
+    if not os.path.exists(scenes_file):
+        raise exc.FindCharacterScenesError(f"Scenes file not found in {folder_path}. Please run 'index_scenes' first to create it.")
+
+    from models.scene_manager import SceneManager
+    manager = SceneManager(backup_id="", base_path="", scenes_path=scenes_file)
+    
+    return manager.filter_scenes(
+        character_ids=characters_list,
+        character_logic='OR'
+    )
 
 
 ################ Main function #################
 
-def find_scenes():
+def find_character_scenes():
+
+    backup = load_status()
+
+    try:
+        start_time = time.time()
+
+        # Get the path of the "scenes" folder from the config file
+        folder_path = c.DATA_FOLDER + c.SEARCH_FOLDER
+
+        # Find main character ID (and associated versions)
+        characters_list = get_all_character_ids(c.CHARACTER)
+
+        if not characters_list:
+            raise exc.FindCharacterScenesError(f"Could not find any versions of {c.CHARACTER} in {c.CHARACTER_LIST}.")
+
+        t.log("debug", f"\nFound {len(characters_list)} versions of {c.CHARACTER}: {characters_list}")
+        
+        has_versions = "" if len(characters_list) == 1 else f" and their {len(characters_list)} versions"
+        t.log("base", f"\n## Finding scenes with {c.CHARACTER}{has_versions} in {folder_path}... ##\n")
+
+        all_scenes = find_character_scenes_in_folder(folder_path, characters_list)
+
+        # update scene indexes
+        for i, scene in enumerate(all_scenes):
+            scene["index"] = i+1
+
+        os.makedirs(os.path.dirname(c.OUTPUT_SCENES), exist_ok=True)
+        t.save_to_json(all_scenes, c.OUTPUT_SCENES)
+
+        t.log("info", f"\n\tFound {len(all_scenes)} scenes in total")
+        t.log("info", f"\tScene output file created: {c.OUTPUT_SCENES}")
+
+        # Uses the created JSONs to create a list of links to each scene start
+        create_scene_list()
+
+    except Exception as e:
+        raise exc.FindCharacterScenesError("Failed to find scenes for a character") from e
     
-    start_time = time.time()
-
-    # Get the path of the "scenes" folder from the config file
-    folder_path = c.SEARCH_FOLDER
-
-    # Find main character ID (and associated versions)
-    characters_list = get_all_character_ids(c.CHARACTER)
-
-    if not characters_list:
-        t.log("base", f"{t.RED}\nERROR: Could not find any versions of {c.CHARACTER} in {c.CHARACTER_LIST}.\nPlease check the character name and try again.\n")
-        return 1
-
-    t.log("debug", f"\nFound {len(characters_list)} versions of {c.CHARACTER}: {characters_list}")
-    
-    has_versions = "" if len(characters_list) == 1 else f" and their {len(characters_list)} versions"
-    t.log("base", f"\n## Finding scenes with {c.CHARACTER}{has_versions} in {folder_path}... ##\n")
-
-    # Create an empty list to store scene starts and ends
-    all_scenes = []
-    scene_id = -1
-
-    backup = t.load_from_json(c.BACKUP_INFO)
-
-    for category in backup["categories"]:
-        for channel in category["channels"]:
-
-            file_path = f"{folder_path}\\{channel['path']}"
-            t.log("log", f"\tAnalysing {channel['channel']}...")
-
-            json_data = t.load_from_json(file_path)
-
-            # Find scene starts and ends involving character
-            channel_scenes, scene_id = find_character_scenes_in_channel(json_data, characters_list, scene_id)
-
-            # Add the messages to the respective lists, can be more than one per channel
-            all_scenes.extend(channel_scenes)
-
-                    
-    # Sort scenes by start timestamp
-    all_scenes = sorted(all_scenes, key=lambda x: x['start']['timestamp'])
-
-    # Reassign scene IDs
-    for i, scene in enumerate(all_scenes):
-        scene['index'] = i
-
-    t.save_to_json(all_scenes, c.OUTPUT_SCENES)
-
-    t.log("info", f"\n\tFound {len(all_scenes)} scenes in total")
-    t.log("info", f"\tScene output file created: {c.OUTPUT_SCENES}")
-
-    # Uses the created JSONs to create a list of links to each scene start
-    create_scene_list()
-
-    t.log("base", f"## Scene finding finished --- {time.time() - start_time:.2f} seconds --- ##\n")
+    finally:
+        t.log("base", f"## Scene finding finished --- {time.time() - start_time:.2f} seconds --- ##\n")
 
 if __name__ == "__main__":
-    find_scenes()
     
+    try:
+        find_character_scenes()
+    except Exception as e:
+        t.log("error", f"\n{exc.unwrap(e)}\n")

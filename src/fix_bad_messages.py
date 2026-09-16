@@ -1,9 +1,10 @@
 import os
 import time
 import re
-import tricks as t
-import exceptions as exc
-from find_scenes import has_end_tag
+import utils.tricks as t
+import utils.exceptions as exc
+from find_character_scenes import has_end_tag
+from models import ServerBackup
 t.set_path()
 from res import constants as c
 
@@ -23,52 +24,45 @@ Main function: fix_bad_messages()
 ################ Functions #################
 
 """
-check_base_status()
+load_status()
 
-    Checks the status file, and raises exceptions if the backup is not ready to be sorted.
+    Loads backup information from a JSON file, and checks if it's ready to work with.
 
+    Returns:
+        ServerBackup: The current status of the backup.
 """
-def check_base_status():
+def load_status():
 
     try: 
-        t.log("debug", "\nChecking the status of the backup...")
+        t.log("debug", f'  Loading backup info from file: {c.BACKUP_INFO}')
 
-        backup_info = t.load_from_json(c.BACKUP_INFO)
+        backup = ServerBackup.from_json(c.BACKUP_INFO)
 
-        t.log("debug", "  Loaded the status file\n")
-
-        t.log("debug", f"  The current status of the backup is '{backup_info["status"]}'\n")
-
-        main_status = backup_info["status"] + ""
-
-        if backup_info["status"] == "running":
+        if backup.is_running():
             raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
         
-        if backup_info["status"] == "failed":
-            raise exc.DataNotReadyError("The data may be corrupted. Ensure the backup downloaded successfully and try again.")
-        
-        if backup_info["steps"]["idAssignStatus"] != "success":
-            raise exc.DataNotReadyError("The backup is not fully updated. Ensure the ID assignment process ran and try again.")
+        if not backup.can_fix_messages():
+            raise exc.DataNotReadyError("The data may be corrupted or incomplete. Ensure the download is verified and IDs are assigned and try again.")
 
-        if backup_info["steps"]["mergeStatus"] != "success":
-            raise exc.DataNotReadyError("The backup is not fully updated. Ensure the merge process ran and try again.")
 
-        backup_info["status"] = "running"
-        backup_info["steps"]["messageFixStatus"] = "running"
+        t.log("debug", f"  The current status of the backup is '{backup.status}'\n")
 
-        t.save_to_json(backup_info, c.BACKUP_INFO)
+        # flag it as running in case another execution of the script is launched
+        backup.start_fix_messages()
 
-        return main_status
+        t.log("debug", "  Backup info file is ready.\n")
 
-    except (exc.AlreadyRunningError, exc.DataNotReadyError) as e:
+    except (exc.DataNotReadyError, exc.AlreadyRunningError) as e:
         raise e
-    
+     
     except Exception as e:
         raise exc.FixMessagesError("The export status file could not be read") from e
     
+    return backup
+
 
 """
-fix_messages_in_channel(file_path, fixed_messages)
+fix_messages_in_channel(file_path)
 
     This function traverses through all the messages in a channel and,
     if it finds a message that has a fixed version in the fixed_messages dictionary,
@@ -82,7 +76,7 @@ fix_messages_in_channel(file_path, fixed_messages)
     Returns:
         channel (dict): The modified channel dictionary.
 """
-def fix_messages_in_channel(file_path):
+def fix_messages_in_channel(file_path, backup: ServerBackup):
 
     channel = t.load_from_json(file_path)
     fixed_messages = t.load_from_json(c.FIXED_MESSAGES)
@@ -152,6 +146,9 @@ def fix_messages_in_channel(file_path):
         for message in messages_to_remove:
             channel["messages"].remove(message)
 
+    channel["messageCount"] = len(channel["messages"])
+    backup.update_message_count(channel["channel"]["id"], channel["messageCount"])
+
     # save channel
     t.log("debug", f"\tSaving channel to {file_path}")
 
@@ -161,17 +158,19 @@ def fix_messages_in_channel(file_path):
 
 def fix_bad_messages():
 
+    backup = load_status()
+
     try:
 
         t.log("base", f"\n###  Fixing badly formatted messages in {c.SERVER_NAME}...  ###\n")
 
         start_time = time.time()
 
-        check_base_status()
-
         try:
             fixed_messages = t.load_from_json(c.FIXED_MESSAGES)
+            t.log("debug", f"    Loaded {len(fixed_messages)} fixed messages from {c.FIXED_MESSAGES}\n")
         except FileNotFoundError:
+            t.log("debug", f"    No fixed messages file found. Creating a new one at {c.FIXED_MESSAGES}\n")
             fixed_messages = {}
             t.save_to_json(fixed_messages, c.FIXED_MESSAGES)
 
@@ -181,42 +180,24 @@ def fix_bad_messages():
         t.save_to_json({}, c.BAD_MESSAGES)
         t.save_to_json({}, c.BAD_END_MESSAGES)
 
+        for path in backup.get_all_paths():
+            file_path = os.path.join(c.DATA_FOLDER, path)
+            t.log("log", f"\t    Analysing {file_path}...")
+            fix_messages_in_channel(file_path, backup)
 
-        backup_info = t.load_from_json(c.BACKUP_INFO)
-
-        for category in backup_info["categories"]:
-
-            for channel in category["channels"]:
-
-                file_path = os.path.join(c.SEARCH_FOLDER, channel["path"])
-                t.log("log", f"\t    Analysing {file_path}...")
-                fix_messages_in_channel(file_path)
-
-            for thread in channel.get("threads", []):
-
-                file_path = os.path.join(c.SEARCH_FOLDER, thread["path"])
-                t.log("log", f"\t    Analysing {file_path}...")
-                fix_messages_in_channel(file_path)
-
-
-        step_status = "success"
-        main_status = "success"
+        backup.finish_fix_messages()
 
     except Exception as e:
-        main_status = "failed"
-        step_status = "failed"
+        backup.finish_fix_messages(success=False)
         raise exc.FixMessagesError("Failed to fix bad messages in files") from e
     
     finally:
-        try:
-            t.log("base", f"### Finished fixing messages --- {time.time() - start_time:.2f} seconds --- ###\n")
-            backup_info = t.load_from_json(c.BACKUP_INFO)
-            backup_info["status"] = main_status
-            backup_info["steps"]["messageFixStatus"] = step_status
-            t.save_to_json(backup_info, c.BACKUP_INFO)
 
-        except Exception as e:
-            t.log("error", f"\tFailed to save the status file: {e}\n")
+        t.log("base", f"### Finished fixing messages --- {time.time() - start_time:.2f} seconds --- ###\n")
+
+        # if there was an exception, raise it again
+        if 'e' in locals() and e is not None:
+            raise e
 
 
 if __name__ == "__main__":

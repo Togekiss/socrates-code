@@ -1,7 +1,8 @@
 import datetime
 import time
 import os
-import tricks as t
+import utils.tricks as t
+import utils.exceptions as exc
 t.set_path()
 from res import constants as c
 from res import tokens
@@ -14,7 +15,7 @@ This module downloads all the found scenes from a given character as HTML files.
 
 Main function: export_scenes()
 
-    This script reads the scene starts and ends from the JSON files created by the find_scenes script.
+    This script reads the scene starts and ends from the JSON files created by the find_character_scenes script.
     It creates a folder for the character and downloads each scene as an HTML file, using the DiscordChatExporter.
     If the scene doesn't have an end message, it will download the whole channel from the scene's start date.
     
@@ -67,7 +68,10 @@ def export_scenes():
     start_time = time.time()
 
     # Open the JSON files
-    scenes = t.load_from_json(c.OUTPUT_SCENES)
+    try:
+        scenes = t.load_from_json(c.OUTPUT_SCENES)
+    except FileNotFoundError as e:
+        raise exc.BackupError("There is no scene information to export. Please run 'find_character_scenes' first") from e
 
     t.log("info", f"\tLoaded scene information for {len(scenes)} scenes\n")
 
@@ -108,4 +112,9 @@ def export_scenes():
     t.log("base", f"\n##  Finished downloading all scenes! --- {time.time() - start_time:.2f} seconds --- ##\n")
         
 if __name__ == "__main__":
-    export_scenes()
+    
+    try:
+        export_scenes()
+        
+    except Exception as e:
+        t.log("error", f"\n{exc.unwrap(e)}\n")

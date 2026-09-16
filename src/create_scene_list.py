@@ -1,6 +1,5 @@
 from datetime import datetime
-import json
-import tricks as t
+import utils.tricks as t
 t.set_path()
 from res import constants as c
 
@@ -12,7 +11,7 @@ This module creates a text file with the scene starts and ends.
 
 Main function: create_scene_list()
 
-    This function reads the scene starts and ends from the JSON files created by the find_scenes script.
+    This function reads the scene starts and ends from the JSON files created by the find_character_scenes script.
     It sorts the objects by chronological order based on the "timestamp" field
     and creates a text file with the titles of each scene, its date, and the link to the first (or last) message.
 

@@ -1,9 +1,9 @@
-import json
 import os
 import shutil
 import time
-import tricks as t
-import exceptions as exc
+import utils.tricks as t
+import utils.exceptions as exc
+from models import ServerBackup
 t.set_path()
 from res import constants as c
 
@@ -24,56 +24,63 @@ Main function: merge_exports()
     If not, it will create the necessary subfolders in "Old" to maintain the same directory tree
     and copy the file from "Update" to "Old".
 
-    Finally, it will debug a message indicating that all channels have been merged.
-
 """
 
 ################## Functions #################
 
-"""
-check_base_status()
-
-    Checks the status file, and raises exceptions if the backup is not ready to be sorted.
 
 """
-def check_base_status():
+load_status()
+
+    Loads backup information from a JSON file, and checks if it's ready to work with.
+
+    Returns:
+        ServerBackup: The current status of the backup.
+        bool: Whether the backup is in update mode or not.
+"""
+def load_status():
+
+    is_update = False
 
     try: 
-        t.log("debug", "\nChecking the status of the backup...")
+        t.log("debug", f'  Loading backup info from file: {c.BACKUP_INFO}')
 
-        backup_info = t.load_from_json(c.BACKUP_INFO)
+        backup = ServerBackup.from_json(c.BACKUP_INFO)
+        
+        # If it's in update mode, we'll use the update info file
+        if backup.is_updating():
 
-        t.log("debug", "  Loaded the status file\n")
+            is_update = True
 
-        t.log("debug", f"  The current status of the backup is '{backup_info["status"]}'\n")
+            t.log("debug", "An update is running. Using the update info file\n")
 
-        main_status = backup_info["status"] + ""
+            backup = ServerBackup.from_json(c.BACKUP_INFO_UPDATE)
 
-        if backup_info["status"] == "running":
+        if backup.is_running():
             raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
         
-        if backup_info["status"] == "failed":
+        if not backup.can_merge():
             raise exc.DataNotReadyError("The data may be corrupted. Ensure the backup downloaded successfully and try again.")
-        
-        if backup_info["steps"]["sortingWriteStatus"] != "success":
-            raise exc.DataNotReadyError("Update files have not been sorted. Ensure the sorting process ran and try again.")
 
-        backup_info["status"] = "running"
-        backup_info["steps"]["mergeStatus"] = "running"
 
-        t.save_to_json(backup_info, c.BACKUP_INFO)
+        t.log("debug", f"  The current status of the backup is '{backup.status}'\n")
 
-        return main_status
+        # flag it as running in case another execution of the script is launched
+        backup.start_merge()
 
-    except (exc.AlreadyRunningError, exc.DataNotReadyError) as e:
+        t.log("debug", "  Backup info file is ready.\n")
+
+    except (exc.DataNotReadyError, exc.AlreadyRunningError) as e:
         raise e
-    
+     
     except Exception as e:
         raise exc.MergeError("The export status file could not be read") from e
     
+    return backup, is_update
+     
 
 """
-find_index(messages, id, base=0)
+find_message_index(messages, id, base=0)
 
     Find the index of a message with a specified ID in a list of messages.
 
@@ -85,7 +92,7 @@ find_index(messages, id, base=0)
     Returns:
         int or None: The index of the message with the specified ID, or None if not found.
 """
-def find_index(messages, id, base=0):
+def find_message_index(messages, id, base=0):
     
     index = None
     for i, message in enumerate(messages[base:], start=base):
@@ -103,7 +110,7 @@ merge_channel(old, update)
 
     It loads both files in JSON format, and iterates through the channel history update's messages.
     If the message is found in the old channel history, it is updated (to account for edited content).
-    If the message is not found, the rest of the update is appended to the old channel history.
+    If the message is not found, it and the rest of the update are appended to the old channel history.
     
     The merged data is then saved back to the `old` file, maintaining a complete and up-to-date channel history.
 
@@ -114,7 +121,7 @@ merge_channel(old, update)
     Returns:
         None, but saves the merged data to the `old` file.
 """
-def merge_channel(old, update):
+def merge_channel(old, update, main_backup):
     
     # Load data from old file
     old_data = t.load_from_json(old)
@@ -140,11 +147,11 @@ def merge_channel(old, update):
         id = update_messages[i]["id"]
 
         # Look for it in the old list - only counting from last message evaluated
-        index = find_index(full_messages, id, full_index)
+        index = find_message_index(full_messages, id, full_index)
         
         # Check if the message was found
         
-        # If not, exit
+        # If not, it means it's new. exit
         if index is None:
             break
 
@@ -153,7 +160,7 @@ def merge_channel(old, update):
             full_index = index
             full_messages[full_index] = new_message
 
-    # Append the rest of the messages
+    # Append all the new messages
     full_messages.extend(update_messages[update_index:])
           
     # Update metadata and messages to the whole JSON 
@@ -164,7 +171,24 @@ def merge_channel(old, update):
     # save merged data to json
     t.save_to_json(old_data, old)
 
-def merge_file(path, update_folder, old_folder):
+    main_backup.update_message_count(old_data['channel']['id'], len(full_messages))
+
+
+"""
+merge_file(path, update_folder, old_folder, main_backup)
+
+    This function attempts to bring a file from the update folder into the old folder.
+    If the file doesn't exist in the old folder, it creates the necessary subfolders and copies it.
+    If they file exists, it will call merge_channel() to merge the two files.
+
+    Args:
+        path (str): The path to the file in the update folder.
+        update_folder (str): The path to the update folder.
+        old_folder (str): The path to the old folder.
+        main_backup (ServerBackup): The main backup object.
+
+"""
+def merge_file(path, update_folder, old_folder, main_backup):
 
     update_file_path = os.path.join(update_folder, path)
     old_file_path = os.path.join(old_folder, path)
@@ -174,14 +198,24 @@ def merge_file(path, update_folder, old_folder):
     # If it does, merge the two files
     if os.path.exists(old_file_path) and os.path.exists(update_file_path):
         t.log("debug", f"\tMerging {update_file_path} into {old_file_path}")
-        merge_channel(old_file_path, update_file_path)
+        if not c.DRY_RUN:
+            merge_channel(old_file_path, update_file_path, main_backup)
+        else:
+            t.log("info", f"DRY RUN: Would merge {update_file_path} into {old_file_path}")
 
     elif os.path.exists(update_file_path) and not os.path.exists(old_file_path):
         # If not, create the necessary subfolders in "Old" to maintain the same directory tree
-        os.makedirs(os.path.dirname(old_file_path), exist_ok=True)
+        if not os.path.dirname(old_file_path):
+            if not c.DRY_RUN:
+                os.makedirs(os.path.dirname(old_file_path), exist_ok=True)
+            else:
+                t.log("info", f"DRY RUN: Would create {os.path.dirname(old_file_path)}")
 
         # Copy the file from "Update" to "Old"
-        shutil.copy2(update_file_path, old_file_path)
+        if not c.DRY_RUN:
+            shutil.copy2(update_file_path, old_file_path)
+        else:
+            t.log("info", f"DRY RUN: Would copy {update_file_path} to {old_file_path}")
         t.log("info", f"\tFound new file: Moving {update_file_path} to {old_file_path}")
     
     else:
@@ -191,45 +225,45 @@ def merge_file(path, update_folder, old_folder):
 ################# Main function ################
 
 def merge_exports():
+
+    backup, is_update = load_status()
+
+    if not is_update:
+        t.log("base", "\n### There is nothing to merge. Exiting merge step. ###\n")
+        backup.finish_merge()
+        return
     
     try:
-         # Folders
-        update_folder = 'Update'
-        old_folder = c.SERVER_NAME
 
-        t.log("base", f"\n### Merging files from {update_folder} into {old_folder}...  ###\n")
+        t.log("base", f"\n### Merging files from the update folder into the main folder...  ###\n")
 
         start_time = time.time()
 
-        main_status = check_base_status()
+        main_backup = ServerBackup.from_json(c.BACKUP_INFO)
 
-        backup_info = t.load_from_json(c.BACKUP_INFO)
+        for path in backup.get_all_paths():
+            merge_file(path, c.UPDATE_FOLDER, c.MERGE_FOLDER, main_backup)
 
-        for category in backup_info["categories"]:
-            
-            for channel in category["channels"]:
-                merge_file(channel["path"], update_folder, old_folder)
-            
-            for thread in category.get("threads", []):
-                merge_file(thread["path"], update_folder, old_folder)
-
-        step_status = "success"
+        backup.finish_merge()
 
     except Exception as e:
-        main_status = "failed"
-        step_status = "failed"
+        backup.finish_merge(success=False)
         raise exc.MergeError("Failed to merge files") from e
     
     finally:
         try:
             t.log("base", f"### Merging finished --- {time.time() - start_time:.2f} seconds --- ###\n")
-            backup_info = t.load_from_json(c.BACKUP_INFO)
-            backup_info["status"] = main_status
-            backup_info["steps"]["mergeStatus"] = step_status
-            t.save_to_json(backup_info, c.BACKUP_INFO)
+            
+            if is_update and backup.is_failed():
+                main_backup = ServerBackup.from_json(c.BACKUP_INFO)
+                main_backup.finish_update(success=False)
 
         except Exception as e:
             t.log("error", f"\tFailed to save the status file: {e}\n")
+        
+        # if there was an exception, raise it again
+        if 'e' in locals() and e is not None:
+            raise e
 
 if __name__ == "__main__":
 
