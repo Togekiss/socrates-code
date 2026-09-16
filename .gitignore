@@ -12,4 +12,5 @@ src/__pycache__
 
 !res/
 !res/constants.py
-!res/config.json
+
+!ui/
