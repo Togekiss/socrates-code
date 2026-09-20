@@ -10,23 +10,25 @@ Additionally, it serves as a history backup and chat analyser prepper.
 
 ## Current status
 
-Socrates is in development process. Currently, the Discord bot itself only serves as a hook to export channels using DCE and its token. All logic and scripts have to be run manually and locally. Server structure and search parameters are set through a configuration file, and functionality is split in several files.
+Socrates is in development process. Currently, the Discord bot itself only serves as a hook to authenticate and export channels using DCE and its token. All logic and scripts have to be run locally, either from the console or its web UI. Server structure and search parameters are set through a configuration file, and functionality is split in several files.
 
 Once configuration files are set up, running `src/backup_server.py` will automatically perform all the steps to download/update the server backup and index all scenes. Error and interruption detection are in place. In case of an error, interruption, or manual changes to `character_list.json` and `fixed_messages.json`, the steps to re-apply them can be run independently.
 
-Its basic functionality is robust, but it relies on users editing config and JSON files properly.
+Its basic functionality is robust, and the web UI makes it a bit more foolproof, but it still relies on users knowing how to edit the config properly.
 
-Currently we're working on a UI to view and change configurations, launch the pipeline, and view the results.
+The next step is to host it somewhere and test if other users can reach, log in and use it.
 
-Once this is in working condition, the focus will shift to uploading the bot to a server to be operational 24/7 and invoked with Discord commands.
+Once this is in working condition, the focus will shift to uploading the bot to a server to be operational 24/7 and invoked with Discord commands, or be installed as a Discord app.
 
 
  ## Folder structure
 
 - `DCE`: contains a CLI version of https://github.com/Tyrrrz/DiscordChatExporter with custom parameters found in https://github.com/Togekiss/DiscordChatExporter
 
-- `Backups`: contains the server backups. Each server has its own folder:
-  - `[Server name]`: contains the server backup downloaded with DCE
+- `Backups`: contains the server backups. Each backup has its own folder:
+  - `[Backup name]`: contains the server backup downloaded with DCE
+    - `backup_config.json`: the configuration file used to create this backup. It's a copy of the default config file in `res/`
+    - `log.txt`: log file of processes specific to this backup  
     - `Info` folder: contains several metadata files:
       - `backup_info.json`: status of each backup step, and list of channels with info like IDs, position, number of messages, etc.
       - `<backup_info_update.json>`: same as `backup_info.json` to keep track of the status of an update batch. Only exists if an update batch is in progress, or if you chose to keep temporary files in the settings.
@@ -43,15 +45,16 @@ Once this is in working condition, the focus will shift to uploading the bot to 
     - `<Update>` folder: Contains all the new data from an update batch. Only exists if an update batch is in progress, or if you chose to keep temporary files in the settings.  
     - `<Merge>` folder: Contains the merged backup files, with the same structure as `Data` folder. Only exists if an update batch is in progress, or if you chose to keep temporary files in the settings.
 
+
 - `res`: contains configuration files and metadata files the bot uses to download and navigate through channels
-  - `tokens.py`: contains the bot token. DO NOT SHARE THIS ONE! UPLOAD ONLY A SAMPLE VERSION!
-  - `server_data.py`: contains the server ID and some category names. SHARE WITH CAUTION!
-  - `constants.py`: configuration file with search parameters, output parameters, and more
+  - `backups_index.json`: contains the list of backups with their IDs and paths
+  - `config.json`: global configuration file with search parameters, output parameters, and more
+  - `constants.py`: parses CLI arguments and config.json into paths and other constants used by the scripts
 
 - `out`: contains the results of scene searches, both for link lists and full scene extractions
   - `[Character name]` folder: contains extracted scenes for a specific character, in HTML format
   - `scene-links.txt`: contains a list of scenes with links to their messages, according to the filters set in `res/constants.py`
-  - `log.txt`: contains a log of the tool's actions
+  - `log.txt`: global log of the tool's generic actions and API calls
 
 - `src`: contains the scripts to download channels, parse them, and extract scenes. 
   - `backup_server.py`: orchestrates all the steps to download or update a server backup
@@ -77,8 +80,16 @@ Once this is in working condition, the focus will shift to uploading the bot to 
   - `models`: contains helper classes
     - `server_backup.py`: helper class to hold all the information about a server backup, corresponding to the `backup_info.json` file
     - `category.py`, `channel.py`, `thread.py`: helper classes to hold information about a category, channel, or thread
+    - `character.py` and `scene_manager.py`: helper classes to hold information about a character and scenes
 
-- `ui`: contains the frontend for the web UI. It's built with Vite, React and TypeScript
+- `ui`: contains the frontend for the web UI. It's built with Vite, React and TypeScrip
+
+- `.env`: environment variables, used to store sensitive information like tokens, secrets, etc. ***DO NOT UPLOAD THIS FILE***
+- `.env.example`: dummy example of .env meant to be uploaded to source control
+
+- `install_socrates.bat`: installs the UI dependencies
+- `start_socrates.bat`: launches the server and browser UI in local mode
+
 
 ## How to use in local (in case you want to help or play with it!)
 
@@ -88,31 +99,19 @@ Once this is in working condition, the focus will shift to uploading the bot to 
   - ***IMPORTANT UPDATE:*** It will not work with the original version of the program. And Releases aren't working well, so download the CLI from 'Actions' or download the source code and compile it.
   - To compile it, download .NET 9 and C# Dev Kit extension in VSCode, right-click the `.sln` and click "Build". Or use Visual Studio i guess. Or `dotnet build -t:CSharpierFormat --configuration Release`. 
 
-- Fill in `res/tokens.py` with your bot token.
+- Copy `.env.example` to `.env` and fill it in with your own secrets.
 
 ### Running the Web UI (Recommended)
 
 Socrates now comes with a browser-based UI to manage configurations and run the pipeline.
 
-1. **Start the Backend:**
-   Open a terminal in the root folder and start the FastAPI server:
-   ```bash
-   .\.venv\Scripts\uvicorn src.server:app --reload
-   ```
+If it's your first time launching it, run `install_socrates.bat` to install the UI dependencies.
 
-2. **Start the Frontend:**
-   Open a second terminal, navigate into the `ui` folder, install dependencies (if not done yet), and start the Vite dev server:
-   ```bash
-   cd ui
-   npm install
-   npm run dev
-   ```
-
-3. Open your browser to `http://localhost:5173`. You can change settings, see server status, and start the backup pipeline directly from the interface!
+Run `start_socrates.bat` to launch the server and browser UI in local mode. Then go to http://localhost:5173 in your browser to open it! It's that simple!
 
 ### Running via CLI (Manual approach)
 
-- Check `res/config.json` to adjust settings like server info, verbosity, search filters and file paths.
+- Check `res/config.json` to adjust settings like server info, verbosity, search filters and file paths. It's especially important if you don't have any backup yet.
 - Run `src/backup_server.py`
 
 - Manually double check `res/character_list.json`.
@@ -131,7 +130,7 @@ Socrates now comes with a browser-based UI to manage configurations and run the 
 
 Given the use of Tupperbox to send message as roleplaying characters, native Discord search is unable to look for messages from a particular one.
 
-Every X time, Socrates will use https://github.com/Tyrrrz/DiscordChatExporter to download the specified writing channels. 
+Once launched, Socrates will use https://github.com/Tyrrrz/DiscordChatExporter to download the specified writing channels.
 
 If it sees there's already a backup file, it will only download messages starting from the last backup, and then merge the new messages to the main backup file.
 
@@ -151,7 +150,7 @@ When a user wants to find scenes with one or more characters, Socrates will look
 - Check if a scene starts with a date tag for more accurate in-universe timeline keeping
 - ~~Expand and adjust the selection of 'end of scene' tags - and account for variations or mistakes~~ Doesn't detect super edge cases, but that's a skill issue of whoever didn't set them correctly
   - If a badly formatted message is found, it can be added to `fixed_messages.json` with proper formatting and use `src/fix_bad_messages.py` to apply it
-- ~~Detect the names of other character(s) in the scene~~ Their IDs are added to `_scenes.json`. Their names are easy to find
+- ~~Detect the names of other character(s) in the scene~~ Their IDs are added to `_scenes.json`. The UI resolves them to their names!
 - ~~Detect the true start of the scene, not the first message of the requested character~~ Done
   - ~~Trace back until you find a previous end tag or SOF to find the proper start~~
   - ~~Or until its from a character not in the scene, in case last wasn't closed properly~~
@@ -159,8 +158,8 @@ When a user wants to find scenes with one or more characters, Socrates will look
 
 ### Extra search parameters
 *Note: Detecting all scenes is reasonably fast, so these are only filters to narrow down the final list given to the user. Internally, all scenes are accounted for.*
-- Input two characters and find scenes with them
-- Input a date range
+- ~~Input two characters and find scenes with them~~ The UI can filter by as many characters as you want
+- ~~Input a date range~~ The UI can filter by a date range
 - ~~Input a specific channel/category to look in~~ Use `SEARCH_FOLDER` in `res/constants.py` to limit it down to a category
   - ~~Load only the category folder or channel file and operate as usual~~
   - ~~This will be especially useful to differenciate scenes from DMs~~ Use `TYPE` in `res/constants.py`

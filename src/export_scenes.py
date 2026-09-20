@@ -5,7 +5,6 @@ import utils.tricks as t
 import utils.exceptions as exc
 t.set_path()
 from res import constants as c
-from res import tokens
 
 ################# File summary #################
 
@@ -104,7 +103,7 @@ def export_scenes():
             has_end = f"--before {end_date}"
 
         # download channel from date to end_date
-        cli_command = f'dotnet DCE/DiscordChatExporter.Cli.dll export -c {channel} -t {tokens.DISCORD_BOT} -f HtmlDark -o "{folder}/%a - %C.html" --locale "en-GB" --after {date} {has_end} --fuck-russia'
+        cli_command = f'dotnet DCE/DiscordChatExporter.Cli.dll export -c {channel} -f HtmlDark -o "{folder}/%a - %C.html" --locale "en-GB" --after {date} {has_end} --fuck-russia'
         t.run_command(cli_command, 2)
 
         t.log("debug", f"\tScene downloaded\n")

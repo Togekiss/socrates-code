@@ -4,10 +4,18 @@ import os
 import subprocess
 import json
 import re
-import inspect
 import shutil
 from . import exceptions as exc
 from collections import deque
+
+if os.name == 'nt':
+    import signal
+    def _handle_sigbreak(signum, frame):
+        raise KeyboardInterrupt
+    try:
+        signal.signal(signal.SIGBREAK, _handle_sigbreak)
+    except Exception:
+        pass
 
 GRAY = '\033[90m'
 RED = '\033[91m'
@@ -45,34 +53,66 @@ save_to_json(data, file_path), load_from_json(file_path)
     
 """
 def load_from_json(file_path):
-    with open(file_path, "r", encoding="utf-8") as file:
-        return json.load(file)
-
+    import time
+    for attempt in range(5):
+        try:
+            with open(file_path, "r", encoding="utf-8") as file:
+                return json.load(file)
+        except FileNotFoundError:
+            raise
+        except (OSError, json.JSONDecodeError) as e:
+            if attempt == 4:
+                raise e
+            time.sleep(0.1)
 
 def save_to_json(data, file_path):
-    with open(file_path, "w", encoding="utf-8") as file:
-        json.dump(data, file, indent=4)
+    import time
+    for attempt in range(5):
+        try:
+            with open(file_path, "w", encoding="utf-8") as file:
+                json.dump(data, file, indent=4)
+            return
+        except FileNotFoundError:
+            raise
+        except OSError as e:
+            if attempt == 4:
+                raise e
+            time.sleep(0.1)
 
 def get_backups_index():
-    index_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'res', 'backups_index.json')
-    if not os.path.exists(index_path):
-        return []
-    with open(index_path, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    set_path()
+    from res import constants as c
 
-def add_backup_to_index(backup_id, backup_name, server_id, path):
+    if not os.path.exists(c.BACKUPS_INDEX):
+        return []
+    
+    return load_from_json(c.BACKUPS_INDEX)
+
+def add_backup_to_index(backup_name, server_id, server_name, path):
+    set_path()
+    from res import constants as c
+
     index = get_backups_index()
+
+    # Check if there's a conflict with path 
     if not any(b["path"] == path for b in index):
+
+        # Generate backup id
+        import time
+        backup_id = f"{int(time.time())}"
+
+        # Add backup to index
         index.append({
             "backup_id": backup_id,
             "backup_name": backup_name,
             "server_id": server_id,
+            "server_name": server_name,
             "path": path
         })
-        index_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'res', 'backups_index.json')
-        with open(index_path, 'w', encoding='utf-8') as f:
-            json.dump(index, f, indent=4)
+
+        save_to_json(index, c.BACKUPS_INDEX)
         return True
+
     return False
 
 
@@ -104,6 +144,7 @@ def log(level="base", message=""):
     set_path()
     from res import constants as c
 
+    """
     # Determine caller module
     stack = inspect.stack()
     caller_frame = stack[1]
@@ -113,7 +154,8 @@ def log(level="base", message=""):
     # Prepend tab if not called from export_channels.py
     if caller_name != "export_channels":
         message = "\t" + message
-
+    """
+    
     if level == "base":
         print(GREEN + message + RESET)
     elif level == "info":
@@ -176,6 +218,12 @@ run_command(command: str, show_lines: int = 0)
 def run_command(command: str, show_lines: int = None):
     set_path()
     from res import constants as c
+    from dotenv import load_dotenv
+
+    try:
+        load_dotenv('.env')
+    except FileNotFoundError:
+        raise FileNotFoundError("# NO ENVIRONMENT VARIABLES FOUND. RUNNING WITHOUT THEM #\n")
 
     try:
         log("console", f"# RUNNING CONSOLE COMMAND #\n")

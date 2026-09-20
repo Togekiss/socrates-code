@@ -174,5 +174,18 @@ if __name__ == "__main__":
         assign_ids()
         t.log("console", "Assign IDs step completed.")
 
+    except KeyboardInterrupt:
+        t.log("error", "\nProcess interrupted by user.\n")
+        try:
+            backup = ServerBackup.from_json(c.BACKUP_INFO)
+            if backup.is_updating():
+                update = ServerBackup.from_json(c.BACKUP_INFO_UPDATE)
+                update.set_failed()
+                backup.finish_update(success=False)
+            else:
+                backup.set_failed()
+        except Exception:
+            pass
+
     except Exception as e:
         t.log("error", str(e))

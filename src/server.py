@@ -20,11 +20,16 @@ Main functionality:
 
 ###############################################
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Depends, Cookie, Response, Request
+from fastapi.responses import StreamingResponse, FileResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, Any, List, Optional
+import httpx
+import jwt
+import urllib.parse
+from datetime import datetime, timedelta, timezone
+from dotenv import load_dotenv
 
 class MergeCharactersRequest(BaseModel):
     source_id: int
@@ -48,7 +53,13 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -56,6 +67,8 @@ app.add_middleware(
 
 def get_project_root():
     return os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+
+load_dotenv(os.path.join(get_project_root(), '.env'))
 
 def get_backup_path(backup_id: str):
     index = t.get_backups_index()
@@ -75,6 +88,164 @@ def api_log(backup_id: str, level: str, message: str):
     except Exception:
         # Fallback to global log if backup_id is invalid
         t.global_log(level, f"API ({backup_id}): {message}")
+
+# --- AUTHENTICATION ---
+
+class AuthCallback(BaseModel):
+    code: str
+
+def get_auth_config():
+    return {
+        "client_id": os.environ.get("DISCORD_CLIENT_ID"),
+        "client_secret": os.environ.get("DISCORD_CLIENT_SECRET"),
+        "redirect_uri": os.environ.get("DISCORD_REDIRECT_URI"),
+        "jwt_secret": os.environ.get("JWT_SECRET", "dev_secret"),
+        "bot_token": os.environ.get("DISCORD_TOKEN")
+    }
+
+def get_current_user(request: Request):
+    token = request.cookies.get("session_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        config = get_auth_config()
+        payload = jwt.decode(token, config["jwt_secret"], algorithms=["HS256"])
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Session expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid session")
+
+def get_optional_user(request: Request):
+    token = request.cookies.get("session_token")
+    if not token:
+        return None
+    try:
+        config = get_auth_config()
+        payload = jwt.decode(token, config["jwt_secret"], algorithms=["HS256"])
+        return payload
+    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
+        return None
+
+@app.get("/api/auth/login-url")
+def get_login_url():
+    config = get_auth_config()
+    if not config["client_id"] or not config["redirect_uri"]:
+        raise HTTPException(status_code=500, detail="OAuth not configured")
+    
+    url = "https://discord.com/api/oauth2/authorize?" + urllib.parse.urlencode({
+        "client_id": config["client_id"],
+        "redirect_uri": config["redirect_uri"],
+        "response_type": "code",
+        "scope": "identify guilds"
+    })
+    return {"url": url}
+
+@app.post("/api/auth/discord")
+async def auth_discord(callback: AuthCallback, response: Response):
+    config = get_auth_config()
+    if not config["client_id"] or not config["client_secret"]:
+        raise HTTPException(status_code=500, detail="OAuth not configured")
+
+    async with httpx.AsyncClient() as client:
+        # 1. Exchange code for user access token
+        token_resp = await client.post("https://discord.com/api/v10/oauth2/token", data={
+            "client_id": config["client_id"],
+            "client_secret": config["client_secret"],
+            "grant_type": "authorization_code",
+            "code": callback.code,
+            "redirect_uri": config["redirect_uri"]
+        })
+        if token_resp.status_code != 200:
+            raise HTTPException(status_code=400, detail="Invalid authorization code")
+        
+        token_data = token_resp.json()
+        access_token = token_data.get("access_token")
+
+        # 2. Get user info
+        user_resp = await client.get("https://discord.com/api/v10/users/@me", headers={"Authorization": f"Bearer {access_token}"})
+        if user_resp.status_code != 200:
+            raise HTTPException(status_code=400, detail="Failed to fetch user info")
+        user_data = user_resp.json()
+
+        # 3. Get user's guilds
+        guilds_resp = await client.get("https://discord.com/api/v10/users/@me/guilds", headers={"Authorization": f"Bearer {access_token}"})
+        if guilds_resp.status_code != 200:
+            raise HTTPException(status_code=400, detail="Failed to fetch user guilds")
+        user_guilds_raw = guilds_resp.json()
+        user_guilds = {str(g["id"]) for g in user_guilds_raw}
+        user_guilds_dict = {str(g["id"]): g["name"] for g in user_guilds_raw}
+
+        # 4. Get bot's guilds
+        bot_token = config["bot_token"]
+        bot_guilds = set()
+        if bot_token:
+            bot_guilds_resp = await client.get("https://discord.com/api/v10/users/@me/guilds", headers={"Authorization": f"Bot {bot_token}"})
+            if bot_guilds_resp.status_code == 200:
+                bot_guilds = {str(g["id"]) for g in bot_guilds_resp.json()}
+            else:
+                t.global_log("error", f"API: Failed to fetch bot guilds: {bot_guilds_resp.text}")
+
+        # Fallback to backups index
+        index = t.get_backups_index()
+        for b in index:
+            if "server_id" in b:
+                bot_guilds.add(str(b["server_id"]))
+                
+        # 5. Check overlap
+        authorized_guilds_ids = list(user_guilds.intersection(bot_guilds))
+        
+        if not authorized_guilds_ids:
+            raise HTTPException(status_code=403, detail="User is not a member of any authorized servers")
+
+        # Build list of dicts with names
+        authorized_guilds = []
+        for gid in authorized_guilds_ids:
+            name = user_guilds_dict.get(gid, "Unknown Server")
+            authorized_guilds.append({"id": gid, "name": name})
+
+        # 6. Issue JWT
+        exp = datetime.now(timezone.utc) + timedelta(hours=24)
+        payload = {
+            "sub": user_data["id"],
+            "username": user_data["username"],
+            "avatar": user_data.get("avatar"),
+            "authorized_guilds": authorized_guilds,
+            "exp": exp
+        }
+        
+        token = jwt.encode(payload, config["jwt_secret"], algorithm="HS256")
+        
+        response.set_cookie(
+            key="session_token",
+            value=token,
+            httponly=True,
+            samesite="lax",
+            secure=False,
+            max_age=24 * 60 * 60
+        )
+
+        return {"status": "success", "user": {"id": user_data["id"], "username": user_data["username"]}}
+
+@app.post("/api/auth/logout")
+def logout(response: Response):
+    response.delete_cookie("session_token")
+    return {"status": "success"}
+
+@app.get("/api/auth/me")
+def get_me(user = Depends(get_optional_user)):
+    return {"user": user}
+
+# --- END AUTHENTICATION ---
+
+@app.get("/api/servers/{server_id}/categories")
+def get_server_categories(server_id: str):
+    from get_server_info import get_categories
+    try:
+        categories = get_categories(server_id)
+        return categories
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/config/global")
 def get_global_config():
@@ -96,8 +267,22 @@ def update_global_config(config: Dict[str, Any]):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/backups")
-def get_backups():
-    return t.get_backups_index()
+def get_backups(user = Depends(get_current_user)):
+    auth_guilds = user.get("authorized_guilds", [])
+    authorized_guilds = set()
+    for g in auth_guilds:
+        if isinstance(g, dict):
+            authorized_guilds.add(str(g.get("id")))
+        else:
+            authorized_guilds.add(str(g))
+            
+    all_backups = t.get_backups_index()
+    return [b for b in all_backups if str(b.get("server_id", "")) in authorized_guilds]
+
+@app.get("/api/backups-paths")
+def get_all_backup_paths(user = Depends(get_current_user)):
+    all_backups = t.get_backups_index()
+    return [b.get("path") for b in all_backups if "path" in b]
 
 @app.get("/api/backups/{backup_id}")
 def get_backup_info(backup_id: str):
@@ -140,7 +325,11 @@ def run_script_in_background(script_name: str, backup_id: str):
     # Use the python executable from the virtual environment if possible
     python_exec = sys.executable
     script_path = os.path.join(get_project_root(), 'src', script_name)
-    process = subprocess.Popen([python_exec, script_path, '--backup-id', backup_id])
+    kwargs = {}
+    if os.name == 'nt':
+        kwargs['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
+        
+    process = subprocess.Popen([python_exec, script_path, '--backup-id', backup_id], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
     active_processes[backup_id] = process
     process.wait()
     if backup_id in active_processes:
@@ -148,10 +337,18 @@ def run_script_in_background(script_name: str, backup_id: str):
 
 @app.post("/api/backups/{backup_id}/cancel")
 def cancel_backup_action(backup_id: str):
+
+    t.global_log("info", f"API: Received cancel request for backup {backup_id}")
+
     if backup_id in active_processes:
         process = active_processes[backup_id]
-        process.terminate()  # Sends SIGTERM, equivalent to CTRL+C for the subprocess
-        del active_processes[backup_id]
+        import signal
+        if os.name == 'nt':
+            process.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            process.send_signal(signal.SIGINT)
+            
+        # The background task will delete the process from active_processes once it finishes exiting
         t.global_log("info", f"API: Canceled ongoing process for backup {backup_id}")
         return {"status": "canceled"}
     return {"status": "not_running"}
@@ -178,7 +375,7 @@ def run_backup(backup_id: str, config: Dict[str, Any], background_tasks: Backgro
 def rerun_backup_step(backup_id: str, action: str, background_tasks: BackgroundTasks):
     action_map = {
         "reapply_characters": "assign_ids.py",
-        "fix_messages": "fix_messages.py",
+        "fix_messages": "fix_bad_messages.py",
         "reindex": "index_scenes.py"
     }
     
@@ -344,6 +541,14 @@ def get_writers(backup_id: str):
                 
     return sorted(list(writers))
 
+@app.get("/api/backups/{backup_id}/logs/raw")
+def get_raw_log(backup_id: str):
+    base_path = get_backup_path(backup_id)
+    log_file = os.path.join(base_path, "log.txt")
+    if not os.path.exists(log_file):
+        raise HTTPException(status_code=404, detail="Log file not found")
+    return FileResponse(log_file, media_type="text/plain")
+
 @app.get("/api/backups/{backup_id}/logs/stream")
 def stream_logs(backup_id: str):
     base_path = get_backup_path(backup_id)
@@ -360,6 +565,12 @@ def stream_logs(backup_id: str):
             return
             
         with open(log_file, mode='r', encoding='utf-8') as f:
+            # Yield the last 10 lines instantly to avoid UI fast-forwarding
+            from collections import deque
+            last_lines = deque(f, 10)
+            for line in last_lines:
+                yield f"data: {line.strip()}\n\n"
+                
             while True:
                 line = f.readline()
                 if not line:

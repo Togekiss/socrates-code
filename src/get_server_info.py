@@ -6,7 +6,6 @@ import utils.exceptions as exc
 from models import ServerBackup, Category, Channel, Thread
 t.set_path()
 from res import constants as c
-from res import tokens
 
 
 ############### File summary #################
@@ -52,19 +51,18 @@ def load_status():
         os.makedirs(c.INFO_FOLDER, exist_ok=True)
         
         # Add to global index if not present
-        import time
-        import shutil
-        new_id = f"b_{int(time.time())}"
-        if t.add_backup_to_index(new_id, c.SERVER_NAME, c.SERVER_ID, c.BACKUP_BASE):
-            t.log("debug", f"  Added new backup to global index with ID {new_id}")
+        if t.add_backup_to_index(c.BACKUP_NAME, c.SERVER_ID, c.SERVER_NAME, c.BACKUP_BASE):
+            t.log("debug", f"  Added new backup to global index")
             
         # Seed backup_config.json
         config_path = f"{c.BACKUP_BASE}/backup_config.json"
         if not os.path.exists(config_path):
-            global_config = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'res', 'config.json')
-            if os.path.exists(global_config):
-                shutil.copy(global_config, config_path)
+            if os.path.exists(c.GLOBAL_CONFIG):
+                import shutil
+                shutil.copy(c.GLOBAL_CONFIG, config_path)
                 t.log("debug", "  Seeded backup_config.json from global config.")
+            else:
+                raise FileNotFoundError(f"Global config file '{c.GLOBAL_CONFIG}' not found.")
     
     t.log("debug", f'  Info folder "{c.INFO_FOLDER}" is ready.')
     
@@ -279,6 +277,36 @@ def clean_channel_list(backup: ServerBackup):
         raise exc.CleanChannelListError("Failed to clean the list of channels") from e
 
 
+def get_categories(server_id: str) -> dict[str, str]:
+
+    categories = {}
+
+    try:
+        t.log("info", "\tGetting the list of categories from the server...")
+        
+        cli_command = f"dotnet DCE/DiscordChatExporter.Cli.dll channels -g {server_id} --include-categories --relative-positions"
+        code, output = t.run_command(cli_command)
+        
+        if code != 0:
+            raise exc.ConsoleCommandError(f"DCE command failed with code '{code}'")
+
+        lines = output.strip().split("\n")
+        
+        for line in lines:
+            parts = line.split(" | ")
+            if len(parts) < 2:
+                cat_name = parts[0].split(" \\ ")[1].strip()
+                cat_id = parts[0].split(" \\ ")[0].strip()
+                categories[cat_id] = cat_name
+        
+        t.log("info", f"\t\t\t Found {len(categories)} categories\n")
+
+    except Exception as e:
+        raise exc.GetChannelListError("Failed to get the list of channels") from e
+    
+    return categories
+
+
 ################# Main function #################
 
 
@@ -326,11 +354,22 @@ def get_server_info():
 
 
 if __name__ == "__main__":
-
+    
     try:
         get_server_info()
+    
+    except KeyboardInterrupt:
+        t.log("error", "\nProcess interrupted by user.\n")
+        try:
+            backup = ServerBackup.from_json(c.BACKUP_INFO)
+            if backup.is_updating():
+                update = ServerBackup.from_json(c.BACKUP_INFO_UPDATE)
+                update.set_failed()
+                backup.finish_update(success=False)
+            else:
+                backup.set_failed()
+        except Exception:
+            pass
 
     except Exception as e:
         t.log("error", f"\n{exc.unwrap(e)}\n")
-
-    

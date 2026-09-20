@@ -358,6 +358,18 @@ if __name__ == "__main__":
     
     try:
         index_scenes()
+    except KeyboardInterrupt:
+        t.log("error", "\nProcess interrupted by user.\n")
+        try:
+            backup = ServerBackup.from_json(c.BACKUP_INFO)
+            if backup.is_updating():
+                update = ServerBackup.from_json(c.BACKUP_INFO_UPDATE)
+                update.set_failed()
+                backup.finish_update(success=False)
+            else:
+                backup.set_failed()
+        except Exception:
+            pass
 
     except Exception as e:
         t.log("error", f"\n{exc.unwrap(e)}\n")

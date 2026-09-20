@@ -94,18 +94,26 @@ class ServerBackup:
     
     @classmethod
     def from_json(cls, path: str) -> "ServerBackup":
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            obj = cls.from_dict(data)
-            obj.path = path
-            return obj
-        except FileNotFoundError as e:
-            raise e
-        except Exception as e:
-            raise exc.ServerBackupClassError(
-                f"Failed to load ServerBackup from JSON file: {e}"
-            ) from e
+        import time
+        for attempt in range(5):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                obj = cls.from_dict(data)
+                obj.path = path
+                return obj
+            except FileNotFoundError as e:
+                raise e
+            except (OSError, json.JSONDecodeError) as e:
+                if attempt == 4:
+                    raise exc.ServerBackupClassError(
+                        f"Failed to load ServerBackup from JSON file: {e}"
+                    ) from e
+                time.sleep(0.1)
+            except Exception as e:
+                raise exc.ServerBackupClassError(
+                    f"Failed to load ServerBackup from JSON file: {e}"
+                ) from e
     
     def to_dict(self):
         return {
@@ -124,14 +132,22 @@ class ServerBackup:
         }
     
     def to_json(self):
-        try:
-            with open(self.path, "w", encoding="utf-8") as f:
-                json.dump(self.to_dict(), f, indent=4)
-
-        except Exception as e:
-            raise exc.ServerBackupClassError(
-                f"Failed to write backup info file: {self.path}"
-            ) from e
+        import time
+        for attempt in range(5):
+            try:
+                with open(self.path, "w", encoding="utf-8") as f:
+                    json.dump(self.to_dict(), f, indent=4)
+                return
+            except OSError as e:
+                if attempt == 4:
+                    raise exc.ServerBackupClassError(
+                        f"Failed to write backup info file: {self.path}"
+                    ) from e
+                time.sleep(0.1)
+            except Exception as e:
+                raise exc.ServerBackupClassError(
+                    f"Failed to write backup info file: {self.path}"
+                ) from e
 
     def build_indexes(self):
         self._channel_index = {}
@@ -156,6 +172,12 @@ class ServerBackup:
     
     def is_failed(self) -> bool:
         return self.status == Status.FAILED
+    
+    def set_failed(self):
+        for step in self.steps:
+            if self.steps[step] == Status.RUNNING:
+                self.steps[step] = Status.FAILED
+        self.to_json()
     
     def is_success(self) -> bool:
         return self.status == Status.SUCCESS
