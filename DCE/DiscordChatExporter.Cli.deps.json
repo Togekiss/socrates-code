@@ -1,0 +1,504 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v10.0/win-x64",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v10.0": {},
+    ".NETCoreApp,Version=v10.0/win-x64": {
+      "DiscordChatExporter.Cli/999.9.9-ci-366d5073a596e76845a0e3a2ed1b690bae33c82a": {
+        "dependencies": {
+          "CliFx": "3.0.1",
+          "DiscordChatExporter.Core": "999.9.9-ci-366d5073a596e76845a0e3a2ed1b690bae33c82a",
+          "Gress": "2.2.0",
+          "PowerKit": "2.3.1",
+          "Spectre.Console": "0.57.2",
+          "runtimepack.Microsoft.NETCore.App.Runtime.win-x64": "10.0.12"
+        },
+        "runtime": {
+          "DiscordChatExporter.Cli.dll": {}
+        }
+      },
+      "runtimepack.Microsoft.NETCore.App.Runtime.win-x64/10.0.12": {
+        "runtime": {
+          "Microsoft.Win32.Registry.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Collections.Concurrent.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Collections.Immutable.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Collections.NonGeneric.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Collections.Specialized.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Collections.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.ComponentModel.Annotations.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.ComponentModel.Primitives.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.ComponentModel.TypeConverter.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.ComponentModel.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Console.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Diagnostics.DiagnosticSource.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Diagnostics.StackTrace.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Drawing.Primitives.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Drawing.dll": {
+            "assemblyVersion": "4.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Formats.Asn1.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.IO.Compression.ZipFile.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.IO.Compression.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.IO.MemoryMappedFiles.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.IO.Pipelines.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Linq.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Memory.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Net.Http.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Net.NameResolution.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Net.NetworkInformation.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Net.Primitives.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Net.Security.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Net.Sockets.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.ObjectModel.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Private.CoreLib.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Private.Uri.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Reflection.Metadata.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Runtime.Numerics.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Security.Claims.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Security.Cryptography.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Security.Principal.Windows.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Text.Encodings.Web.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Text.Json.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Text.RegularExpressions.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Threading.Channels.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Threading.Tasks.Parallel.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.Web.HttpUtility.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          },
+          "System.dll": {
+            "assemblyVersion": "4.0.0.0",
+            "fileVersion": "10.0.1226.42308"
+          }
+        },
+        "native": {
+          "Microsoft.DiaSymReader.Native.amd64.dll": {
+            "fileVersion": "14.50.35738.0"
+          },
+          "System.IO.Compression.Native.dll": {
+            "fileVersion": "10.0.1226.42308"
+          },
+          "clretwrc.dll": {
+            "fileVersion": "10.0.1226.42308"
+          },
+          "clrgc.dll": {
+            "fileVersion": "10.0.1226.42308"
+          },
+          "clrgcexp.dll": {
+            "fileVersion": "10.0.1226.42308"
+          },
+          "clrjit.dll": {
+            "fileVersion": "10.0.1226.42308"
+          },
+          "coreclr.dll": {
+            "fileVersion": "10.0.1226.42308"
+          },
+          "createdump.exe": {
+            "fileVersion": "10.0.1226.42308"
+          },
+          "hostfxr.dll": {
+            "fileVersion": "10.0.1226.42308"
+          },
+          "hostpolicy.dll": {
+            "fileVersion": "10.0.1226.42308"
+          },
+          "mscordaccore.dll": {
+            "fileVersion": "10.0.1226.42308"
+          },
+          "mscordaccore_amd64_amd64_10.0.1226.42308.dll": {
+            "fileVersion": "10.0.1226.42308"
+          },
+          "mscordbi.dll": {
+            "fileVersion": "10.0.1226.42308"
+          },
+          "mscorrc.dll": {
+            "fileVersion": "10.0.1226.42308"
+          },
+          "msquic.dll": {
+            "fileVersion": "2.5.10.0"
+          }
+        }
+      },
+      "AdvancedStringBuilder/0.2.0": {
+        "runtime": {
+          "lib/net10.0/AdvancedStringBuilder.dll": {
+            "assemblyVersion": "0.2.0.0",
+            "fileVersion": "0.2.0.0"
+          }
+        }
+      },
+      "AsyncKeyedLock/8.0.2": {
+        "runtime": {
+          "lib/net9.0/AsyncKeyedLock.dll": {
+            "assemblyVersion": "8.0.2.0",
+            "fileVersion": "8.0.2.0"
+          }
+        }
+      },
+      "CliFx/3.0.1": {
+        "runtime": {
+          "lib/net10.0/CliFx.dll": {
+            "assemblyVersion": "3.0.1.0",
+            "fileVersion": "3.0.1.0"
+          }
+        }
+      },
+      "Gress/2.2.0": {
+        "runtime": {
+          "lib/net10.0/Gress.dll": {
+            "assemblyVersion": "2.2.0.0",
+            "fileVersion": "2.2.0.0"
+          }
+        }
+      },
+      "JsonExtensions/1.2.3": {
+        "runtime": {
+          "lib/net10.0/JsonExtensions.dll": {
+            "assemblyVersion": "1.2.3.0",
+            "fileVersion": "1.2.3.0"
+          }
+        }
+      },
+      "Polly/8.7.0": {
+        "dependencies": {
+          "Polly.Core": "8.7.0"
+        }
+      },
+      "Polly.Core/8.7.0": {
+        "runtime": {
+          "lib/net8.0/Polly.Core.dll": {
+            "assemblyVersion": "8.0.0.0",
+            "fileVersion": "8.7.0.5801"
+          }
+        }
+      },
+      "PowerKit/2.3.1": {
+        "runtime": {
+          "lib/net10.0/PowerKit.dll": {
+            "assemblyVersion": "2.3.1.0",
+            "fileVersion": "2.3.1.0"
+          }
+        }
+      },
+      "RazorBlade/1.0.0": {
+        "runtime": {
+          "lib/net10.0/RazorBlade.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
+      "Spectre.Console/0.57.2": {
+        "dependencies": {
+          "Spectre.Console.Ansi": "0.57.2"
+        },
+        "runtime": {
+          "lib/net10.0/Spectre.Console.dll": {
+            "assemblyVersion": "0.0.0.0",
+            "fileVersion": "0.57.2.0"
+          }
+        }
+      },
+      "Spectre.Console.Ansi/0.57.2": {
+        "runtime": {
+          "lib/net10.0/Spectre.Console.Ansi.dll": {
+            "assemblyVersion": "0.0.0.0",
+            "fileVersion": "0.57.2.0"
+          }
+        }
+      },
+      "Superpower/3.1.0": {
+        "runtime": {
+          "lib/net8.0/Superpower.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "3.1.0.0"
+          }
+        }
+      },
+      "WebMarkupMin.Core/2.21.0": {
+        "dependencies": {
+          "AdvancedStringBuilder": "0.2.0"
+        },
+        "runtime": {
+          "lib/net9.0/WebMarkupMin.Core.dll": {
+            "assemblyVersion": "2.21.0.0",
+            "fileVersion": "2.21.0.0"
+          }
+        }
+      },
+      "YoutubeExplode/6.6.2": {
+        "runtime": {
+          "lib/net10.0/YoutubeExplode.dll": {
+            "assemblyVersion": "6.6.2.0",
+            "fileVersion": "6.6.2.0"
+          }
+        }
+      },
+      "DiscordChatExporter.Core/999.9.9-ci-366d5073a596e76845a0e3a2ed1b690bae33c82a": {
+        "dependencies": {
+          "AsyncKeyedLock": "8.0.2",
+          "Gress": "2.2.0",
+          "JsonExtensions": "1.2.3",
+          "Polly": "8.7.0",
+          "PowerKit": "2.3.1",
+          "RazorBlade": "1.0.0",
+          "Superpower": "3.1.0",
+          "WebMarkupMin.Core": "2.21.0",
+          "YoutubeExplode": "6.6.2"
+        },
+        "runtime": {
+          "DiscordChatExporter.Core.dll": {
+            "assemblyVersion": "999.9.9.0",
+            "fileVersion": "999.9.9.0"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "DiscordChatExporter.Cli/999.9.9-ci-366d5073a596e76845a0e3a2ed1b690bae33c82a": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "runtimepack.Microsoft.NETCore.App.Runtime.win-x64/10.0.12": {
+      "type": "runtimepack",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "AdvancedStringBuilder/0.2.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-+XOjGvq+4pnmAWLLUimuINKsQTHEqxuA6eDkqUmzIBEsQH1Uz55nGmgVHE6QsocOk1BGnu1janyPeH+cOt00Tg==",
+      "path": "advancedstringbuilder/0.2.0",
+      "hashPath": "advancedstringbuilder.0.2.0.nupkg.sha512"
+    },
+    "AsyncKeyedLock/8.0.2": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-QGys5cnIerNryv7V14PDkvGnlLz69kJtTfdnr+Lndcu+lRre397RNyU4FIeAJWgI9u73lTzXL52Qca9B/ncLXw==",
+      "path": "asynckeyedlock/8.0.2",
+      "hashPath": "asynckeyedlock.8.0.2.nupkg.sha512"
+    },
+    "CliFx/3.0.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-wYdIZOMl+qnmRlaqiuATHzcRthzjO1XKOSC89M45aVa6+ZBQ4H508KcBQlpGJqLfbnxz3w+r8fBuXYJcsIe1FA==",
+      "path": "clifx/3.0.1",
+      "hashPath": "clifx.3.0.1.nupkg.sha512"
+    },
+    "Gress/2.2.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-gl+DYQ7NExH5JBKAF8dcEQMAH3oMjysKXtQPdr6saEpyl5YNvAPwnJ4667M7BUGhEDiUyrEF90XgZfFGdfMVVw==",
+      "path": "gress/2.2.0",
+      "hashPath": "gress.2.2.0.nupkg.sha512"
+    },
+    "JsonExtensions/1.2.3": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-7V3VVZZYqVsuQowyQZOrTqRxcK6WSCvOi79ZfbSo97ZsYXYkdIzP3s/LU6OIcO2gASjmBoJMExOjuct7t//ANQ==",
+      "path": "jsonextensions/1.2.3",
+      "hashPath": "jsonextensions.1.2.3.nupkg.sha512"
+    },
+    "Polly/8.7.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-0qR4f0OR8FeCAfLWcfwzAM7w6EmpUgwa22PgxKjcL25dEAto7sKpQQXbtxp38vVvK+V3RFkh/TeI7g/iUdoYIQ==",
+      "path": "polly/8.7.0",
+      "hashPath": "polly.8.7.0.nupkg.sha512"
+    },
+    "Polly.Core/8.7.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-BS2t+nsBer16PIebCEPNBK5fgMisADQyRCd7K+BgkMWpFmSaiYE+rVVNpFhGRqUkJmNSLmw0uCNzHHWfgml28Q==",
+      "path": "polly.core/8.7.0",
+      "hashPath": "polly.core.8.7.0.nupkg.sha512"
+    },
+    "PowerKit/2.3.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-4voFXf2ger2rAS2KsLco7MT867W4ndxU97Ba62B0L7jbwfkJDhvCcBAyVIfTPLXy3IDmQV78oPD7uSLvjhcP7A==",
+      "path": "powerkit/2.3.1",
+      "hashPath": "powerkit.2.3.1.nupkg.sha512"
+    },
+    "RazorBlade/1.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-zTQ5eTOzoif6mMlhKsNfs5yg7SX1NlfdI+hx7jgT73XnqoPcZ64qwa3I9hDdprkqtjIK42FpmmmwDK3MjWTzAQ==",
+      "path": "razorblade/1.0.0",
+      "hashPath": "razorblade.1.0.0.nupkg.sha512"
+    },
+    "Spectre.Console/0.57.2": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-wzsB+P9i6F9G+cFOJxRotCiQWNSzZVAMxi8YMiHlGXXU1JLMXGp7zSSqBMmROZS2bzpK5jk+Saa7Evp8HwqhKg==",
+      "path": "spectre.console/0.57.2",
+      "hashPath": "spectre.console.0.57.2.nupkg.sha512"
+    },
+    "Spectre.Console.Ansi/0.57.2": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-Y1+u73shwP+JYHmrkdN6bSt2kaGBEAafhi2nrecczbXdFRey+k7J/WF9YPfcB0rqivv2S8fmif6FSBq9m/AFvw==",
+      "path": "spectre.console.ansi/0.57.2",
+      "hashPath": "spectre.console.ansi.0.57.2.nupkg.sha512"
+    },
+    "Superpower/3.1.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-WAdwfNw9hQG3GCA3/SExU7iViwGd4PSjoA0fNlZChD4+Ya4P9NTfzFPeS0z+P9OUNqghivAeOnclsdczUCqoPQ==",
+      "path": "superpower/3.1.0",
+      "hashPath": "superpower.3.1.0.nupkg.sha512"
+    },
+    "WebMarkupMin.Core/2.21.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-/8zGdjDObXPadupzjV0iixXWgFTvh17n78ZFsWmnLy5us3i3ZaE5HD7P2HJFOe9ZiaWVxZOVQ3gDNvzMmG1VPQ==",
+      "path": "webmarkupmin.core/2.21.0",
+      "hashPath": "webmarkupmin.core.2.21.0.nupkg.sha512"
+    },
+    "YoutubeExplode/6.6.2": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-BN12ipOeTX1157Jx2uvFZGhR6dyHnji+8oM37NqXyu7nCL0rrSrxruea8lTSlUGewoxyvdC1owzRLThBI5Wj9Q==",
+      "path": "youtubeexplode/6.6.2",
+      "hashPath": "youtubeexplode.6.6.2.nupkg.sha512"
+    },
+    "DiscordChatExporter.Core/999.9.9-ci-366d5073a596e76845a0e3a2ed1b690bae33c82a": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  },
+  "runtimes": {
+    "win-x64": [
+      "win",
+      "any",
+      "base"
+    ]
+  }
+}

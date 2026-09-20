@@ -1,30 +1,27 @@
 {
     "admin": {
-        "serverName": "XXXX",
-        "serverId": "12345",
-        "dmCategories": [
-            "Text"
-        ],
+        "serverName": "el meu server",
+        "serverId": "442481942794076161",
+        "dmCategories": [],
         "categoriesToIgnore": [
-            "Staff Only",
-            "Spoilers"
+            "Hide from Socrates"
         ],
-        "categoriesToKeep": [
-            "Main"
-        ],
-        "keepMode": true,
+        "categoriesToKeep": [],
+        "keepMode": false,
         "verbosity": {
             "info": true,
-            "debug": false,
-            "console": false,
-            "log": false,
+            "debug": true,
+            "console": true,
+            "log": true,
             "dryRun": true,
             "debugFiles": true
-        }
+        },
+        "backupName": "el meu server",
+        "path": "Backups/el_meu_server"
     },
     "user": {
         "searchFolder": "",
-        "character": "John Doe",
+        "character": "Ophelia",
         "includeAllWriters": false,
         "includeAlterEgos": true,
         "includeFamiliars": true,
