@@ -4,6 +4,9 @@
 # But not these
 !.gitignore
 !README.md
+!.env.example
+!install_socrates.bat
+!start_socrates.bat
 
 !src/
 !src/**
@@ -14,3 +17,7 @@ src/__pycache__
 !res/constants.py
 
 !ui/
+!ui/**
+
+!DCE/
+!DCE/**
