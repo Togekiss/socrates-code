@@ -7,6 +7,9 @@
 !.env.example
 !install_socrates.bat
 !start_socrates.bat
+!Dockerfile
+!.dockerignore
+!requirements.txt
 
 !src/
 !src/**
