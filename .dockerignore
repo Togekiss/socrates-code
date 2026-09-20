@@ -1,0 +1,11 @@
+.git
+.github
+.venv
+.vscode
+ui/node_modules
+ui/dist
+Backups/
+__pycache__/
+*.pyc
+.env
+.DS_Store

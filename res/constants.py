@@ -4,9 +4,11 @@ import sys
 
 # Basic paths
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RES_DIR = "res"
-BACKUPS_DIR = "Backups"
-OUT_DIR = "out"
+DATA_ROOT = os.environ.get("SOCRATES_DATA_DIR", ROOT_DIR)
+
+RES_DIR = os.path.join(DATA_ROOT, "res")
+BACKUPS_DIR = os.path.join(DATA_ROOT, "Backups")
+OUT_DIR = os.path.join(DATA_ROOT, "out")
 GLOBAL_LOG_FILE = os.path.join(OUT_DIR, 'log.txt')
 GLOBAL_CONFIG = os.path.join(RES_DIR, 'config.json')
 BACKUPS_INDEX = os.path.join(RES_DIR, 'backups_index.json')
