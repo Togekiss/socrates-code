@@ -6,12 +6,12 @@ import sys
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_ROOT = os.environ.get("SOCRATES_DATA_DIR", ROOT_DIR)
 
-RES_DIR = os.path.join(DATA_ROOT, "res")
 BACKUPS_DIR = os.path.join(DATA_ROOT, "Backups")
+BACKUPS_INDEX = os.path.join(BACKUPS_DIR, 'backups_index.json')
 OUT_DIR = os.path.join(DATA_ROOT, "out")
 GLOBAL_LOG_FILE = os.path.join(OUT_DIR, 'log.txt')
+RES_DIR = os.path.join(ROOT_DIR, "res")
 GLOBAL_CONFIG = os.path.join(RES_DIR, 'config.json')
-BACKUPS_INDEX = os.path.join(RES_DIR, 'backups_index.json')
 
 # Get backup_id from command line arguments
 _backup_id = None
