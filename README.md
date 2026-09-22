@@ -10,15 +10,24 @@ Additionally, it serves as a history backup and chat analyser prepper.
 
 ## Current status
 
-Socrates is in development process. Currently, the Discord bot itself only serves as a hook to authenticate and export channels using DCE and its token. All logic and scripts have to be run locally, either from the console or its web UI. Server structure and search parameters are set through a configuration file, and functionality is split in several files.
+Socrates is in development process. Currently, the Discord bot itself only serves as a hook to authenticate and export channels using DCE and its token. It can run locally or from the hosted cloud infrastructure.
 
-Once configuration files are set up, running `src/backup_server.py` will automatically perform all the steps to download/update the server backup and index all scenes. Error and interruption detection are in place. In case of an error, interruption, or manual changes to `character_list.json` and `fixed_messages.json`, the steps to re-apply them can be run independently.
+Its basic functionality is robust and the web UI makes it a bit more foolproof, but it still relies on users knowing how to edit the config properly.
 
-Its basic functionality is robust, and the web UI makes it a bit more foolproof, but it still relies on users knowing how to edit the config properly.
+Now it's hosted online (GCP and Firebase), but this broke the Discord authentication. Next step is fixing that and whatever other issues the migration caused
 
-The next step is to host it somewhere and test if other users can reach, log in and use it.
+Once this is in working condition, the focus will shift to turning it into a Discord iframe application.
 
-Once this is in working condition, the focus will shift to uploading the bot to a server to be operational 24/7 and invoked with Discord commands, or be installed as a Discord app.
+## Current Architecture
+
+- **Backend:** Python (FastAPI) + .NET 9 Runtime running in a Docker container on **Google Cloud Run**.
+- **Frontend:** Vite + React deployed to **Firebase Hosting**.
+- **Data Persistence:** `.JSON` files are stored in a **Google Cloud Storage** bucket, which is mounted to the Cloud Run container via **GCS FUSE** at the path `/mnt/socrates-data`. The Python backend resolves paths using the `SOCRATES_DATA_DIR` env variable. In local, it defaults to `/Backups`
+- **Secrets:** Handled via **Google Secret Manager** and injected into Cloud Run as environment variables. In local, they're handled via `.env`
+- **CI/CD:** Managed via GitHub Actions in [Togekiss/socrates-code](https://github.com/Togekiss/socrates-code):
+  - `deploy-backend.yml`: Uses `google-github-actions/deploy-cloudrun` (Source deploy).
+  - `deploy-frontend.yml`: Uses `FirebaseExtended/action-hosting-deploy` pointing to `./ui`.
+- **UI API Connection:** The Vite frontend resolves the backend URL via `VITE_API_URL` stored in `ui/.env.production`.
 
 
  ## Folder structure
@@ -186,4 +195,39 @@ When a user wants to find scenes with one or more characters, Socrates will look
 
 - Schedule a weekly backup of channels
   - Add a fast search option (against the last download) vs updated search option (update the backup and then search)
+
+## Cloud Deployment & Architecture
+
+Socrates is fully containerized and deployed to Google Cloud Platform (GCP) and Firebase. The deployment is completely automated via GitHub Actions, and designed to scale-to-zero when not in use to save costs.
+
+### Architecture Overview
+
+- **Backend (API):** Python FastAPI + .NET 9 Runtime. Hosted on **Google Cloud Run**.
+- **Frontend (UI):** Vite + React + TypeScript. Hosted on **Firebase Hosting**.
+- **Data Storage:** `.JSON` files are stored in a **Google Cloud Storage (GCS)** bucket.
+  - The bucket is mounted directly to the Cloud Run container via **GCS FUSE** at `/mnt/socrates-data`.
+  - The backend uses the `SOCRATES_DATA_DIR` environment variable to transparently read/write to the FUSE mount as if it were a local disk.
+- **Secrets:** Discord tokens, OAuth credentials, and JWT secrets are securely managed in **Google Secret Manager** and exposed to Cloud Run as environment variables. 
+- **CI/CD Pipeline:** Two GitHub Actions in `.github/workflows` in [Togekiss/socrates-code](https://github.com/Togekiss/socrates-code):
+  - `deploy-backend.yml`: Uses Cloud Build to package the Dockerfile and deploy to Cloud Run.
+  - `deploy-frontend.yml`: Builds the Vite app and deploys to Firebase Hosting.
+
+### Replicating the Setup / Debugging
+
+If you ever need to set this up from scratch or debug the infrastructure, follow these steps:
+
+1. **GCP Project & Services:**
+   - Enable APIs: Cloud Run, Secret Manager, Artifact Registry.
+   - Create a GCS Bucket for data storage.
+   - Add backend secrets to Secret Manager.
+2. **First Cloud Run Deployment (Manual):**
+   - It is highly recommended to do the *first* deployment of the Cloud Run service via the GCP Web Console.
+   - Deploy a sample container, attach the GCS bucket as a volume mount to `/mnt/socrates-data`, add `SOCRATES_DATA_DIR=/mnt/socrates-data` as an environment variable, and attach the secrets.
+   - Once the "plumbing" is set up, the GitHub Action will overwrite the sample container with the actual Socrates backend without losing the volume/secret bindings.
+3. **GitHub Actions Auth:**
+   - Create a Service Account in GCP with roles: `Cloud Run Admin`, `Service Account User`, `Artifact Registry Writer`, `Cloud Build Editor`, `Storage Object Admin`, and `Firebase Hosting Admin`.
+   - Export a JSON key and add it to your GitHub repository secrets as `GCP_CREDENTIALS`.
+4. **Frontend Configuration:**
+   - The UI looks for `VITE_API_URL` to know where the backend is. This is set in `ui/.env.production` (which *should* be committed to source control, as it's a public URL).
+   - Deployment uses `FirebaseExtended/action-hosting-deploy` with `entryPoint: ./ui`.
 
