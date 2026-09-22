@@ -28,3 +28,4 @@ jobs:
           firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT_SOCRATES_BACKEND_509220 }}'
           projectId: socrates-backend-509220
           channelId: live
+          entryPoint: ./ui
