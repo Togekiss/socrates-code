@@ -65,7 +65,8 @@ export const RunTab = ({ backupId }: { backupId: string }) => {
   useEffect(() => {
     if (!backupId || !streamActive) return;
     
-    const es = new EventSource(`http://localhost:8000/api/backups/${backupId}/logs/stream`);
+    const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+    const es = new EventSource(`${apiBase}/backups/${backupId}/logs/stream`);
     es.onmessage = (e) => {
       setBackupLogs((prev) => {
         const newLogs = [...prev, e.data];
@@ -191,7 +192,10 @@ export const RunTab = ({ backupId }: { backupId: string }) => {
                     <Terminal size={16} /> Console output (last 10 lines)
                   </strong>
                   <button 
-                    onClick={() => window.open(`http://localhost:8000/api/backups/${backupId}/logs/raw`, '_blank')} 
+                    onClick={() => {
+                      const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+                      window.open(`${apiBase}/backups/${backupId}/logs/raw`, '_blank')
+                    }} 
                     style={{ padding: '0.25rem 0.75rem', background: 'var(--bg-tertiary)', color: 'white', border: '1px solid var(--border-color)', borderRadius: '4px', cursor: 'pointer', fontSize: '0.8rem' }}
                   >
                     See full log
