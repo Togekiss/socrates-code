@@ -26,6 +26,7 @@ Once this is in working condition, the focus will shift to uploading the bot to 
 - `DCE`: contains a CLI version of https://github.com/Tyrrrz/DiscordChatExporter with custom parameters found in https://github.com/Togekiss/DiscordChatExporter
 
 - `Backups`: contains the server backups. Each backup has its own folder:
+  - `backups_index.json`: contains the list of backups with their IDs and paths
   - `[Backup name]`: contains the server backup downloaded with DCE
     - `backup_config.json`: the configuration file used to create this backup. It's a copy of the default config file in `res/`
     - `log.txt`: log file of processes specific to this backup  
@@ -47,7 +48,7 @@ Once this is in working condition, the focus will shift to uploading the bot to 
 
 
 - `res`: contains configuration files and metadata files the bot uses to download and navigate through channels
-  - `backups_index.json`: contains the list of backups with their IDs and paths
+
   - `config.json`: global configuration file with search parameters, output parameters, and more
   - `constants.py`: parses CLI arguments and config.json into paths and other constants used by the scripts
 

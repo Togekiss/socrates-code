@@ -68,13 +68,16 @@ app.add_middleware(
 def get_project_root():
     return os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
+def get_data_root():
+    return os.environ.get("SOCRATES_DATA_DIR", get_project_root())
+
 load_dotenv(os.path.join(get_project_root(), '.env'))
 
 def get_backup_path(backup_id: str):
     index = t.get_backups_index()
     for b in index:
         if b["backup_id"] == backup_id:
-            return os.path.join(get_project_root(), b["path"])
+            return os.path.join(get_data_root(), b["path"])
     raise HTTPException(status_code=404, detail="Backup ID not found in index")
 
 def api_log(backup_id: str, level: str, message: str):
@@ -249,7 +252,7 @@ def get_server_categories(server_id: str):
 
 @app.get("/api/config/global")
 def get_global_config():
-    config_path = os.path.join(get_project_root(), 'res', 'config.json')
+    config_path = os.path.join(get_data_root(), 'res', 'config.json')
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
             return json.load(f)
@@ -258,7 +261,7 @@ def get_global_config():
 
 @app.put("/api/config/global")
 def update_global_config(config: Dict[str, Any]):
-    config_path = os.path.join(get_project_root(), 'res', 'config.json')
+    config_path = os.path.join(get_data_root(), 'res', 'config.json')
     try:
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=4)
@@ -389,7 +392,7 @@ def rerun_backup_step(backup_id: str, action: str, background_tasks: BackgroundT
 
 @app.post("/api/backups")
 def create_new_backup(config: Dict[str, Any], background_tasks: BackgroundTasks):
-    global_config_path = os.path.join(get_project_root(), 'res', 'config.json')
+    global_config_path = os.path.join(get_data_root(), 'res', 'config.json')
     try:
         with open(global_config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=4)
@@ -582,7 +585,7 @@ def stream_logs(backup_id: str):
 
 @app.get("/api/logs/global")
 def get_global_logs(lines: int = Query(100)):
-    global_log_file = os.path.join(get_project_root(), "out", "log.txt")
+    global_log_file = os.path.join(get_data_root(), "out", "log.txt")
     if not os.path.exists(global_log_file):
         return {"logs": []}
         
@@ -597,7 +600,7 @@ def get_global_logs(lines: int = Query(100)):
 
 @app.delete("/api/logs/global")
 def clear_global_logs():
-    log_path = os.path.join(get_project_root(), "out", "log.txt")
+    log_path = os.path.join(get_data_root(), "out", "log.txt")
     if os.path.exists(log_path):
         open(log_path, "w").close()
     return {"status": "cleared"}
