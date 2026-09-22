@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Search, Filter, X, ChevronDown, ChevronRight, Hash } from 'lucide-react';
+import { Filter, X } from 'lucide-react';
 
 /**
  * ScenesFilter.tsx
@@ -58,13 +58,11 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
   allCharacters
 }) => {
   const [collapsed, setCollapsed] = useState(false);
-  const [charInput, setCharInput] = useState('');
   const [writerInput, setWriterInput] = useState('');
   const [categoryInput, setCategoryInput] = useState('');
 
   const addCharFilter = (id: number) => {
     if (!charactersFilter.includes(id)) setCharactersFilter([...charactersFilter, id]);
-    setCharInput('');
   };
 
   const removeCharFilter = (id: number) => setCharactersFilter(charactersFilter.filter(x => x !== id));
