@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { api } from '../api';
 import { ScenesFilter } from './scenes/ScenesFilter';
 import { VirtualSceneList } from './scenes/VirtualSceneList';
@@ -119,18 +119,6 @@ export const ScenesTab = ({ backupId, backupStatus }: { backupId: string, backup
     const nextPage = page + 1;
     setPage(nextPage);
     fetchScenes(nextPage);
-  };
-
-  const getCharName = (id: number) => {
-    const main = allCharacters.find(c => c.id === id);
-    if (main) return main.names[0];
-    for (const c of allCharacters) {
-      if (c.other_versions) {
-        const nested = c.other_versions.find((v: any) => v.id === id);
-        if (nested) return nested.names[0];
-      }
-    }
-    return null;
   };
 
   if (!isReady) {
