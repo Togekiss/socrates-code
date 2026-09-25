@@ -354,9 +354,9 @@ def run_script_in_background(script_name: str, backup_id: str):
     script_path = os.path.join(get_project_root(), 'src', script_name)
     kwargs = {}
     if os.name == 'nt':
-        kwargs['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
+        kwargs['creationflags'] = getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 512)
         
-    process = subprocess.Popen([python_exec, script_path, '--backup-id', backup_id], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+    process = subprocess.Popen([python_exec, script_path, '--backup-id', backup_id], **kwargs)
     active_processes[backup_id] = process
     process.wait()
     if backup_id in active_processes:
