@@ -35,7 +35,7 @@ if _backup_id:
 
     if _backup_in_index:
         _backup_path = _backup_in_index['path']
-        CONFIG_FILE = os.path.join(_backup_path, 'backup_config.json')
+        CONFIG_FILE = os.path.join(DATA_ROOT, _backup_path, 'backup_config.json')
     else:
         raise ValueError(f"Backup with ID '{_backup_id}' not found in {BACKUPS_INDEX}")
 else:
