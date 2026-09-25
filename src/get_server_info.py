@@ -223,7 +223,7 @@ def get_server_info_from_discord(backup: ServerBackup):
         t.log("info", "\tGetting a list of channels from Discord...")
 
         # Call the CLI command and capture its output
-        cli_command = f"dotnet DCE/DiscordChatExporter.Cli.dll channels -g {c.SERVER_ID} -t {tokens.DISCORD_BOT} --include-threads all --include-categories --relative-positions --show-positions"
+        cli_command = f"dotnet DCE/DiscordChatExporter.Cli.dll channels -g {c.SERVER_ID} --include-threads all --include-categories --relative-positions --show-positions"
         code, output = t.run_command(cli_command)
 
         if code != 0:

@@ -276,7 +276,7 @@ def get_server_categories(server_id: str):
 
 @app.get("/api/config/global")
 def get_global_config():
-    config_path = os.path.join(get_data_root(), 'res', 'config.json')
+    config_path = os.path.join(get_project_root(), 'res', 'config.json')
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
             return json.load(f)
@@ -285,7 +285,7 @@ def get_global_config():
 
 @app.put("/api/config/global")
 def update_global_config(config: Dict[str, Any]):
-    config_path = os.path.join(get_data_root(), 'res', 'config.json')
+    config_path = os.path.join(get_project_root(), 'res', 'config.json')
     try:
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=4)
@@ -416,7 +416,7 @@ def rerun_backup_step(backup_id: str, action: str, background_tasks: BackgroundT
 
 @app.post("/api/backups")
 def create_new_backup(config: Dict[str, Any], background_tasks: BackgroundTasks):
-    global_config_path = os.path.join(get_data_root(), 'res', 'config.json')
+    global_config_path = os.path.join(get_project_root(), 'res', 'config.json')
     try:
         with open(global_config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=4)
