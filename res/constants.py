@@ -35,7 +35,7 @@ if _backup_id:
 
     if _backup_in_index:
         _backup_path = _backup_in_index['path']
-        CONFIG_FILE = os.path.join(DATA_ROOT, _backup_path, 'backup_config.json')
+        CONFIG_FILE = os.path.join(DATA_ROOT,_backup_path, 'backup_config.json')
     else:
         raise ValueError(f"Backup with ID '{_backup_id}' not found in {BACKUPS_INDEX}")
 else:
@@ -55,9 +55,9 @@ BACKUP_NAME = admin_cfg.get('backupName', SERVER_NAME)
 PATH_FROM_CFG = admin_cfg.get('path', "")
 
 if _backup_path:
-    BACKUP_BASE = _backup_path
+    BACKUP_BASE = os.path.join(DATA_ROOT, _backup_path)
 elif PATH_FROM_CFG:
-    BACKUP_BASE = PATH_FROM_CFG
+    BACKUP_BASE = os.path.join(DATA_ROOT, PATH_FROM_CFG)
 else:
     BACKUP_BASE = os.path.join(BACKUPS_DIR, BACKUP_NAME)
 
