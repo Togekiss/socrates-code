@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
-import { api } from '../api';
+import { api, API_BASE } from '../api';
 import { AlertTriangle, CheckCircle, Clock, XCircle, Terminal } from 'lucide-react';
 import { BackupForm } from './BackupForm';
 
@@ -65,8 +65,7 @@ export const RunTab = ({ backupId }: { backupId: string }) => {
   useEffect(() => {
     if (!backupId || !streamActive) return;
     
-    const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
-    const es = new EventSource(`${apiBase}/backups/${backupId}/logs/stream`);
+    const es = new EventSource(`${API_BASE}/backups/${backupId}/logs/stream`);
     es.onmessage = (e) => {
       setBackupLogs((prev) => {
         const newLogs = [...prev, e.data];

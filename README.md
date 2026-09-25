@@ -27,7 +27,7 @@ Once this is in working condition, the focus will shift to turning it into a Dis
 - **CI/CD:** Managed via GitHub Actions in [Togekiss/socrates-code](https://github.com/Togekiss/socrates-code):
   - `deploy-backend.yml`: Uses `google-github-actions/deploy-cloudrun` (Source deploy).
   - `deploy-frontend.yml`: Uses `FirebaseExtended/action-hosting-deploy` pointing to `./ui`.
-- **UI API Connection:** The Vite frontend resolves the backend URL via `VITE_API_URL` stored in `ui/.env.production`.
+- **UI API Connection:** The Vite frontend resolves the backend URL to `/api`.
 
 
  ## Folder structure
@@ -228,6 +228,6 @@ If you ever need to set this up from scratch or debug the infrastructure, follow
    - Create a Service Account in GCP with roles: `Cloud Run Admin`, `Service Account User`, `Artifact Registry Writer`, `Cloud Build Editor`, `Storage Object Admin`, and `Firebase Hosting Admin`.
    - Export a JSON key and add it to your GitHub repository secrets as `GCP_CREDENTIALS`.
 4. **Frontend Configuration:**
-   - The UI looks for `VITE_API_URL` to know where the backend is. This is set in `ui/.env.production` (which *should* be committed to source control, as it's a public URL).
+   - Backend URL defaults to `/api`.
    - Deployment uses `FirebaseExtended/action-hosting-deploy` with `entryPoint: ./ui`.
 

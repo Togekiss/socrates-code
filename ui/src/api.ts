@@ -7,9 +7,9 @@
  * Base URL defaults to http://localhost:8000/api
  */
 
-// Environment variable VITE_API_URL should be set in .env files (e.g. .env.local or Vercel/Firebase env)
-// Fallback to localhost if not set
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+// In production, uses '/api' for same-origin proxy via Firebase Hosting rewrite.
+// In development, uses local backend at 'http://localhost:8000/api'.
+export const API_BASE = import.meta.env.DEV ? 'http://localhost:8000/api' : '/api';
 
 const fetchWithAuth = async (url: string, options: RequestInit = {}) => {
   const res = await fetch(url, {

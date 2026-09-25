@@ -51,15 +51,22 @@ import utils.tricks as t
 
 app = FastAPI()
 
+cors_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://socrates-backend-509220.web.app",
+    "https://socrates-backend-509220.firebaseapp.com",
+]
+extra_origins = os.environ.get("CORS_ORIGINS")
+if extra_origins:
+    cors_origins.extend([o.strip() for o in extra_origins.split(",") if o.strip()])
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$",
+    allow_origins=cors_origins,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$|^https://socrates-backend-509220\.(web\.app|firebaseapp\.com)$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -106,8 +113,12 @@ def get_auth_config():
         "bot_token": os.environ.get("DISCORD_TOKEN")
     }
 
+def get_session_token(request: Request) -> Optional[str]:
+    # Firebase Hosting rewrite CDN only preserves '__session'; fallback to 'session_token' for dev/direct access
+    return request.cookies.get("__session") or request.cookies.get("session_token")
+
 def get_current_user(request: Request):
-    token = request.cookies.get("session_token")
+    token = get_session_token(request)
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:
@@ -120,7 +131,7 @@ def get_current_user(request: Request):
         raise HTTPException(status_code=401, detail="Invalid session")
 
 def get_optional_user(request: Request):
-    token = request.cookies.get("session_token")
+    token = get_session_token(request)
     if not token:
         return None
     try:
@@ -145,7 +156,7 @@ def get_login_url():
     return {"url": url}
 
 @app.post("/api/auth/discord")
-async def auth_discord(callback: AuthCallback, response: Response):
+async def auth_discord(callback: AuthCallback, response: Response, request: Request):
     config = get_auth_config()
     if not config["client_id"] or not config["client_secret"]:
         raise HTTPException(status_code=500, detail="OAuth not configured")
@@ -219,20 +230,33 @@ async def auth_discord(callback: AuthCallback, response: Response):
         
         token = jwt.encode(payload, config["jwt_secret"], algorithm="HS256")
         
+        # In production/HTTPS, use secure cookies. Firebase CDN exclusively preserves '__session'.
+        is_secure = request.headers.get("x-forwarded-proto") == "https" or bool(os.environ.get("K_SERVICE"))
+
+        response.set_cookie(
+            key="__session",
+            value=token,
+            httponly=True,
+            samesite="lax",
+            secure=is_secure,
+            max_age=24 * 60 * 60
+        )
         response.set_cookie(
             key="session_token",
             value=token,
             httponly=True,
             samesite="lax",
-            secure=False,
+            secure=is_secure,
             max_age=24 * 60 * 60
         )
 
         return {"status": "success", "user": {"id": user_data["id"], "username": user_data["username"]}}
 
 @app.post("/api/auth/logout")
-def logout(response: Response):
-    response.delete_cookie("session_token")
+def logout(response: Response, request: Request):
+    is_secure = request.headers.get("x-forwarded-proto") == "https" or bool(os.environ.get("K_SERVICE"))
+    response.delete_cookie("session_token", httponly=True, samesite="lax", secure=is_secure)
+    response.delete_cookie("__session", httponly=True, samesite="lax", secure=is_secure)
     return {"status": "success"}
 
 @app.get("/api/auth/me")
