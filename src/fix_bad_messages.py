@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import time
 import re
 import utils.tricks as t
@@ -181,7 +182,7 @@ def fix_bad_messages():
         t.save_to_json({}, c.BAD_END_MESSAGES)
 
         for path in backup.get_all_paths():
-            file_path = os.path.join(c.DATA_FOLDER, path)
+            file_path = (Path(c.DATA_FOLDER) / path).as_posix()
             t.log("log", f"\t    Analysing {file_path}...")
             fix_messages_in_channel(file_path, backup)
 

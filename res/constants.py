@@ -1,17 +1,18 @@
 import json
 import os
+from pathlib import Path
 import sys
 
 # Basic paths
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_ROOT = os.environ.get("SOCRATES_DATA_DIR", ROOT_DIR)
+ROOT_DIR = Path(__file__).resolve().parent.parent.as_posix()
+DATA_ROOT = Path(os.environ.get("SOCRATES_DATA_DIR", ROOT_DIR)).as_posix()
 
-BACKUPS_DIR = os.path.join(DATA_ROOT, "Backups")
-BACKUPS_INDEX = os.path.join(BACKUPS_DIR, 'backups_index.json')
-OUT_DIR = os.path.join(DATA_ROOT, "out")
-GLOBAL_LOG_FILE = os.path.join(OUT_DIR, 'log.txt')
-RES_DIR = os.path.join(ROOT_DIR, "res")
-GLOBAL_CONFIG = os.path.join(RES_DIR, 'config.json')
+BACKUPS_DIR = (Path(DATA_ROOT) / "Backups").as_posix()
+BACKUPS_INDEX = (Path(BACKUPS_DIR) / 'backups_index.json').as_posix()
+OUT_DIR = (Path(DATA_ROOT) / "out").as_posix()
+GLOBAL_LOG_FILE = (Path(OUT_DIR) / 'log.txt').as_posix()
+RES_DIR = (Path(ROOT_DIR) / "res").as_posix()
+GLOBAL_CONFIG = (Path(RES_DIR) / 'config.json').as_posix()
 
 # Get backup_id from command line arguments
 _backup_id = None
@@ -35,7 +36,7 @@ if _backup_id:
 
     if _backup_in_index:
         _backup_path = _backup_in_index['path']
-        CONFIG_FILE = os.path.join(DATA_ROOT,_backup_path, 'backup_config.json')
+        CONFIG_FILE = (Path(DATA_ROOT) / _backup_path / 'backup_config.json').as_posix()
     else:
         raise ValueError(f"Backup with ID '{_backup_id}' not found in {BACKUPS_INDEX}")
 else:
@@ -55,24 +56,24 @@ BACKUP_NAME = admin_cfg.get('backupName', SERVER_NAME)
 PATH_FROM_CFG = admin_cfg.get('path', "")
 
 if _backup_path:
-    BACKUP_BASE = os.path.join(DATA_ROOT, _backup_path)
+    BACKUP_BASE = (Path(DATA_ROOT) / _backup_path).as_posix()
 elif PATH_FROM_CFG:
-    BACKUP_BASE = os.path.join(DATA_ROOT, PATH_FROM_CFG)
+    BACKUP_BASE = (Path(DATA_ROOT) / PATH_FROM_CFG).as_posix()
 else:
-    BACKUP_BASE = os.path.join(BACKUPS_DIR, BACKUP_NAME)
+    BACKUP_BASE = (Path(BACKUPS_DIR) / BACKUP_NAME).as_posix()
 
 
-LOG_FILE = os.path.join(BACKUP_BASE, 'log.txt')
-DATA_FOLDER = os.path.join(BACKUP_BASE, 'Data')
-UPDATE_FOLDER = os.path.join(BACKUP_BASE, 'Update')
-MERGE_FOLDER = os.path.join(BACKUP_BASE, 'Merge')
-INFO_FOLDER = os.path.join(BACKUP_BASE, 'Info')
-BACKUP_INFO = os.path.join(INFO_FOLDER, 'backup_info.json')
-BACKUP_INFO_UPDATE = os.path.join(INFO_FOLDER, 'backup_info_update.json')
-CHARACTER_LIST = os.path.join(INFO_FOLDER, 'character_list.json')
-FIXED_MESSAGES = os.path.join(INFO_FOLDER, 'fixed_messages.json')
-BAD_MESSAGES = os.path.join(INFO_FOLDER, 'bad_messages.json')
-BAD_END_MESSAGES = os.path.join(INFO_FOLDER, 'bad_end_messages.json')
+LOG_FILE = (Path(BACKUP_BASE) / 'log.txt').as_posix()
+DATA_FOLDER = (Path(BACKUP_BASE) / 'Data').as_posix()
+UPDATE_FOLDER = (Path(BACKUP_BASE) / 'Update').as_posix()
+MERGE_FOLDER = (Path(BACKUP_BASE) / 'Merge').as_posix()
+INFO_FOLDER = (Path(BACKUP_BASE) / 'Info').as_posix()
+BACKUP_INFO = (Path(INFO_FOLDER) / 'backup_info.json').as_posix()
+BACKUP_INFO_UPDATE = (Path(INFO_FOLDER) / 'backup_info_update.json').as_posix()
+CHARACTER_LIST = (Path(INFO_FOLDER) / 'character_list.json').as_posix()
+FIXED_MESSAGES = (Path(INFO_FOLDER) / 'fixed_messages.json').as_posix()
+BAD_MESSAGES = (Path(INFO_FOLDER) / 'bad_messages.json').as_posix()
+BAD_END_MESSAGES = (Path(INFO_FOLDER) / 'bad_end_messages.json').as_posix()
 
 
 # Discord parameters
@@ -105,5 +106,5 @@ TYPE = filters.get('type', "all")
 MODE = filters.get('mode', "end")
 
 # Result file parameters
-OUTPUT_SCENES = os.path.join(OUT_DIR, CHARACTER, 'scenes.json')
-OUTPUT_LINKS = os.path.join(OUT_DIR, CHARACTER, 'scene-links.txt')
+OUTPUT_SCENES = (Path(OUT_DIR) / CHARACTER / 'scenes.json').as_posix()
+OUTPUT_LINKS = (Path(OUT_DIR) / CHARACTER / 'scene-links.txt').as_posix()

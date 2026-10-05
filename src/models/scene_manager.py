@@ -1,4 +1,4 @@
-import os
+from pathlib import Path
 import json
 from typing import List, Dict, Any, Optional
 
@@ -19,8 +19,8 @@ class SceneManager:
         return cls._instance
 
     def _load_scenes(self, custom_path: Optional[str] = None):
-        scenes_path = custom_path or os.path.join(self.base_path, 'Data', '_scenes.json')
-        if os.path.exists(scenes_path):
+        scenes_path = custom_path or (Path(self.base_path) / 'Data' / '_scenes.json').as_posix()
+        if Path(scenes_path).exists():
             with open(scenes_path, 'r', encoding='utf-8') as f:
                 self.scenes = json.load(f)
         else:

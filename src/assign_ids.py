@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import time
 import utils.tricks as t
 import utils.exceptions as exc
@@ -149,7 +150,7 @@ def assign_ids():
 
         # Iterate over all channel files
         for path in backup.get_all_paths():
-            assign_ids_in_file(os.path.join(search_folder, path), char_list)
+            assign_ids_in_file((Path(search_folder) / path).as_posix(), char_list)
         
         # We flag the successful backup state
         backup.finish_assign_ids(success=True)

@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import shutil
 import time
 import utils.tricks as t
@@ -72,7 +73,7 @@ def load_status():
         t.log("debug", f"  The current status of the backup is '{backup.status}'\n")
 
         # Check if the merge folder exists
-        if not os.path.exists(c.MERGE_FOLDER):
+        if not Path(c.MERGE_FOLDER).exists():
             t.create_merge_folder()
 
         # flag it as running in case another execution of the script is launched
@@ -380,13 +381,13 @@ def update_directory_path(cat:Category):
         t.log("debug", f"\tCategory '{cat.name}' needs an update. Updating...")
 
         # We save the old path to clean up later
-        old_path = os.path.join(c.MERGE_FOLDER, cat.path)
-        target_path = os.path.join(c.MERGE_FOLDER, cat.new_path)
+        old_path = (Path(c.MERGE_FOLDER) / cat.path).as_posix()
+        target_path = (Path(c.MERGE_FOLDER) / cat.new_path).as_posix()
 
         # If we renamed it, we might corrupt the paths of its children.
         # So we create a new folder, and then files will be moved to it.
         if not c.DRY_RUN:
-            os.makedirs(target_path, exist_ok=True)
+            Path(target_path).mkdir(parents=True, exist_ok=True)
             t.log("info", f"\tCreated new folder at '{target_path}'")
         else:
             t.log("info", f"\tDRY RUN: Would create new folder at '{target_path}'")
@@ -420,19 +421,19 @@ def update_file_path(item):
         t.log("debug", f"\tItem '{item.name}' needs an update. Updating...")       
 
         # We save the old path to clean up later
-        old_path = os.path.join(c.MERGE_FOLDER, item.path)
-        target_path = os.path.join(c.MERGE_FOLDER, item.new_path)
+        old_path = (Path(c.MERGE_FOLDER) / item.path).as_posix()
+        target_path = (Path(c.MERGE_FOLDER) / item.new_path).as_posix()
 
         t.log("debug", f"\t\tOld path: '{old_path}'. Target path: '{target_path}'...")
 
-        if os.path.exists(target_path):
+        if Path(target_path).exists():
             raise exc.MergeError(f"File '{target_path}' already exists in the target folder. Can't move.")
 
         t.log("debug", f"\t\tTarget path for item '{item.name}' is free.")
 
         if not c.DRY_RUN:
             # if item is thread, create folder /threads
-            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            Path(target_path).parent.mkdir(parents=True, exist_ok=True)
             shutil.move(old_path, target_path)
             t.log("info", f"\tMoved '{old_path}' to '{target_path}'")
         else:
@@ -488,7 +489,7 @@ def fix_paths(main_backup:ServerBackup):
     for path in old_paths:
         
         # get all files that don't end in '_scenes.json' and aren't a folder
-        files = [f for f in os.listdir(path) if (not os.path.isdir(os.path.join(path, f)) and not f.endswith("_scenes.json"))]
+        files = [f for f in Path(path).iterdir() if (not f.is_dir() and not f.name.endswith("_scenes.json"))]
 
         # If they have no files, delete the folder (they could have files registered as deleted)
         if len(files) == 0:

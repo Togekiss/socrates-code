@@ -1,7 +1,7 @@
 import re
 import os
+from pathlib import Path
 import time
-import unicodedata
 import utils.tricks as t
 import utils.exceptions as exc
 from assign_ids import get_all_character_ids
@@ -448,9 +448,9 @@ find_character_scenes_in_folder(folder_path, characters_list):
         list: A list of filtered scenes.
 """
 def find_character_scenes_in_folder(folder_path, characters_list):
-    scenes_file = os.path.join(folder_path, "_scenes.json")
+    scenes_file = (Path(folder_path) / "_scenes.json").as_posix()
 
-    if not os.path.exists(scenes_file):
+    if not Path(scenes_file).exists():
         raise exc.FindCharacterScenesError(f"Scenes file not found in {folder_path}. Please run 'index_scenes' first to create it.")
 
     from models.scene_manager import SceneManager
@@ -472,7 +472,7 @@ def find_character_scenes():
         start_time = time.time()
 
         # Get the path of the "scenes" folder from the config file
-        folder_path = c.DATA_FOLDER + c.SEARCH_FOLDER
+        folder_path = (Path(c.DATA_FOLDER) / c.SEARCH_FOLDER.lstrip("/\\")).as_posix() if c.SEARCH_FOLDER else c.DATA_FOLDER
 
         # Find main character ID (and associated versions)
         characters_list = get_all_character_ids(c.CHARACTER)
@@ -491,7 +491,7 @@ def find_character_scenes():
         for i, scene in enumerate(all_scenes):
             scene["index"] = i+1
 
-        os.makedirs(os.path.dirname(c.OUTPUT_SCENES), exist_ok=True)
+        Path(c.OUTPUT_SCENES).parent.mkdir(parents=True, exist_ok=True)
         t.save_to_json(all_scenes, c.OUTPUT_SCENES)
 
         t.log("info", f"\n\tFound {len(all_scenes)} scenes in total")

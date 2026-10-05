@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import shutil
 import time
 import utils.tricks as t
@@ -190,26 +191,25 @@ merge_file(path, update_folder, old_folder, main_backup)
 """
 def merge_file(path, update_folder, old_folder, main_backup):
 
-    update_file_path = os.path.join(update_folder, path)
-    old_file_path = os.path.join(old_folder, path)
+    update_file_path = (Path(update_folder) / path).as_posix()
+    old_file_path = (Path(old_folder) / path).as_posix()
 
     # Check if an equivalent file exists in the "Old" folder
     
     # If it does, merge the two files
-    if os.path.exists(old_file_path) and os.path.exists(update_file_path):
+    if Path(old_file_path).exists() and Path(update_file_path).exists():
         t.log("debug", f"\tMerging {update_file_path} into {old_file_path}")
         if not c.DRY_RUN:
             merge_channel(old_file_path, update_file_path, main_backup)
         else:
             t.log("info", f"DRY RUN: Would merge {update_file_path} into {old_file_path}")
 
-    elif os.path.exists(update_file_path) and not os.path.exists(old_file_path):
+    elif Path(update_file_path).exists() and not Path(old_file_path).exists():
         # If not, create the necessary subfolders in "Old" to maintain the same directory tree
-        if not os.path.dirname(old_file_path):
-            if not c.DRY_RUN:
-                os.makedirs(os.path.dirname(old_file_path), exist_ok=True)
-            else:
-                t.log("info", f"DRY RUN: Would create {os.path.dirname(old_file_path)}")
+        if not c.DRY_RUN:
+            Path(old_file_path).parent.mkdir(parents=True, exist_ok=True)
+        else:
+            t.log("info", f"DRY RUN: Would create {Path(old_file_path).parent.as_posix()}")
 
         # Copy the file from "Update" to "Old"
         if not c.DRY_RUN:

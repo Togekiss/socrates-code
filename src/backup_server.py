@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 import time
 import os
+from pathlib import Path
 import shutil
 import threading
 import utils.tricks as t
@@ -48,7 +49,7 @@ def check_base_status():
     try: 
         t.log("debug", "\nChecking the status of the backup...")
 
-        if not os.path.exists(c.BACKUP_INFO):
+        if not Path(c.BACKUP_INFO).exists():
             raise FileNotFoundError
 
         backup = ServerBackup.from_json(c.BACKUP_INFO)
@@ -81,14 +82,15 @@ def clean():
     t.log("debug", "\n# Cleaning up old temporary files...  #\n")
 
     # if log file is bigger than 10 MB, delete it
-    if os.path.exists(c.LOG_FILE) and os.path.getsize(c.LOG_FILE) > 10 * 1024 * 1024:
-        os.remove(c.LOG_FILE)
+    log_path = Path(c.LOG_FILE)
+    if log_path.exists() and log_path.stat().st_size > 10 * 1024 * 1024:
+        log_path.unlink()
         t.log("debug", f"\tDeleted log file: {c.LOG_FILE}")
 
     # if there's an "Update" folder, delete it
-    if os.path.exists("Update"):
+    if Path("Update").exists():
         t.log("debug", "\tDeleted 'Update' folder")
-        os.system(f"rm -rf Update")
+        shutil.rmtree("Update", ignore_errors=True)
 
 
 """
@@ -180,7 +182,8 @@ def finish_update():
                 t.log("debug", f"\tDeleted update folder: '{c.UPDATE_FOLDER}'")
 
                 # Delete the backup_info_update.json file
-                os.remove(c.BACKUP_INFO_UPDATE)
+                if Path(c.BACKUP_INFO_UPDATE).exists():
+                    Path(c.BACKUP_INFO_UPDATE).unlink()
                 t.log("debug", f"\tDeleted backup_info_update.json")
 
             except Exception as e:

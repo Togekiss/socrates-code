@@ -1,5 +1,6 @@
 import time
 import os
+from pathlib import Path
 from datetime import datetime
 import utils.tricks as t
 import utils.exceptions as exc
@@ -46,18 +47,18 @@ def load_status():
     is_update = False
 
     # check if a SERVER_NAME/INFO folder exists, if not, create it
-    if not os.path.exists(c.INFO_FOLDER):
+    if not Path(c.INFO_FOLDER).exists():
         t.log("debug", f'  Info folder "{c.INFO_FOLDER}" does not exist. Creating it...')
-        os.makedirs(c.INFO_FOLDER, exist_ok=True)
+        Path(c.INFO_FOLDER).mkdir(parents=True, exist_ok=True)
         
         # Add to global index if not present
         if t.add_backup_to_index(c.BACKUP_NAME, c.SERVER_ID, c.SERVER_NAME, c.BACKUP_BASE):
             t.log("debug", f"  Added new backup to global index")
             
         # Seed backup_config.json
-        config_path = f"{c.BACKUP_BASE}/backup_config.json"
-        if not os.path.exists(config_path):
-            if os.path.exists(c.GLOBAL_CONFIG):
+        config_path = (Path(c.BACKUP_BASE) / "backup_config.json").as_posix()
+        if not Path(config_path).exists():
+            if Path(c.GLOBAL_CONFIG).exists():
                 import shutil
                 shutil.copy(c.GLOBAL_CONFIG, config_path)
                 t.log("debug", "  Seeded backup_config.json from global config.")

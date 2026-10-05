@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import time
 import utils.tricks as t
 import utils.exceptions as exc
@@ -214,7 +215,7 @@ def find_all_scenes_in_channel(channel, id_builder):
 
 def process_channel(channel:Channel|Thread, id_builder:str):
 
-    file_path = os.path.join(c.DATA_FOLDER, channel.path)
+    file_path = (Path(c.DATA_FOLDER) / channel.path).as_posix()
     t.log("log", f"  Analysing {channel.name}...")
 
     # Load JSON channel from file
@@ -225,7 +226,7 @@ def process_channel(channel:Channel|Thread, id_builder:str):
 
     # save the file
     scenes_file = file_path.replace(".json", "_scenes.json")
-    scenes_path = scenes_file.replace("\\Threads\\", "\\Scenes\\") if "\\Threads\\" in scenes_file else os.path.join(os.path.dirname(scenes_file), "Scenes", os.path.basename(scenes_file))
+    scenes_path = scenes_file.replace("/Threads/", "/Scenes/") if "/Threads/" in scenes_file else (Path(scenes_file).parent / "Scenes" / Path(scenes_file).name).as_posix()
 
     # TODO this is temporary to find the ones that need fixing. save evrything later
     t.save_to_json(scenes, scenes_path)
@@ -294,7 +295,7 @@ def find_scenes_in_category(category:Category):
     for i, scene in enumerate(all_scenes):
         scene["index"] = i+1
 
-    folder_path = os.path.join(c.DATA_FOLDER, category.path)
+    folder_path = (Path(c.DATA_FOLDER) / category.path).as_posix()
 
     t.save_to_json(all_scenes, f"{folder_path}/_scenes.json")
     t.save_to_json(all_bad_scenes, f"{folder_path}/_bad_scenes.json")
@@ -320,8 +321,9 @@ def index_scenes():
         for category in backup.categories:
 
             # create Scenes folder if it doesn't exist
-            if not os.path.exists(f"{c.DATA_FOLDER}/{category.path}/Scenes"):
-                os.makedirs(f"{c.DATA_FOLDER}/{category.path}/Scenes")
+            scenes_dir = Path(c.DATA_FOLDER) / category.path / "Scenes"
+            if not scenes_dir.exists():
+                scenes_dir.mkdir(parents=True, exist_ok=True)
 
             scenes = find_scenes_in_category(category)
 
@@ -335,9 +337,10 @@ def index_scenes():
         for i, scene in enumerate(full_scenes):
             scene["index"] = i+1
 
-        t.save_to_json(full_scenes, f"{c.DATA_FOLDER}\\_scenes.json")
+        scenes_full_path = (Path(c.DATA_FOLDER) / "_scenes.json").as_posix()
+        t.save_to_json(full_scenes, scenes_full_path)
 
-        t.log("info", f"\n  Saved {len(full_scenes)} scenes to {c.DATA_FOLDER}\\_scenes.json")
+        t.log("info", f"\n  Saved {len(full_scenes)} scenes to {scenes_full_path}")
 
         # Update the overall backup model and save to the status file
         backup.save()

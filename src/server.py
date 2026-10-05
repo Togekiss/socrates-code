@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from typing import Dict, Any, List, Optional
 import httpx
 import jwt
+from pathlib import Path
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
@@ -46,7 +47,7 @@ class UpdateCharacterRequest(BaseModel):
     writer: Optional[List[str]] = None
 
 # Add src to sys.path so that 'utils' can be imported
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, Path(__file__).resolve().parent.as_posix())
 import utils.tricks as t
 
 app = FastAPI()
@@ -73,25 +74,25 @@ app.add_middleware(
 )
 
 def get_project_root():
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    return Path(__file__).resolve().parent.parent.as_posix()
 
 def get_data_root():
-    return os.environ.get("SOCRATES_DATA_DIR", get_project_root())
+    return Path(os.environ.get("SOCRATES_DATA_DIR", get_project_root())).as_posix()
 
-load_dotenv(os.path.join(get_project_root(), '.env'))
+load_dotenv((Path(get_project_root()) / '.env').as_posix())
 
 def get_backup_path(backup_id: str):
     index = t.get_backups_index()
     for b in index:
         if b["backup_id"] == backup_id:
-            return os.path.join(get_data_root(), b["path"])
+            return (Path(get_data_root()) / b["path"]).as_posix()
     raise HTTPException(status_code=404, detail="Backup ID not found in index")
 
 def api_log(backup_id: str, level: str, message: str):
     import datetime
     try:
         base_path = get_backup_path(backup_id)
-        log_path = os.path.join(base_path, "log.txt")
+        log_path = (Path(base_path) / "log.txt").as_posix()
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"[{timestamp}]{level}: API: {message}\n")
@@ -276,7 +277,7 @@ def get_server_categories(server_id: str):
 
 @app.get("/api/config/global")
 def get_global_config():
-    config_path = os.path.join(get_project_root(), 'res', 'config.json')
+    config_path = (Path(get_project_root()) / 'res' / 'config.json').as_posix()
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
             return json.load(f)
@@ -285,7 +286,7 @@ def get_global_config():
 
 @app.put("/api/config/global")
 def update_global_config(config: Dict[str, Any]):
-    config_path = os.path.join(get_project_root(), 'res', 'config.json')
+    config_path = (Path(get_project_root()) / 'res' / 'config.json').as_posix()
     try:
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=4)
@@ -314,17 +315,17 @@ def get_all_backup_paths(user = Depends(get_current_user)):
 @app.get("/api/backups/{backup_id}")
 def get_backup_info(backup_id: str):
     base_path = get_backup_path(backup_id)
-    info_path = os.path.join(base_path, 'Info', 'backup_info.json')
-    char_path = os.path.join(base_path, 'Info', 'character_list.json')
+    info_path = (Path(base_path) / 'Info' / 'backup_info.json').as_posix()
+    char_path = (Path(base_path) / 'Info' / 'character_list.json').as_posix()
     
-    if not os.path.exists(info_path):
+    if not Path(info_path).exists():
         raise HTTPException(status_code=404, detail="Backup info file not found")
         
     data = t.load_from_json(info_path)
     
     # Augment with character count
     data["number_of_characters"] = 0
-    if os.path.exists(char_path):
+    if Path(char_path).exists():
         try:
             char_data = t.load_from_json(char_path)
             if isinstance(char_data, list):
@@ -339,8 +340,8 @@ def get_backup_info(backup_id: str):
 @app.get("/api/backups/{backup_id}/config")
 def get_backup_config(backup_id: str):
     base_path = get_backup_path(backup_id)
-    config_path = os.path.join(base_path, 'backup_config.json')
-    if not os.path.exists(config_path):
+    config_path = (Path(base_path) / 'backup_config.json').as_posix()
+    if not Path(config_path).exists():
         # Fallback to global config if local doesn't exist yet
         return get_global_config()
     with open(config_path, 'r', encoding='utf-8') as f:
@@ -351,7 +352,7 @@ active_processes: Dict[str, subprocess.Popen] = {}
 def run_script_in_background(script_name: str, backup_id: str):
     # Use the python executable from the virtual environment if possible
     python_exec = sys.executable
-    script_path = os.path.join(get_project_root(), 'src', script_name)
+    script_path = (Path(get_project_root()) / 'src' / script_name).as_posix()
     kwargs = {}
     if os.name == 'nt':
         kwargs['creationflags'] = getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 512)
@@ -383,11 +384,11 @@ def cancel_backup_action(backup_id: str):
 @app.post("/api/backups/{backup_id}/run")
 def run_backup(backup_id: str, config: Dict[str, Any], background_tasks: BackgroundTasks):
     base_path = get_backup_path(backup_id)
-    config_path = os.path.join(base_path, 'backup_config.json')
+    config_path = (Path(base_path) / 'backup_config.json').as_posix()
     
     # Save the config
     try:
-        os.makedirs(os.path.dirname(config_path), exist_ok=True)
+        Path(config_path).parent.mkdir(parents=True, exist_ok=True)
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=4)
     except Exception as e:
@@ -416,7 +417,7 @@ def rerun_backup_step(backup_id: str, action: str, background_tasks: BackgroundT
 
 @app.post("/api/backups")
 def create_new_backup(config: Dict[str, Any], background_tasks: BackgroundTasks):
-    global_config_path = os.path.join(get_project_root(), 'res', 'config.json')
+    global_config_path = (Path(get_project_root()) / 'res' / 'config.json').as_posix()
     try:
         with open(global_config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=4)
@@ -426,7 +427,7 @@ def create_new_backup(config: Dict[str, Any], background_tasks: BackgroundTasks)
         
     t.global_log("info", f"API: Creating new backup pipeline from global config...")
     python_exec = sys.executable
-    script_path = os.path.join(get_project_root(), 'src', 'backup_server.py')
+    script_path = (Path(get_project_root()) / 'src' / 'backup_server.py').as_posix()
     subprocess.Popen([python_exec, script_path])
     
     return {"status": "started", "detail": "Starting new backup pipeline. Check global logs."}
@@ -434,8 +435,8 @@ def create_new_backup(config: Dict[str, Any], background_tasks: BackgroundTasks)
 @app.get("/api/backups/{backup_id}/characters")
 def get_characters(backup_id: str):
     base_path = get_backup_path(backup_id)
-    char_path = os.path.join(base_path, 'Info', 'character_list.json')
-    if not os.path.exists(char_path):
+    char_path = (Path(base_path) / 'Info' / 'character_list.json').as_posix()
+    if not Path(char_path).exists():
         raise HTTPException(status_code=404, detail="Character list not found")
     return t.load_from_json(char_path)
 
@@ -443,7 +444,7 @@ def get_characters(backup_id: str):
 def merge_characters(backup_id: str, req: MergeCharactersRequest):
     api_log(backup_id, "info", f"Merging character {req.source_id} into {req.target_id}...")
     base_path = get_backup_path(backup_id)
-    char_path = os.path.join(base_path, 'Info', 'character_list.json')
+    char_path = (Path(base_path) / 'Info' / 'character_list.json').as_posix()
     from models import CharacterList
     char_list = CharacterList.load(char_path)
     try:
@@ -459,7 +460,7 @@ def merge_characters(backup_id: str, req: MergeCharactersRequest):
 def nest_character(backup_id: str, req: NestCharacterRequest):
     api_log(backup_id, "info", f"Nesting character {req.child_id} under {req.parent_id} as {req.version_type}...")
     base_path = get_backup_path(backup_id)
-    char_path = os.path.join(base_path, 'Info', 'character_list.json')
+    char_path = (Path(base_path) / 'Info' / 'character_list.json').as_posix()
     from models import CharacterList
     char_list = CharacterList.load(char_path)
     try:
@@ -475,7 +476,7 @@ def nest_character(backup_id: str, req: NestCharacterRequest):
 def unnest_character(backup_id: str, char_id: int):
     api_log(backup_id, "info", f"Unnesting character {char_id}...")
     base_path = get_backup_path(backup_id)
-    char_path = os.path.join(base_path, 'Info', 'character_list.json')
+    char_path = (Path(base_path) / 'Info' / 'character_list.json').as_posix()
     from models import CharacterList
     char_list = CharacterList.load(char_path)
     try:
@@ -491,7 +492,7 @@ def unnest_character(backup_id: str, char_id: int):
 def update_character(backup_id: str, char_id: int, req: UpdateCharacterRequest):
     api_log(backup_id, "info", f"Updating character {char_id} attributes...")
     base_path = get_backup_path(backup_id)
-    char_path = os.path.join(base_path, 'Info', 'character_list.json')
+    char_path = (Path(base_path) / 'Info' / 'character_list.json').as_posix()
     from models import CharacterList
     char_list = CharacterList.load(char_path)
     
@@ -527,11 +528,11 @@ def get_scenes(
     after: Optional[str] = Query(None)
 ):
     base_path = get_backup_path(backup_id)
-    char_path = os.path.join(base_path, 'Info', 'character_list.json')
+    char_path = (Path(base_path) / 'Info' / 'character_list.json').as_posix()
     from models import SceneManager, CharacterList
     
     char_list = None
-    if writers and os.path.exists(char_path):
+    if writers and Path(char_path).exists():
         char_list = CharacterList.load(char_path)
         
     manager = SceneManager.get_instance(backup_id, base_path)
@@ -554,7 +555,7 @@ def get_scenes(
 @app.get("/api/backups/{backup_id}/writers")
 def get_writers(backup_id: str):
     base_path = get_backup_path(backup_id)
-    char_path = os.path.join(base_path, 'Info', 'character_list.json')
+    char_path = (Path(base_path) / 'Info' / 'character_list.json').as_posix()
     from models import CharacterList
     char_list = CharacterList.load(char_path)
     
@@ -571,23 +572,23 @@ def get_writers(backup_id: str):
 @app.get("/api/backups/{backup_id}/logs/raw")
 def get_raw_log(backup_id: str):
     base_path = get_backup_path(backup_id)
-    log_file = os.path.join(base_path, "log.txt")
-    if not os.path.exists(log_file):
+    log_file = (Path(base_path) / "log.txt").as_posix()
+    if not Path(log_file).exists():
         raise HTTPException(status_code=404, detail="Log file not found")
     return FileResponse(log_file, media_type="text/plain")
 
 @app.get("/api/backups/{backup_id}/logs/stream")
 def stream_logs(backup_id: str):
     base_path = get_backup_path(backup_id)
-    log_file = os.path.join(base_path, "log.txt")
+    log_file = (Path(base_path) / "log.txt").as_posix()
     
     def log_generator():
         # Wait for the file to be created if it doesn't exist yet
         for _ in range(20):
-            if os.path.exists(log_file): break
+            if Path(log_file).exists(): break
             time.sleep(0.5)
             
-        if not os.path.exists(log_file):
+        if not Path(log_file).exists():
             yield "data: [Log file not found]\n\n"
             return
             
@@ -609,8 +610,8 @@ def stream_logs(backup_id: str):
 
 @app.get("/api/logs/global")
 def get_global_logs(lines: int = Query(100)):
-    global_log_file = os.path.join(get_data_root(), "out", "log.txt")
-    if not os.path.exists(global_log_file):
+    global_log_file = (Path(get_data_root()) / "out" / "log.txt").as_posix()
+    if not Path(global_log_file).exists():
         return {"logs": []}
         
     try:
@@ -624,8 +625,8 @@ def get_global_logs(lines: int = Query(100)):
 
 @app.delete("/api/logs/global")
 def clear_global_logs():
-    log_path = os.path.join(get_data_root(), "out", "log.txt")
-    if os.path.exists(log_path):
+    log_path = (Path(get_data_root()) / "out" / "log.txt").as_posix()
+    if Path(log_path).exists():
         open(log_path, "w").close()
     return {"status": "cleared"}
 

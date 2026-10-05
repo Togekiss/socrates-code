@@ -1,4 +1,5 @@
 import datetime
+from pathlib import Path
 import sys
 import os
 import subprocess
@@ -42,7 +43,7 @@ set_path()
 
 """
 def set_path():
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    project_root = Path(__file__).resolve().parents[2].as_posix()
     if project_root not in sys.path:
         sys.path.append(project_root)
 
@@ -83,7 +84,7 @@ def get_backups_index():
     set_path()
     from res import constants as c
 
-    if not os.path.exists(c.BACKUPS_INDEX):
+    if not Path(c.BACKUPS_INDEX).exists():
         return []
     
     return load_from_json(c.BACKUPS_INDEX)
@@ -176,8 +177,7 @@ def log(level="base", message=""):
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         
         # create directory if it doesn't exist
-        if not os.path.exists(os.path.dirname(c.LOG_FILE)):
-            os.makedirs(os.path.dirname(c.LOG_FILE))
+        Path(c.LOG_FILE).parent.mkdir(parents=True, exist_ok=True)
 
         log_line = f"[{timestamp}]{level}: {clean(message)}\n"
         
@@ -197,8 +197,7 @@ def global_log(level="base", message=""):
         
     timestamp = datetime.datetime.now().strftime("%H:%M:%S")
     
-    if not os.path.exists(os.path.dirname(c.GLOBAL_LOG_FILE)):
-        os.makedirs(os.path.dirname(c.GLOBAL_LOG_FILE))
+    Path(c.GLOBAL_LOG_FILE).parent.mkdir(parents=True, exist_ok=True)
 
     with open(c.GLOBAL_LOG_FILE, "a", encoding="utf-8") as file:
         file.write(f"[{timestamp}]{level}: {clean(message)}\n")
@@ -279,7 +278,7 @@ def create_merge_folder():
     set_path()
     from res import constants as c  
 
-    if os.path.exists(c.MERGE_FOLDER):
+    if Path(c.MERGE_FOLDER).exists():
         log("base", f"Deleting old merge folder: {c.MERGE_FOLDER}")
         shutil.rmtree(c.MERGE_FOLDER)
 
@@ -291,10 +290,10 @@ def create_merge_folder():
     for root, dirs, files in os.walk(c.MERGE_FOLDER):
         for dir in dirs:
             if dir == "Scenes":
-                shutil.rmtree(os.path.join(root, dir))
+                shutil.rmtree((Path(root) / dir).as_posix())
         for file in files:
             if file.endswith("_scenes.json"):
-                os.remove(os.path.join(root, file)) 
+                (Path(root) / file).unlink() 
     
     log("base", f"Finished creating merge folder: {c.MERGE_FOLDER}\n")
 

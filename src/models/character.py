@@ -36,16 +36,16 @@ class CharacterList:
 
     @classmethod
     def load(cls, path: str) -> 'CharacterList':
-        import os
-        if not os.path.exists(path):
+        from pathlib import Path
+        if not Path(path).exists():
             return cls([])
         with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         return cls([Character.from_dict(d) for d in data])
 
     def save(self, path: str):
-        import os
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        from pathlib import Path
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
         
         # Sort by ID
         self.characters.sort(key=lambda c: c.id)
