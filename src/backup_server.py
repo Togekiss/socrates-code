@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import shutil
 import threading
+import contextvars
 import utils.tricks as t
 import utils.exceptions as exc
 from models import ServerBackup
@@ -210,7 +211,8 @@ def backup_server():
         # start thread to create the merge folder while we download channels
         merge_thread = None
         if is_update:
-            merge_thread = threading.Thread(target=t.create_merge_folder)
+            ctx = contextvars.copy_context()
+            merge_thread = threading.Thread(target=ctx.run, args=(t.create_merge_folder,))
             merge_thread.start()
 
         # run through channel list to download it all    

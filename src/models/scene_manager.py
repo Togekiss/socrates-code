@@ -3,7 +3,7 @@ import json
 from typing import List, Dict, Any, Optional
 
 class SceneManager:
-    _instance = None
+    _instances: Dict[str, 'SceneManager'] = {}
     
     def __init__(self, backup_id: str, base_path: str, scenes_path: Optional[str] = None):
         self.backup_id = backup_id
@@ -13,10 +13,16 @@ class SceneManager:
         
     @classmethod
     def get_instance(cls, backup_id: str, base_path: str) -> 'SceneManager':
-        # Simple caching for one backup at a time
-        if cls._instance is None or cls._instance.backup_id != backup_id:
-            cls._instance = cls(backup_id, base_path)
-        return cls._instance
+        if backup_id not in cls._instances or cls._instances[backup_id].base_path != base_path:
+            cls._instances[backup_id] = cls(backup_id, base_path)
+        return cls._instances[backup_id]
+
+    @classmethod
+    def clear_cache(cls, backup_id: Optional[str] = None):
+        if backup_id is not None:
+            cls._instances.pop(backup_id, None)
+        else:
+            cls._instances.clear()
 
     def _load_scenes(self, custom_path: Optional[str] = None):
         scenes_path = custom_path or (Path(self.base_path) / 'Data' / '_scenes.json').as_posix()
