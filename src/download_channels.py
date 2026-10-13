@@ -132,7 +132,7 @@ def download_full_category(cat_name, cat_id, date):
 
         output_paths = f"-o \"{folder}/%P# %T/%p# %C.json\" --threads-output \"{folder}/%N# %M/Threads/%P-%p# %C.json\""
         
-        cli_command = f'dotnet DCE/DiscordChatExporter.Cli.dll export --parallel {group_size} -c {cat_id} -f Json {output_paths} --locale "en-GB" {date} --fuck-russia --include-threads all --relative-positions'
+        cli_command = f'dotnet DCE/DiscordChatExporter.Cli.dll export --parallel {group_size} -c {cat_id} -f Json {output_paths} --locale "en-GB" --utc {date} --fuck-russia --include-threads all --relative-positions'
         t.run_command(cli_command, group_size)
                
     

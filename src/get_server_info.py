@@ -52,7 +52,8 @@ def load_status():
         Path(c.INFO_FOLDER).mkdir(parents=True, exist_ok=True)
         
         # Add to global index if not present
-        if t.add_backup_to_index(c.BACKUP_NAME, c.SERVER_ID, c.SERVER_NAME, c.BACKUP_BASE):
+        relative_path = str(Path(c.BACKUP_BASE).relative_to(c.DATA_ROOT)).replace('\\', '/')
+        if t.add_backup_to_index(c.BACKUP_NAME, c.SERVER_ID, c.SERVER_NAME, relative_path):
             t.log("debug", f"  Added new backup to global index")
             
         # Seed backup_config.json
@@ -95,7 +96,7 @@ def load_status():
     backup = ServerBackup(
         path = c.BACKUP_INFO_UPDATE if is_update else c.BACKUP_INFO,
         id = c.SERVER_ID,
-        name = c.SERVER_NAME,
+        name = c.BACKUP_NAME,
         updated_at = datetime.now().astimezone().isoformat(sep='T', timespec='microseconds')
     )
 

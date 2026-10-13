@@ -73,7 +73,7 @@ def load_status():
         t.log("debug", f"  The current status of the backup is '{backup.status}'\n")
 
         # Check if the merge folder exists
-        if not Path(c.MERGE_FOLDER).exists():
+        if is_update and not Path(c.MERGE_FOLDER).exists():
             t.create_merge_folder()
 
         # flag it as running in case another execution of the script is launched

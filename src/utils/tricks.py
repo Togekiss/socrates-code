@@ -95,7 +95,7 @@ def add_backup_to_index(backup_name, server_id, server_name, path):
 
     index = get_backups_index()
 
-    # Check if there's a conflict with path 
+    # if there's no conflict with the path, generate new id and add backup to index
     if not any(b["path"] == path for b in index):
 
         # Generate backup id
@@ -113,6 +113,13 @@ def add_backup_to_index(backup_name, server_id, server_name, path):
 
         save_to_json(index, c.BACKUPS_INDEX)
         return True
+    else:
+        # If there's conflict with the path, and other fields don't match, raise error
+        for backup in index:
+            if backup["path"] == path:
+                if backup["backup_name"] != backup_name or backup["server_id"] != server_id or backup["server_name"] != server_name:
+                    raise exc.BackupError("There's a different backup using the same path.")
+                return False
 
     return False
 

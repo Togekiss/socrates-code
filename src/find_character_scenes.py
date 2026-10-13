@@ -2,6 +2,7 @@ import re
 import os
 from pathlib import Path
 import time
+import unicodedata
 import utils.tricks as t
 import utils.exceptions as exc
 from assign_ids import get_all_character_ids

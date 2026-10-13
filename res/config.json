@@ -1,23 +1,38 @@
 {
     "admin": {
-        "serverName": "el meu server",
-        "serverId": "442481942794076161",
-        "dmCategories": [],
-        "categoriesToIgnore": [
-            "Hide from Socrates"
+        "serverName": "(+18) Diabolik: Elysium",
+        "serverId": "857848490683269161",
+        "dmCategories": [
+            "Text and Calls"
         ],
-        "categoriesToKeep": [],
-        "keepMode": false,
+        "categoriesToIgnore": [
+            "Staff Only",
+            "Welcome!",
+            "OOC",
+            "RP Information",
+            "RP Section",
+            "EVENT",
+            "Group Chats",
+            "Social Media",
+            "NSFW Room",
+            "NSFW Events",
+            "Confessional",
+            "->WAITING ROOM<-"
+        ],
+        "categoriesToKeep": [
+            "The Twisted Viper Bar"
+        ],
+        "keepMode": true,
         "verbosity": {
             "info": true,
             "debug": true,
             "console": true,
             "log": true,
-            "dryRun": true,
+            "dryRun": false,
             "debugFiles": true
         },
-        "backupName": "el meu server",
-        "path": "Backups/el_meu_server"
+        "backupName": "Elysium-sql-tests",
+        "path": "Backups/Elysium-sql-tests"
     },
     "user": {
         "searchFolder": "",
