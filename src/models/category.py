@@ -51,11 +51,13 @@ class Category:
     
     @classmethod
     def from_dict(cls, data: dict) -> "Category":
+        from pathlib import Path
+        raw_path = data.get("path", "")
         return cls(
             id=data["id"],
             name=data["name"],
             position=data["position"],
-            path=data["path"],
+            path=Path(raw_path).as_posix() if raw_path else "",
             is_deleted=data.get("is_deleted", False),
             channels=[
                 Channel.from_dict(channel_data)
@@ -109,9 +111,10 @@ class Category:
         return thread, channel
     
     def update(self, new_name=None, new_position=None, new_path=None):
+        from pathlib import Path
         self.new_name = new_name
         self.new_position = new_position
-        self.new_path = new_path
+        self.new_path = Path(new_path).as_posix() if new_path else None
 
     def is_updated(self):
         return self.new_name is not None or self.new_position is not None or self.new_path is not None 

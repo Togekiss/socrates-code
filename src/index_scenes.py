@@ -1,10 +1,12 @@
 import os
+import sys
+from pathlib import Path
 import time
+from typing import Optional
 import utils.tricks as t
 import utils.exceptions as exc
-from assign_ids import get_character_name
 from find_character_scenes import find_character_scenes_in_channel
-from models import ServerBackup, Category, Channel, Thread
+from models import ServerBackup, Category, Channel, Thread, SceneManager, CharacterList, Step
 t.set_path()
 from res import constants as c
 
@@ -41,11 +43,9 @@ load_status()
 def load_status():
 
     try: 
-        t.log("debug", f'  Loading backup info from file: {c.BACKUP_INFO}')
+        backup = ServerBackup.load(scope="base")
 
-        backup = ServerBackup.from_json(c.BACKUP_INFO)
-
-        if backup.is_running():
+        if backup.is_other_step_running(Step.INDEX_SCENES):
             raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
         
         if not backup.can_index_scenes():
@@ -162,7 +162,7 @@ find_all_scenes_in_channel(channel):
         list: A list of scenes.
 
 """
-def find_all_scenes_in_channel(channel, id_builder):
+def find_all_scenes_in_channel(channel, id_builder, char_list: Optional[CharacterList] = None):
     
     characters_in_channel = []
     total_scenes = []
@@ -185,7 +185,8 @@ def find_all_scenes_in_channel(channel, id_builder):
     # find the scenes for each character
     for character in characters_in_channel:
 
-        t.log("debug", f"\t  Finding scenes with '{get_character_name(character)}'...")
+        char_name = char_list.get_character_name(character) if char_list else str(character)
+        t.log("debug", f"\t  Finding scenes with '{char_name}'...")
 
         scenes, discard_id = find_character_scenes_in_channel(channel, [character], 0, True)
 
@@ -195,7 +196,7 @@ def find_all_scenes_in_channel(channel, id_builder):
                 scene_starts_lookup.append(scene["start"]["id"])
                 total_scenes.append(scene)
     
-        t.log("debug", f"\t    Found {len(scenes)} scenes with '{get_character_name(character)}', adding up to {len(total_scenes)} total scenes\n")
+        t.log("debug", f"\t    Found {len(scenes)} scenes with '{char_name}', adding up to {len(total_scenes)} total scenes\n")
 
     # sort the scenes by start time
     total_scenes.sort(key=lambda x: x["start"]["index"])
@@ -212,27 +213,25 @@ def find_all_scenes_in_channel(channel, id_builder):
 
 
 
-def process_channel(channel:Channel|Thread, id_builder:str):
+def process_channel(channel: Channel | Thread, id_builder: str, char_list: Optional[CharacterList] = None):
 
-    file_path = os.path.join(c.DATA_FOLDER, channel.path)
+    file_path = (Path(c.DATA_FOLDER) / channel.path).as_posix()
     t.log("log", f"  Analysing {channel.name}...")
 
     # Load JSON channel from file
     json_data = t.load_from_json(file_path)
 
     # Find scene starts and ends for all characters
-    scenes, bad_scenes = find_all_scenes_in_channel(json_data, id_builder)
+    scenes, bad_scenes = find_all_scenes_in_channel(json_data, id_builder, char_list)
 
-    # save the file
-    scenes_file = file_path.replace(".json", "_scenes.json")
-    scenes_path = scenes_file.replace("\\Threads\\", "\\Scenes\\") if "\\Threads\\" in scenes_file else os.path.join(os.path.dirname(scenes_file), "Scenes", os.path.basename(scenes_file))
-
-    # TODO this is temporary to find the ones that need fixing. save evrything later
-    t.save_to_json(scenes, scenes_path)
-    if len(bad_scenes) > 0:
-        t.save_to_json(bad_scenes, scenes_path.replace("_scenes.json", "_bad_scenes.json"))
-
-    t.log("log", f"\tSaved {len(scenes)} scenes to {scenes_file}")
+    if c.DEBUG_FILES:
+        scenes_file = file_path.replace(".json", "_scenes.json")
+        scenes_path = scenes_file.replace("/Threads/", "/Scenes/") if "/Threads/" in scenes_file else (Path(scenes_file).parent / "Scenes" / Path(scenes_file).name).as_posix()
+        Path(scenes_path).parent.mkdir(parents=True, exist_ok=True)
+        t.save_to_json(scenes, scenes_path)
+        if len(bad_scenes) > 0:
+            t.save_to_json(bad_scenes, scenes_path.replace("_scenes.json", "_bad_scenes.json"))
+        t.log("log", f"\tSaved {len(scenes)} scenes to {scenes_file}")
 
     # Update the model with the scene count
     channel.scenes = len(scenes)
@@ -257,7 +256,7 @@ find_scenes_in_category(folder_path):
         list: A list of scenes.
 """
 
-def find_scenes_in_category(category:Category):
+def find_scenes_in_category(category: Category, char_list: Optional[CharacterList] = None):
 
     start_time = time.time()
 
@@ -269,17 +268,17 @@ def find_scenes_in_category(category:Category):
 
     for channel in category.channels:
 
-        scenes, bad_scenes = process_channel(channel, f"{category.position}{channel.position}")
+        scenes, bad_scenes = process_channel(channel, f"{category.position}{channel.position}", char_list)
 
         # Add the messages to the respective lists, can be more than one per channel
         all_scenes.extend(scenes)
         all_bad_scenes.extend(bad_scenes)
 
-        t.log("info", f"\t  Found {len(scenes)} scenes in '{scenes[0]["channel"] if len(scenes) > 0 else 'this channel'}', adding up to {len(all_scenes)} total scenes\n")
+        t.log("info", f"\t  Found {len(scenes)} scenes in '{scenes[0]['channel'] if len(scenes) > 0 else 'this channel'}', adding up to {len(all_scenes)} total scenes\n")
 
         for thread in channel.threads:
 
-            scenes, bad_scenes = process_channel(thread, f"{category.position}{channel.position}{thread.position}")
+            scenes, bad_scenes = process_channel(thread, f"{category.position}{channel.position}{thread.position}", char_list)
 
             # Add the messages to the respective lists, can be more than one per channel
             all_scenes.extend(scenes)
@@ -294,38 +293,45 @@ def find_scenes_in_category(category:Category):
     for i, scene in enumerate(all_scenes):
         scene["index"] = i+1
 
-    folder_path = os.path.join(c.DATA_FOLDER, category.path)
+    if c.DEBUG_FILES:
+        folder_path = (Path(c.DATA_FOLDER) / category.path).as_posix()
+        t.save_to_json(all_scenes, f"{folder_path}/_scenes.json")
+        t.save_to_json(all_bad_scenes, f"{folder_path}/_bad_scenes.json")
+        t.log("debug", f"\n    Saved {len(all_scenes)} scenes to {folder_path}/_scenes.json")
 
-    t.save_to_json(all_scenes, f"{folder_path}/_scenes.json")
-    t.save_to_json(all_bad_scenes, f"{folder_path}/_bad_scenes.json")
+    t.log("info", f"\n    ## Finished finding scenes in {category.name} --- {time.time() - start_time:.2f} seconds --- ##\n")
 
-    t.log("debug", f"\n    Saved {len(all_scenes)} scenes to {folder_path}/_scenes.json")
-    t.log("info", f"\n    ## Finished finding scenes in {folder_path} --- {time.time() - start_time:.2f} seconds --- ##\n")
-
-    return all_scenes
+    return all_scenes, all_bad_scenes
 
 ################ Main function #################
 
 def index_scenes():
 
     backup = load_status()
+    b_id = backup.backup_id or getattr(c, "BACKUP_ID", None)
+    b_path = backup.path or getattr(c, "BACKUP_BASE", None)
 
     try:
         start_time = time.time()
 
-        t.log("base", f"\n# Indexing all the scenes in {c.SERVER_NAME}... #\n")
+        t.log("base", f"\n# Indexing all the scenes in {c.BACKUP_NAME}... #\n")
     
+        char_list = CharacterList.load()
         full_scenes = []
+        full_bad_scenes = []
 
         for category in backup.categories:
 
-            # create Scenes folder if it doesn't exist
-            if not os.path.exists(f"{c.DATA_FOLDER}/{category.path}/Scenes"):
-                os.makedirs(f"{c.DATA_FOLDER}/{category.path}/Scenes")
+            # create Scenes folder if it doesn't exist and debug files are requested
+            if c.DEBUG_FILES:
+                scenes_dir = Path(c.DATA_FOLDER) / category.path / "Scenes"
+                if not scenes_dir.exists():
+                    scenes_dir.mkdir(parents=True, exist_ok=True)
 
-            scenes = find_scenes_in_category(category)
+            scenes, bad_scenes = find_scenes_in_category(category, char_list)
 
             full_scenes.extend(scenes)
+            full_bad_scenes.extend(bad_scenes)
             t.log("info", f"  Found {len(scenes)} scenes in {category.path}, adding up to {len(full_scenes)} total scenes\n")
 
         # sort the scenes by start time
@@ -335,13 +341,16 @@ def index_scenes():
         for i, scene in enumerate(full_scenes):
             scene["index"] = i+1
 
-        t.save_to_json(full_scenes, f"{c.DATA_FOLDER}\\_scenes.json")
-
-        t.log("info", f"\n  Saved {len(full_scenes)} scenes to {c.DATA_FOLDER}\\_scenes.json")
+        # Delegate saving to SQLite via SceneManager
+        SceneManager.get_instance(backup_id=b_id, base_path=b_path).save_scenes(
+            scenes=full_scenes,
+            bad_scenes=full_bad_scenes,
+            debug_files=c.DEBUG_FILES,
+        )
 
         # Update the overall backup model and save to the status file
         backup.save()
-        backup.finish_index_scenes()
+        backup.finish_index_scenes(success=True)
 
     except Exception as e:
         backup.finish_index_scenes(success=False)
@@ -361,16 +370,18 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         t.log("error", "\nProcess interrupted by user.\n")
         try:
-            backup = ServerBackup.from_json(c.BACKUP_INFO)
+            backup = ServerBackup.load(scope="base")
             if backup.is_updating():
-                update = ServerBackup.from_json(c.BACKUP_INFO_UPDATE)
+                update = ServerBackup.load(scope="update")
                 update.set_failed()
                 backup.finish_update(success=False)
             else:
                 backup.set_failed()
         except Exception:
             pass
+        sys.exit(1)
 
     except Exception as e:
         t.log("error", f"\n{exc.unwrap(e)}\n")
+        sys.exit(1)
     

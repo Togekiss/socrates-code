@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import re
 import utils.tricks as t
 import utils.exceptions as exc
@@ -48,18 +49,15 @@ def load_status():
     is_update = False
 
     try: 
-        t.log("debug", f'  Loading backup info from file: {c.BACKUP_INFO}')
+        t.log("debug", f'  Loading backup info from SQLite...')
 
-        backup = ServerBackup.from_json(c.BACKUP_INFO)
+        backup = ServerBackup.load(scope="base")
         
         # If it's in update mode, we'll use the update info file
         if backup.is_updating():
-
             is_update = True
-
-            t.log("debug", "An update is running. Using the update info file\n")
-
-            backup = ServerBackup.from_json(c.BACKUP_INFO_UPDATE)
+            t.log("debug", "An update is running. Using the update info\n")
+            backup = ServerBackup.load(scope="update")
 
         if backup.is_running():
             raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
@@ -71,7 +69,7 @@ def load_status():
 
         backup.start_verify()
 
-        t.log("debug", "  Backup info file is ready.\n")
+        t.log("debug", "  Backup info is ready.\n")
 
     except (exc.AlreadyRunningError, exc.DataNotReadyError) as e:
         raise e
@@ -97,13 +95,13 @@ count_files(target_number, folder)
 def count_files(target_number, folder):
 
     # Check if the folder exists
-    if not os.path.exists(folder):
+    if not Path(folder).exists():
         raise exc.VerifyPathsError(f"The folder '{folder}' does not exist.")
 
     t.log("debug", f"\tFound folder '{folder}'")
 
     # Get all .json files that don't end with '_scenes.json'
-    files = [f for f in os.listdir(folder) if f.endswith(".json") and not f.endswith("_scenes.json")]
+    files = [f.name for f in Path(folder).iterdir() if f.is_file() and f.name.endswith(".json") and not f.name.endswith("_scenes.json")]
 
     t.log("debug", f"\t\tWe found {len(files)} files in the folder '{folder}'")
 
@@ -131,7 +129,7 @@ def verify_channel_file(cat: Category, folder, filename):
     t.log("debug", f"\tChecking the channel in the file '{filename}'...")
     
     # load the file
-    file_data = t.load_from_json(os.path.join(folder, filename))
+    file_data = t.load_from_json((Path(folder) / filename).as_posix())
     file_id = file_data["channel"]["id"]
 
     if (file_data["channel"]["categoryId"] != cat.id):
@@ -155,7 +153,7 @@ def verify_channel_file(cat: Category, folder, filename):
    
     # update numberOfMessages
     ch.messages = file_data["messageCount"]
-    ch.path = os.path.join(cat.path, filename)
+    ch.path = (Path(cat.path) / filename).as_posix()
 
     t.log("debug", f"\t\tFile '{ch.path}' verified with {ch.messages} messages\n")
 
@@ -175,7 +173,7 @@ def verify_thread_file(cat: Category, folder, filename):
     t.log("debug", f"\tChecking the thread in the file '{filename}'...")
     
     # load the file
-    file_data = t.load_from_json(os.path.join(folder, filename))
+    file_data = t.load_from_json((Path(folder) / filename).as_posix())
     file_id = file_data["channel"]["id"]
 
     # check if cat["channels"][file_id] exists
@@ -201,7 +199,7 @@ def verify_thread_file(cat: Category, folder, filename):
 
     # update numberOfMessages
     th.messages = file_data["messageCount"]
-    th.path = os.path.join(cat.path, "Threads", filename)
+    th.path = (Path(cat.path) / "Threads" / filename).as_posix()
 
     t.log("debug", f"\t\tFile '{th.path}' verified with {th.messages} messages\n")
 
@@ -222,10 +220,10 @@ def verify_category_folder(cat: Category, folder):
 
     t.log("debug", f"\tChecking '{cat.name}'...")
 
-    cat_folder = os.path.join(folder, cat.path)
+    cat_folder = (Path(folder) / cat.path).as_posix()
 
     # Check if the category folder exists
-    if not os.path.exists(cat_folder):
+    if not Path(cat_folder).exists():
         raise exc.VerifyPathsError(f"The category folder '{cat_folder}' does not exist.")
     
     t.log("debug", f"\t\tFound category folder '{cat_folder}'\n")
@@ -240,7 +238,7 @@ def verify_category_folder(cat: Category, folder):
     # If it has threads
     if cat.number_of_threads != 0:
 
-        threads_folder = os.path.join(cat_folder, "Threads")
+        threads_folder = (Path(cat_folder) / "Threads").as_posix()
 
         files = count_files(cat.number_of_threads, threads_folder)
 
@@ -271,16 +269,16 @@ def verify_files(backup: ServerBackup, is_update):
 
         t.log("info", f"\n\tVerifying paths in {folder}...\n")
 
+        categories_dirs = [f for f in Path(folder).iterdir() if f.is_dir()]
         # Check if number of folders match numberOfCategories 
-        if len(os.listdir(folder)) != backup.number_of_categories:
-            raise exc.VerifyPathsError(f"The number of folders ({len(os.listdir(folder))}) does not match the number of categories ({backup.number_of_categories}) in the status file.")
+        if len(categories_dirs) != backup.number_of_categories:
+            raise exc.VerifyPathsError(f"The number of folders ({len(categories_dirs)}) does not match the number of categories ({backup.number_of_categories}) in the status file.")
         
-        t.log("debug", f"\n\tWe found {len(os.listdir(folder))} folders that match {backup.number_of_categories} categories.\n")
+        t.log("debug", f"\n\tWe found {len(categories_dirs)} folders that match {backup.number_of_categories} categories.\n")
 
         # Check each category
         for cat in backup.categories:
             verify_category_folder(cat, folder)
-            backup.to_json()
             
         t.log("info", f"\nAll folders have been verified.\n")
     
@@ -313,7 +311,7 @@ def verify_download():
             t.log("info", "\n\tFinished verifying file paths\n")
 
             if is_update and backup.is_failed():
-                main_backup = ServerBackup.from_json(c.BACKUP_INFO)
+                main_backup = ServerBackup.load(scope="base")
                 main_backup.finish_update(success=False)
 
         except Exception as e:
@@ -332,9 +330,9 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         t.log("error", "\nProcess interrupted by user.\n")
         try:
-            backup = ServerBackup.from_json(c.BACKUP_INFO)
+            backup = ServerBackup.load(scope="base")
             if backup.is_updating():
-                update = ServerBackup.from_json(c.BACKUP_INFO_UPDATE)
+                update = ServerBackup.load(scope="update")
                 update.set_failed()
                 backup.finish_update(success=False)
             else:

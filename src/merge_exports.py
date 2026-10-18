@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import shutil
 import time
 import utils.tricks as t
@@ -45,7 +46,7 @@ def load_status():
     try: 
         t.log("debug", f'  Loading backup info from file: {c.BACKUP_INFO}')
 
-        backup = ServerBackup.from_json(c.BACKUP_INFO)
+        backup = ServerBackup.load(scope="base")
         
         # If it's in update mode, we'll use the update info file
         if backup.is_updating():
@@ -54,7 +55,7 @@ def load_status():
 
             t.log("debug", "An update is running. Using the update info file\n")
 
-            backup = ServerBackup.from_json(c.BACKUP_INFO_UPDATE)
+            backup = ServerBackup.load(scope="update")
 
         if backup.is_running():
             raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
@@ -136,6 +137,7 @@ def merge_channel(old, update, main_backup):
     # set counters
     full_index = 0
     update_index = 0
+    found_new = False
 
     # For each new message in the update
     for i, new_message in enumerate(update_messages):
@@ -153,6 +155,7 @@ def merge_channel(old, update, main_backup):
         
         # If not, it means it's new. exit
         if index is None:
+            found_new = True
             break
 
         # If found, update the message and continue
@@ -161,7 +164,8 @@ def merge_channel(old, update, main_backup):
             full_messages[full_index] = new_message
 
     # Append all the new messages
-    full_messages.extend(update_messages[update_index:])
+    if found_new:
+        full_messages.extend(update_messages[update_index:])
           
     # Update metadata and messages to the whole JSON 
     old_data['exportedAt'] = update_data['exportedAt']
@@ -190,26 +194,25 @@ merge_file(path, update_folder, old_folder, main_backup)
 """
 def merge_file(path, update_folder, old_folder, main_backup):
 
-    update_file_path = os.path.join(update_folder, path)
-    old_file_path = os.path.join(old_folder, path)
+    update_file_path = (Path(update_folder) / path).as_posix()
+    old_file_path = (Path(old_folder) / path).as_posix()
 
     # Check if an equivalent file exists in the "Old" folder
     
     # If it does, merge the two files
-    if os.path.exists(old_file_path) and os.path.exists(update_file_path):
+    if Path(old_file_path).exists() and Path(update_file_path).exists():
         t.log("debug", f"\tMerging {update_file_path} into {old_file_path}")
         if not c.DRY_RUN:
             merge_channel(old_file_path, update_file_path, main_backup)
         else:
             t.log("info", f"DRY RUN: Would merge {update_file_path} into {old_file_path}")
 
-    elif os.path.exists(update_file_path) and not os.path.exists(old_file_path):
+    elif Path(update_file_path).exists() and not Path(old_file_path).exists():
         # If not, create the necessary subfolders in "Old" to maintain the same directory tree
-        if not os.path.dirname(old_file_path):
-            if not c.DRY_RUN:
-                os.makedirs(os.path.dirname(old_file_path), exist_ok=True)
-            else:
-                t.log("info", f"DRY RUN: Would create {os.path.dirname(old_file_path)}")
+        if not c.DRY_RUN:
+            Path(old_file_path).parent.mkdir(parents=True, exist_ok=True)
+        else:
+            t.log("info", f"DRY RUN: Would create {Path(old_file_path).parent.as_posix()}")
 
         # Copy the file from "Update" to "Old"
         if not c.DRY_RUN:
@@ -239,11 +242,12 @@ def merge_exports():
 
         start_time = time.time()
 
-        main_backup = ServerBackup.from_json(c.BACKUP_INFO)
+        main_backup = ServerBackup.load(scope="base")
 
         for path in backup.get_all_paths():
             merge_file(path, c.UPDATE_FOLDER, c.MERGE_FOLDER, main_backup)
 
+        main_backup.save()
         backup.finish_merge()
 
     except Exception as e:
@@ -255,7 +259,7 @@ def merge_exports():
             t.log("base", f"### Merging finished --- {time.time() - start_time:.2f} seconds --- ###\n")
             
             if is_update and backup.is_failed():
-                main_backup = ServerBackup.from_json(c.BACKUP_INFO)
+                main_backup = ServerBackup.load(scope="base")
                 main_backup.finish_update(success=False)
 
         except Exception as e:
@@ -273,9 +277,9 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         t.log("error", "\nProcess interrupted by user.\n")
         try:
-            backup = ServerBackup.from_json(c.BACKUP_INFO)
+            backup = ServerBackup.load(scope="base")
             if backup.is_updating():
-                update = ServerBackup.from_json(c.BACKUP_INFO_UPDATE)
+                update = ServerBackup.load(scope="update")
                 update.set_failed()
                 backup.finish_update(success=False)
             else:

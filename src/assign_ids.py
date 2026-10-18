@@ -1,8 +1,10 @@
 import os
+import sys
+from pathlib import Path
 import time
 import utils.tricks as t
 import utils.exceptions as exc
-from models import ServerBackup, CharacterList
+from models import ServerBackup, CharacterList, Step
 t.set_path()
 from res import constants as c
 
@@ -41,7 +43,7 @@ def load_status():
     try: 
         t.log("debug", f'  Loading backup info from file: {c.BACKUP_INFO}')
 
-        backup = ServerBackup.from_json(c.BACKUP_INFO)
+        backup = ServerBackup.load(scope="base")
         
         # If it's in update mode, we'll use the update info file
         if backup.is_updating():
@@ -50,9 +52,9 @@ def load_status():
 
             t.log("debug", "An update is running. Using the update info file\n")
 
-            backup = ServerBackup.from_json(c.BACKUP_INFO_UPDATE)
+            backup = ServerBackup.load(scope="update")
 
-        if backup.is_running():
+        if backup.is_other_step_running(Step.ASSIGN_IDS):
             raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
         
         if not backup.can_assign_ids():
@@ -106,11 +108,13 @@ def assign_ids_in_file(file_path, char_list: CharacterList):
 
     # Load channel JSON data from file
     data = t.load_from_json(file_path)
+    is_modified = False
 
-    for message in data["messages"]:
+    for message in data.get("messages", []):
+        author = message.get("author", {})
         # only do this for tuppers
-        if message["author"]["isBot"]:
-            author_name = message["author"]["name"]
+        if author.get("isBot"):
+            author_name = author.get("name")
 
             # If the character is not already in the list, add it
             char_id = char_list.find_id_by_name(author_name)
@@ -118,13 +122,16 @@ def assign_ids_in_file(file_path, char_list: CharacterList):
                 new_char = char_list.add_character(author_name)
                 char_id = new_char.id
                 t.log("info", f"\t  Found a new Tupper: {author_name} (ID: {char_id})")
-                char_list.save(c.CHARACTER_LIST)
-         
-            # Update the author's ID in the message
-            message["author"]["id"] = f"{char_id}"
 
-    # Save the updated JSON data to the file
-    t.save_to_json(data, file_path)
+            # Update the author's ID in the message
+            char_id_str = str(char_id)
+            if author.get("id") != char_id_str:
+                author["id"] = char_id_str
+                is_modified = True
+
+    # Save only if modified
+    if is_modified:
+        t.save_to_json(data, file_path)
     
 
 ################ Main function #################
@@ -141,7 +148,7 @@ def assign_ids():
         start_time = time.time()
 
         # Open or create a dictionary to store character info
-        char_list = CharacterList.load(c.CHARACTER_LIST)
+        char_list = CharacterList.load()
 
         t.log("info", f"\tLoaded {len(char_list.characters)} main characters\n")
 
@@ -149,8 +156,11 @@ def assign_ids():
 
         # Iterate over all channel files
         for path in backup.get_all_paths():
-            assign_ids_in_file(os.path.join(search_folder, path), char_list)
+            assign_ids_in_file((Path(search_folder) / path).as_posix(), char_list)
         
+        # Save newly added characters once
+        char_list.save()
+
         # We flag the successful backup state
         backup.finish_assign_ids(success=True)
         
@@ -159,6 +169,11 @@ def assign_ids():
         t.log("base", f"\n### ID assigning finished --- {elapsed_time:.2f} seconds --- ###\n")
 
     except Exception as e:
+        if c.DEBUG_FILES and 'char_list' in locals():
+            try:
+                char_list.save()
+            except Exception:
+                pass
         backup.finish_assign_ids(success=False)
         raise exc.AssignIDError("Failed to assign unique IDs to Tupperbox bots") from e
 
@@ -177,15 +192,17 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         t.log("error", "\nProcess interrupted by user.\n")
         try:
-            backup = ServerBackup.from_json(c.BACKUP_INFO)
+            backup = ServerBackup.load(scope="base")
             if backup.is_updating():
-                update = ServerBackup.from_json(c.BACKUP_INFO_UPDATE)
+                update = ServerBackup.load(scope="update")
                 update.set_failed()
                 backup.finish_update(success=False)
             else:
                 backup.set_failed()
         except Exception:
             pass
+        sys.exit(1)
 
     except Exception as e:
-        t.log("error", str(e))
+        t.log("error", f"\n{exc.unwrap(e)}\n")
+        sys.exit(1)

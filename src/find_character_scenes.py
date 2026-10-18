@@ -1,5 +1,6 @@
 import re
 import os
+from pathlib import Path
 import time
 import unicodedata
 import utils.tricks as t
@@ -42,9 +43,7 @@ load_status()
 def load_status():
 
     try: 
-        t.log("debug", f'  Loading backup info from file: {c.BACKUP_INFO}')
-
-        backup = ServerBackup.from_json(c.BACKUP_INFO)
+        backup = ServerBackup.load(scope="base")
 
         if backup.is_running():
             raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
@@ -61,7 +60,7 @@ def load_status():
         raise e
      
     except Exception as e:
-        raise exc.FindCharacterScenesError("The export status file could not be read") from e
+        raise exc.FindCharacterScenesError("The export status could not be read") from e
     
     return backup
 
@@ -448,17 +447,13 @@ find_character_scenes_in_folder(folder_path, characters_list):
         list: A list of filtered scenes.
 """
 def find_character_scenes_in_folder(folder_path, characters_list):
-    scenes_file = os.path.join(folder_path, "_scenes.json")
-
-    if not os.path.exists(scenes_file):
-        raise exc.FindCharacterScenesError(f"Scenes file not found in {folder_path}. Please run 'index_scenes' first to create it.")
-
     from models.scene_manager import SceneManager
-    manager = SceneManager(backup_id="", base_path="", scenes_path=scenes_file)
+    manager = SceneManager.get_instance()
     
     return manager.filter_scenes(
         character_ids=characters_list,
-        character_logic='OR'
+        character_logic='OR',
+        search_folder=folder_path,
     )
 
 
@@ -467,12 +462,14 @@ def find_character_scenes_in_folder(folder_path, characters_list):
 def find_character_scenes():
 
     backup = load_status()
+    b_id = backup.backup_id or getattr(c, "BACKUP_ID", None)
+    b_path = backup.path or getattr(c, "BACKUP_BASE", None)
 
     try:
         start_time = time.time()
 
         # Get the path of the "scenes" folder from the config file
-        folder_path = c.DATA_FOLDER + c.SEARCH_FOLDER
+        folder_path = getattr(c, "SEARCH_FOLDER", "") or ""
 
         # Find main character ID (and associated versions)
         characters_list = get_all_character_ids(c.CHARACTER)
@@ -483,15 +480,25 @@ def find_character_scenes():
         t.log("debug", f"\nFound {len(characters_list)} versions of {c.CHARACTER}: {characters_list}")
         
         has_versions = "" if len(characters_list) == 1 else f" and their {len(characters_list)} versions"
-        t.log("base", f"\n## Finding scenes with {c.CHARACTER}{has_versions} in {folder_path}... ##\n")
+        display_folder = (Path(c.DATA_FOLDER) / folder_path.lstrip("/\\")).as_posix() if folder_path else c.DATA_FOLDER
+        t.log("base", f"\n## Finding scenes with {c.CHARACTER}{has_versions} in {display_folder}... ##\n")
 
-        all_scenes = find_character_scenes_in_folder(folder_path, characters_list)
+        status_filter = getattr(c, "STATUS", "all") or "all"
+
+        from models.scene_manager import SceneManager
+        manager = SceneManager.get_instance(backup_id=b_id, base_path=b_path)
+        all_scenes = manager.filter_scenes(
+            character_ids=characters_list,
+            character_logic='OR',
+            search_folder=folder_path,
+            status=status_filter,
+        )
 
         # update scene indexes
         for i, scene in enumerate(all_scenes):
             scene["index"] = i+1
 
-        os.makedirs(os.path.dirname(c.OUTPUT_SCENES), exist_ok=True)
+        Path(c.OUTPUT_SCENES).parent.mkdir(parents=True, exist_ok=True)
         t.save_to_json(all_scenes, c.OUTPUT_SCENES)
 
         t.log("info", f"\n\tFound {len(all_scenes)} scenes in total")

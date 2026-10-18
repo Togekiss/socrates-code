@@ -1,6 +1,7 @@
 import datetime
 import time
 import os
+from pathlib import Path
 import utils.tricks as t
 import utils.exceptions as exc
 t.set_path()
@@ -74,8 +75,8 @@ def export_scenes():
 
     t.log("info", f"\tLoaded scene information for {len(scenes)} scenes\n")
 
-    folder = f"out/{c.CHARACTER}"
-    os.makedirs(folder, exist_ok=True)
+    folder = (Path(c.OUT_DIR) / c.CHARACTER).as_posix()
+    Path(folder).mkdir(parents=True, exist_ok=True)
 
     # for each scene
     for i, scene in enumerate(scenes):

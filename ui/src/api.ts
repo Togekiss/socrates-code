@@ -1,24 +1,49 @@
 /**
  * api.ts
  * 
- * Provides a standardized HTTP fetch wrapper (`api` object) to interact with the FastAPI backend.
- * All React components should use this file for fetching data rather than writing raw fetch() calls.
- * 
- * Base URL defaults to http://localhost:8000/api
+ * Provides a standardized, strongly typed HTTP fetch client (`api` object) to interact with
+ * the FastAPI backend. All React components should use this client for network requests.
  */
 
-// Environment variable VITE_API_URL should be set in .env files (e.g. .env.local or Vercel/Firebase env)
-// Fallback to localhost if not set
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+import type {
+  AdminTestActionResponse,
+  AuthResponse,
+  BackupConfig,
+  BackupInfo,
+  Character,
+  CharacterGroup,
+  CurationSummary,
+  DiscordAuthor,
+  FlaggedMessagesResponse,
+  GlobalConfig,
+  MeResponse,
+  MessageOverridesResponse,
+  MyWriter,
+  SceneIssuesResponse,
+  ScenesResponse,
+  UnassignedCharacter,
+  Writer,
+  WriterDetailed,
+  WriterLinkSuggestion,
+} from './types';
 
-const fetchWithAuth = async (url: string, options: RequestInit = {}) => {
+// In production, uses '/api' for same-origin proxy via Firebase Hosting rewrite.
+// In development, uses local backend at 'http://localhost:8000/api'.
+export const API_BASE = import.meta.env.DEV ? 'http://localhost:8000/api' : '/api';
+
+export interface ApiError extends Error {
+  status?: number;
+  response?: { detail?: string };
+}
+
+const fetchWithAuth = async (url: string, options: RequestInit = {}): Promise<Response> => {
   const res = await fetch(url, {
     ...options,
-    credentials: 'include'
+    credentials: 'include',
   });
   if (!res.ok) {
     const errorBody = await res.json().catch(() => ({ detail: res.statusText }));
-    const error: any = new Error(errorBody.detail || `Request failed with status ${res.status}`);
+    const error = new Error(errorBody.detail || `Request failed with status ${res.status}`) as ApiError;
     error.status = res.status;
     error.response = errorBody;
     throw error;
@@ -27,81 +52,267 @@ const fetchWithAuth = async (url: string, options: RequestInit = {}) => {
 };
 
 export const api = {
-  getLoginUrl: () => fetchWithAuth(`${API_BASE}/auth/login-url`).then(res => res.json()),
-  authDiscord: (code: string) => fetchWithAuth(`${API_BASE}/auth/discord`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code })
-  }).then(res => res.json()),
-  getMe: () => fetchWithAuth(`${API_BASE}/auth/me`).then(res => res.json()),
-  logout: () => fetchWithAuth(`${API_BASE}/auth/logout`, { method: 'POST' }).then(res => res.json()),
+  // --- Auth Endpoints ---
+  getLoginUrl: (): Promise<{ url: string }> =>
+    fetchWithAuth(`${API_BASE}/auth/login-url`).then(res => res.json()),
 
-  getGlobalConfig: () => fetchWithAuth(`${API_BASE}/config/global`).then(res => res.json()),
-  updateGlobalConfig: (data: any) => fetchWithAuth(`${API_BASE}/config/global`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data)
-  }).then(res => res.json()),
-  
-  getServerCategories: (serverId: string) => fetchWithAuth(`${API_BASE}/servers/${serverId}/categories`).then(res => res.json()),
-  
-  getGlobalLogs: (lines: number = 100) => fetchWithAuth(`${API_BASE}/logs/global?lines=${lines}`).then(res => res.json()),
-  clearGlobalLogs: () => fetchWithAuth(`${API_BASE}/logs/global`, { method: 'DELETE' }).then(res => res.json()),
-  
-  getBackups: () => fetchWithAuth(`${API_BASE}/backups`).then(res => res.json()),
-  getAllBackupPaths: () => fetchWithAuth(`${API_BASE}/backups-paths`).then(res => res.json()),
-  createNewBackup: (config: any) => fetchWithAuth(`${API_BASE}/backups`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(config)
-  }).then(res => res.json()),
-  
-  getBackupInfo: (backupId: string) => fetchWithAuth(`${API_BASE}/backups/${backupId}`).then(res => res.json()),
-  getBackupConfig: (backupId: string) => fetchWithAuth(`${API_BASE}/backups/${backupId}/config`).then(res => res.json()),
-  
-  runBackup: (backupId: string, config: any) => fetchWithAuth(`${API_BASE}/backups/${backupId}/run`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(config)
-  }).then(res => res.json()),
+  authDiscord: (code: string): Promise<AuthResponse> =>
+    fetchWithAuth(`${API_BASE}/auth/discord`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    }).then(res => res.json()),
 
-  cancelRun: (backupId: string) => fetchWithAuth(`${API_BASE}/backups/${backupId}/cancel`, {
-    method: 'POST'
-  }).then(res => res.json()),
-  
-  rerunAction: (backupId: string, action: string) => fetchWithAuth(`${API_BASE}/backups/${backupId}/rerun/${action}`, {
-    method: 'POST'
-  }).then(res => res.json()),
-  
-  getCharacters: (backupId: string) => fetchWithAuth(`${API_BASE}/backups/${backupId}/characters`).then(res => res.json()),
-  
-  mergeCharacters: (backupId: string, sourceId: number, targetId: number) => fetchWithAuth(`${API_BASE}/backups/${backupId}/characters/merge`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source_id: sourceId, target_id: targetId })
-  }).then(res => res.json()),
-  
-  nestCharacter: (backupId: string, childId: number, parentId: number, versionType: string) => fetchWithAuth(`${API_BASE}/backups/${backupId}/characters/nest`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ child_id: childId, parent_id: parentId, version_type: versionType })
-  }).then(res => res.json()),
-  
-  unnestCharacter: (backupId: string, charId: number) => fetchWithAuth(`${API_BASE}/backups/${backupId}/characters/${charId}/unnest`, {
-    method: 'POST'
-  }).then(res => res.json()),
-  
-  updateCharacter: (backupId: string, charId: number, data: any) => fetchWithAuth(`${API_BASE}/backups/${backupId}/characters/${charId}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data)
-  }).then(res => res.json()),
-  
-  getScenes: (backupId: string, queryParams: URLSearchParams = new URLSearchParams()) => 
+  getMe: (): Promise<MeResponse> =>
+    fetchWithAuth(`${API_BASE}/auth/me`).then(res => res.json()),
+
+  logout: (): Promise<{ status: string }> =>
+    fetchWithAuth(`${API_BASE}/auth/logout`, { method: 'POST' }).then(res => res.json()),
+
+  // --- Configuration Endpoints ---
+  getGlobalConfig: (): Promise<GlobalConfig> =>
+    fetchWithAuth(`${API_BASE}/config/global`).then(res => res.json()),
+
+  updateGlobalConfig: (data: Partial<GlobalConfig>): Promise<{ status: string }> =>
+    fetchWithAuth(`${API_BASE}/config/global`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }).then(res => res.json()),
+
+  getServerCategories: (serverId: string): Promise<Array<{ id: string; name: string }>> =>
+    fetchWithAuth(`${API_BASE}/servers/${serverId}/categories`).then(res => res.json()),
+
+  // --- Global Logs ---
+  getGlobalLogs: (lines: number = 100): Promise<{ logs: string[] }> =>
+    fetchWithAuth(`${API_BASE}/logs/global?lines=${lines}`).then(res => res.json()),
+
+  clearGlobalLogs: (): Promise<{ status: string }> =>
+    fetchWithAuth(`${API_BASE}/logs/global`, { method: 'DELETE' }).then(res => res.json()),
+
+  // --- Backups Management ---
+  getBackups: (): Promise<BackupInfo[]> =>
+    fetchWithAuth(`${API_BASE}/backups`).then(res => res.json()),
+
+  getAllBackupPaths: (): Promise<string[]> =>
+    fetchWithAuth(`${API_BASE}/backups-paths`).then(res => res.json()),
+
+  createNewBackup: (config: BackupConfig): Promise<{ status: string; id: string }> =>
+    fetchWithAuth(`${API_BASE}/backups`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    }).then(res => res.json()),
+
+  getBackupInfo: (backupId: string): Promise<BackupInfo> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}`).then(res => res.json()),
+
+  getBackupLogs: (backupId: string, lines: number = 10): Promise<{ lines: string[] }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/logs?lines=${lines}`).then(res => res.json()),
+
+  getBackupConfig: (backupId: string): Promise<BackupConfig> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/config`).then(res => res.json()),
+
+  updateBackupConfig: (backupId: string, config: Partial<BackupConfig>): Promise<{ status: string }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/config`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    }).then(res => res.json()),
+
+  runBackup: (backupId: string, config?: Partial<BackupConfig>): Promise<{ status: string }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config || {}),
+    }).then(res => res.json()),
+
+  cancelRun: (backupId: string): Promise<{ status: string }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/cancel`, {
+      method: 'POST',
+    }).then(res => res.json()),
+
+  rerunAction: (backupId: string, action: string): Promise<{ status: string; action: string }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/rerun/${action}`, {
+      method: 'POST',
+    }).then(res => res.json()),
+
+  // --- Curation Summary ---
+  getCurationSummary: (backupId: string): Promise<CurationSummary> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/curation/summary`).then(res => res.json()),
+
+  // --- Characters & Character Groups ---
+  getCharacters: (backupId: string, byMe: boolean = false): Promise<Character[]> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/characters?by_me=${byMe}`).then(res => res.json()),
+
+  mergeCharacters: (backupId: string, sourceId: number, targetId: number): Promise<{ status: string }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/characters/merge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source_id: sourceId, target_id: targetId }),
+    }).then(res => res.json()),
+
+  nestCharacter: (backupId: string, childId: number, parentId: number, versionType: string = 'npc'): Promise<{ status: string }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/characters/nest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ child_id: childId, parent_id: parentId, version_type: versionType }),
+    }).then(res => res.json()),
+
+  unnestCharacter: (backupId: string, charId: number): Promise<{ status: string }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/characters/${charId}/unnest`, {
+      method: 'POST',
+    }).then(res => res.json()),
+
+  updateCharacter: (
+    backupId: string,
+    charId: number,
+    data: { tags?: string[]; names?: string[]; writer?: string[] }
+  ): Promise<{ status: string }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/characters/${charId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }).then(res => res.json()),
+
+  getGroups: (backupId: string): Promise<CharacterGroup[]> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/groups`).then(res => res.json()),
+
+  createGroup: (backupId: string, data: { names: string[]; member_ids: number[] }): Promise<{ status: string; group_id: number }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/groups`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }).then(res => res.json()),
+
+  updateGroup: (
+    backupId: string,
+    groupId: number,
+    data: { names?: string[]; member_ids?: number[] }
+  ): Promise<{ status: string }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/groups/${groupId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }).then(res => res.json()),
+
+  deleteGroup: (backupId: string, groupId: number): Promise<{ status: string }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/groups/${groupId}`, {
+      method: 'DELETE',
+    }).then(res => res.json()),
+
+  // --- Scenes ---
+  getScenes: (backupId: string, queryParams: URLSearchParams = new URLSearchParams()): Promise<ScenesResponse> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/scenes?${queryParams.toString()}`).then(res => res.json()),
-    
-  getWriters: (backupId: string) => fetchWithAuth(`${API_BASE}/backups/${backupId}/writers`).then(res => res.json()),
-  
-  // Expose the base stream URL for EventSource. Note: EventSource might need `withCredentials: true` in the component
-  getLogsStreamUrl: (backupId: string) => `${API_BASE}/backups/${backupId}/logs/stream`
+
+  // --- Writers & User Linking ---
+  getWriters: (backupId: string): Promise<Writer[]> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/writers`).then(res => res.json()),
+
+  getWritersDetailed: (backupId: string): Promise<WriterDetailed[]> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/writers/detailed`).then(res => res.json()),
+
+  createWriter: (
+    backupId: string,
+    data: { display_name: string; aliases?: string[]; discord_user_id?: string }
+  ): Promise<{ status: string; writer_id: number }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/writers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }).then(res => res.json()),
+
+  updateWriter: (
+    backupId: string,
+    writerId: number,
+    data: { display_name?: string; aliases?: string[]; discord_user_id?: string | null }
+  ): Promise<{ status: string }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/writers/${writerId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }).then(res => res.json()),
+
+  deleteWriter: (backupId: string, writerId: number): Promise<{ status: string }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/writers/${writerId}`, {
+      method: 'DELETE',
+    }).then(res => res.json()),
+
+  getWriterLinkSuggestions: (backupId: string): Promise<WriterLinkSuggestion[]> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/writers/link-suggestions`).then(res => res.json()),
+
+  getUnassignedCharacters: (backupId: string): Promise<UnassignedCharacter[]> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/characters/unassigned-writers`).then(res => res.json()),
+
+  assignCharacterWriter: (backupId: string, charId: number, writerId: number): Promise<{ status: string }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/characters/${charId}/assign-writer`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ writer_id: writerId }),
+    }).then(res => res.json()),
+
+  getMyWriter: (backupId: string): Promise<MyWriter | null> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/me/writer`).then(res => res.json()),
+
+  // --- Scene Issues Review Queue ---
+  getSceneIssues: (backupId: string, params: URLSearchParams = new URLSearchParams()): Promise<SceneIssuesResponse> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/scene-issues?${params.toString()}`).then(res => res.json()),
+
+  resolveSceneIssue: (
+    backupId: string,
+    issueId: number,
+    note?: string
+  ): Promise<{ status: string; issue_id: number; resolved_at: string; resolved_note: string }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/scene-issues/${issueId}/resolve`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note }),
+    }).then(res => res.json()),
+
+  reopenSceneIssue: (backupId: string, issueId: number): Promise<{ status: string; issue_id: number }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/scene-issues/${issueId}/reopen`, {
+      method: 'PUT',
+    }).then(res => res.json()),
+
+  // --- Flagged Messages & Overrides ---
+  getFlaggedMessages: (backupId: string, params: URLSearchParams = new URLSearchParams()): Promise<FlaggedMessagesResponse> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/flagged-messages?${params.toString()}`).then(res => res.json()),
+
+  promoteFlaggedMessage: (
+    backupId: string,
+    messageId: string,
+    data: { content?: string; author?: DiscordAuthor } = {}
+  ): Promise<{ status: string; message_id: string }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/flagged-messages/${messageId}/promote`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }).then(res => res.json()),
+
+  getMessageOverrides: (backupId: string, params: URLSearchParams = new URLSearchParams()): Promise<MessageOverridesResponse> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/message-overrides?${params.toString()}`).then(res => res.json()),
+
+  deleteMessageOverride: (backupId: string, messageId: string): Promise<{ status: string }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/message-overrides/${messageId}`, {
+      method: 'DELETE',
+    }).then(res => res.json()),
+
+  // --- Live Log Stream URL ---
+  getLogsStreamUrl: (backupId: string): string => `${API_BASE}/backups/${backupId}/logs/stream`,
+
+  // --- Admin Testing & Verification ---
+  resetTestingBackup: (): Promise<AdminTestActionResponse> =>
+    fetchWithAuth(`${API_BASE}/admin/test-backup/reset`, {
+      method: 'POST',
+    }).then(res => res.json()),
+
+  migrateTestingBackup: (): Promise<AdminTestActionResponse> =>
+    fetchWithAuth(`${API_BASE}/admin/test-backup/migrate`, {
+      method: 'POST',
+    }).then(res => res.json()),
+
+  runPythonTests: (): Promise<AdminTestActionResponse> =>
+    fetchWithAuth(`${API_BASE}/admin/tests/run`, {
+      method: 'POST',
+    }).then(res => res.json()),
 };

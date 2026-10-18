@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import shutil
 import time
 import utils.tricks as t
@@ -51,7 +52,7 @@ def load_status():
     try: 
         t.log("debug", f'  Loading backup info from file: {c.BACKUP_INFO}')
 
-        backup = ServerBackup.from_json(c.BACKUP_INFO)
+        backup = ServerBackup.load(scope="base")
         
         # If it's in update mode, we'll use the update info file
         if backup.is_updating():
@@ -60,7 +61,7 @@ def load_status():
 
             t.log("debug", "An update is running. Using the update info file\n")
 
-            backup = ServerBackup.from_json(c.BACKUP_INFO_UPDATE)
+            backup = ServerBackup.load(scope="update")
 
         if backup.is_running():
             raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
@@ -72,7 +73,7 @@ def load_status():
         t.log("debug", f"  The current status of the backup is '{backup.status}'\n")
 
         # Check if the merge folder exists
-        if not os.path.exists(c.MERGE_FOLDER):
+        if is_update and not Path(c.MERGE_FOLDER).exists():
             t.create_merge_folder()
 
         # flag it as running in case another execution of the script is launched
@@ -149,8 +150,6 @@ def detect_deleted(main_backup: ServerBackup, update_backup: ServerBackup):
                 else:
                     t.log("debug", f"  Thread '{thread.name}' is part of the update.")
                     thread.is_deleted = False
-    
-    main_backup.save()
 
 
 """
@@ -176,8 +175,6 @@ def compare_thread(thread: Thread, main_backup: ServerBackup, main_channel: Chan
         t.log("debug", f"\t\tThread '{thread.name}' is new.")
 
         main_channel.add_thread_from_update(thread)
-        main_backup.save()
-
         t.log("debug", f"\t\tThread '{thread.name}' added to the main backup.")
 
     # If the thread exists in the main backup
@@ -225,7 +222,6 @@ def compare_channel(channel: Channel, main_backup: ServerBackup, main_cat: Categ
 
         # This adds the channel along with its threads into the target category
         main_cat.add_channel_from_update(channel)
-        main_backup.save()
 
         t.log("debug", f"\t\tChannel '{channel.name}' and its threads added to the main backup.")
 
@@ -246,7 +242,6 @@ def compare_channel(channel: Channel, main_backup: ServerBackup, main_cat: Categ
 
             main_cat_origin.remove_channel_by_id(main_channel.id)
             main_cat.add_channel_from_update(main_channel)
-            main_backup.save()
 
             t.log("debug", f"\t\t\tChannel '{channel.name}' moved to the right category in the main backup.")
 
@@ -331,7 +326,7 @@ def compare_update(backup_update:ServerBackup):
     t.log("info", "\nChecking if the update's structure matches the main backup...\n")
 
     # Load the main backup info
-    main_backup = ServerBackup.from_json(c.BACKUP_INFO)
+    main_backup = ServerBackup.load(scope="base")
 
 
     t.log("info", "\n\tChecking if items are in the same location...\n")
@@ -339,8 +334,6 @@ def compare_update(backup_update:ServerBackup):
     # Iterate over the categories
     for cat in backup_update.categories:
         compare_category(cat, main_backup)
-
-    main_backup.save()
 
     # Look for deleted items
     detect_deleted(main_backup, backup_update)
@@ -355,6 +348,7 @@ def compare_update(backup_update:ServerBackup):
     if repeated_position is not None:
         raise exc.MergeError(f"The update file has a repeated position in item ({repeated_position}). Please check the file.")
     
+    main_backup.save()
     t.log("info", "Structure verified!\n")
 
     return main_backup
@@ -380,13 +374,13 @@ def update_directory_path(cat:Category):
         t.log("debug", f"\tCategory '{cat.name}' needs an update. Updating...")
 
         # We save the old path to clean up later
-        old_path = os.path.join(c.MERGE_FOLDER, cat.path)
-        target_path = os.path.join(c.MERGE_FOLDER, cat.new_path)
+        old_path = (Path(c.MERGE_FOLDER) / cat.path).as_posix()
+        target_path = (Path(c.MERGE_FOLDER) / cat.new_path).as_posix()
 
         # If we renamed it, we might corrupt the paths of its children.
         # So we create a new folder, and then files will be moved to it.
         if not c.DRY_RUN:
-            os.makedirs(target_path, exist_ok=True)
+            Path(target_path).mkdir(parents=True, exist_ok=True)
             t.log("info", f"\tCreated new folder at '{target_path}'")
         else:
             t.log("info", f"\tDRY RUN: Would create new folder at '{target_path}'")
@@ -420,19 +414,19 @@ def update_file_path(item):
         t.log("debug", f"\tItem '{item.name}' needs an update. Updating...")       
 
         # We save the old path to clean up later
-        old_path = os.path.join(c.MERGE_FOLDER, item.path)
-        target_path = os.path.join(c.MERGE_FOLDER, item.new_path)
+        old_path = (Path(c.MERGE_FOLDER) / item.path).as_posix()
+        target_path = (Path(c.MERGE_FOLDER) / item.new_path).as_posix()
 
         t.log("debug", f"\t\tOld path: '{old_path}'. Target path: '{target_path}'...")
 
-        if os.path.exists(target_path):
+        if Path(target_path).exists():
             raise exc.MergeError(f"File '{target_path}' already exists in the target folder. Can't move.")
 
         t.log("debug", f"\t\tTarget path for item '{item.name}' is free.")
 
         if not c.DRY_RUN:
             # if item is thread, create folder /threads
-            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            Path(target_path).parent.mkdir(parents=True, exist_ok=True)
             shutil.move(old_path, target_path)
             t.log("info", f"\tMoved '{old_path}' to '{target_path}'")
         else:
@@ -478,8 +472,8 @@ def fix_paths(main_backup:ServerBackup):
 
             for thread in channel.threads:
                 update_file_path(thread)
-        
-        main_backup.save()
+
+    main_backup.save()
 
 
     t.log("debug", "\nCleaning up old folders...\n")
@@ -488,7 +482,7 @@ def fix_paths(main_backup:ServerBackup):
     for path in old_paths:
         
         # get all files that don't end in '_scenes.json' and aren't a folder
-        files = [f for f in os.listdir(path) if (not os.path.isdir(os.path.join(path, f)) and not f.endswith("_scenes.json"))]
+        files = [f for f in Path(path).iterdir() if (not f.is_dir() and not f.name.endswith("_scenes.json"))]
 
         # If they have no files, delete the folder (they could have files registered as deleted)
         if len(files) == 0:
@@ -536,7 +530,7 @@ def update_paths():
             t.log("base", f"### Path updates finished --- {time.time() - start_time:.2f} seconds --- ###\n")
             
             if is_update and backup.is_failed():
-                main_backup = ServerBackup.from_json(c.BACKUP_INFO)
+                main_backup = ServerBackup.load(scope="base")
                 main_backup.finish_update(success=False)
 
         except Exception as e:
@@ -554,9 +548,9 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         t.log("error", "\nProcess interrupted by user.\n")
         try:
-            backup = ServerBackup.from_json(c.BACKUP_INFO)
+            backup = ServerBackup.load(scope="base")
             if backup.is_updating():
-                update = ServerBackup.from_json(c.BACKUP_INFO_UPDATE)
+                update = ServerBackup.load(scope="update")
                 update.set_failed()
                 backup.finish_update(success=False)
             else:
