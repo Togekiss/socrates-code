@@ -25,5 +25,8 @@ src/__pycache__
 !DCE/
 !DCE/**
 
+!tests/
+!tests/**
+
 !.github/
 !.github/**
