@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DATA_ROOT = Path(os.environ.get("SOCRATES_DATA_DIR", PROJECT_ROOT.as_posix()))
 SRC_DIR = PROJECT_ROOT / "src"
 for p in (SRC_DIR.as_posix(), PROJECT_ROOT.as_posix()):
     if p not in sys.path:
@@ -14,8 +15,8 @@ import utils.tricks as t
 
 
 def reset_test_backup() -> bool:
-    src_copy = PROJECT_ROOT / "Backups" / "Elysium-sql-tests-clean"
-    target = PROJECT_ROOT / "Backups" / "Elysium-sql-tests"
+    src_copy = DATA_ROOT / "Backups" / "Elysium-sql-tests-clean"
+    target = DATA_ROOT / "Backups" / "Elysium-sql-tests"
 
     if not src_copy.exists():
         t.log("error", f"Error: Source copy does not exist at {src_copy}")

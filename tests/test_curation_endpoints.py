@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 # Ensure src and project root are in sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DATA_ROOT = Path(os.environ.get("SOCRATES_DATA_DIR", PROJECT_ROOT.as_posix()))
 SRC_DIR = PROJECT_ROOT / "src"
 for p in (SRC_DIR.as_posix(), PROJECT_ROOT.as_posix()):
     if p not in sys.path:
@@ -66,7 +67,7 @@ class TestWritersCuration(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        if not Path("Backups/Elysium-sql-tests/backup.sqlite").exists():
+        if not (DATA_ROOT / "Backups" / "Elysium-sql-tests" / "backup.sqlite").exists():
             migrate_for_tests("1791895360")
             SceneManager.clear_cache()
             close_all_engines()
@@ -178,7 +179,7 @@ class TestUnassignedCharactersQueue(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        if not Path("Backups/Elysium-sql-tests/backup.sqlite").exists():
+        if not (DATA_ROOT / "Backups" / "Elysium-sql-tests" / "backup.sqlite").exists():
             migrate_for_tests("1791895360")
             SceneManager.clear_cache()
             close_all_engines()
@@ -236,7 +237,7 @@ class TestCharacterGroupsCuration(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        if not Path("Backups/Elysium-sql-tests/backup.sqlite").exists():
+        if not (DATA_ROOT / "Backups" / "Elysium-sql-tests" / "backup.sqlite").exists():
             migrate_for_tests("1791895360")
             SceneManager.clear_cache()
             close_all_engines()
@@ -277,7 +278,7 @@ class TestSceneIssuesReviewQueue(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        if not Path("Backups/Elysium-sql-tests/backup.sqlite").exists():
+        if not (DATA_ROOT / "Backups" / "Elysium-sql-tests" / "backup.sqlite").exists():
             migrate_for_tests("1791895360")
             SceneManager.clear_cache()
             close_all_engines()
@@ -339,7 +340,7 @@ class TestFlaggedMessagesAndOverrides(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        if not Path("Backups/Elysium-sql-tests/backup.sqlite").exists():
+        if not (DATA_ROOT / "Backups" / "Elysium-sql-tests" / "backup.sqlite").exists():
             migrate_for_tests("1791895360")
             SceneManager.clear_cache()
             close_all_engines()
@@ -416,7 +417,7 @@ class TestByMeFiltering(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        if not Path("Backups/Elysium-sql-tests/backup.sqlite").exists():
+        if not (DATA_ROOT / "Backups" / "Elysium-sql-tests" / "backup.sqlite").exists():
             migrate_for_tests("1791895360")
             SceneManager.clear_cache()
             close_all_engines()

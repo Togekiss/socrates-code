@@ -6,6 +6,7 @@ from pathlib import Path
 
 # Ensure src and project root are in sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DATA_ROOT = Path(os.environ.get("SOCRATES_DATA_DIR", PROJECT_ROOT.as_posix()))
 SRC_DIR = PROJECT_ROOT / "src"
 for p in (SRC_DIR.as_posix(), PROJECT_ROOT.as_posix()):
     if p not in sys.path:
@@ -58,7 +59,7 @@ class TestPipelineIntegration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         reset_test_backup()
-        cls.backup_path = (PROJECT_ROOT / "Backups" / "Elysium-sql-tests").as_posix()
+        cls.backup_path = (DATA_ROOT / "Backups" / "Elysium-sql-tests").as_posix()
         cls.backup_id = "1791895360"
         cls.backup_name = "Elysium-sql-tests"
 
@@ -230,7 +231,7 @@ class TestPipelineIntegration(unittest.TestCase):
                 )
                 return 0, mock_channels_output
             elif "export" in command:
-                update_src = PROJECT_ROOT / "Backups" / "Elysium-sql-tests-clean" / "Update"
+                update_src = DATA_ROOT / "Backups" / "Elysium-sql-tests-clean" / "Update"
                 update_dest = Path(self.backup_path) / "Update"
                 if update_src.exists():
                     shutil.copytree(update_src, update_dest, dirs_exist_ok=True)

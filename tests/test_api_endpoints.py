@@ -5,6 +5,7 @@ from pathlib import Path
 
 # Ensure src and project root are in sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DATA_ROOT = Path(os.environ.get("SOCRATES_DATA_DIR", PROJECT_ROOT.as_posix()))
 SRC_DIR = PROJECT_ROOT / "src"
 for p in (SRC_DIR.as_posix(), PROJECT_ROOT.as_posix()):
     if p not in sys.path:
@@ -57,7 +58,7 @@ class TestBackupInfoEndpoint(unittest.TestCase):
     
     @classmethod
     def setUpClass(cls):
-        if not Path("Backups/Elysium-sql-tests/backup.sqlite").exists():
+        if not (DATA_ROOT / "Backups" / "Elysium-sql-tests" / "backup.sqlite").exists():
             migrate_for_tests("1791895360")
             SceneManager.clear_cache()
             close_all_engines()
@@ -159,7 +160,7 @@ class TestCharactersEndpoints(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        if not Path("Backups/Elysium-sql-tests/backup.sqlite").exists():
+        if not (DATA_ROOT / "Backups" / "Elysium-sql-tests" / "backup.sqlite").exists():
             migrate_for_tests("1791895360")
             SceneManager.clear_cache()
             close_all_engines()
@@ -202,7 +203,7 @@ class TestScenesEndpoint(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        if not Path("Backups/Elysium-sql-tests/backup.sqlite").exists():
+        if not (DATA_ROOT / "Backups" / "Elysium-sql-tests" / "backup.sqlite").exists():
             migrate_for_tests("1791895360")
             SceneManager.clear_cache()
             close_all_engines()
@@ -239,7 +240,7 @@ class TestCharacterAndGroupMutations(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        if not Path("Backups/Elysium-sql-tests/backup.sqlite").exists():
+        if not (DATA_ROOT / "Backups" / "Elysium-sql-tests" / "backup.sqlite").exists():
             migrate_for_tests("1791895360")
             SceneManager.clear_cache()
             close_all_engines()
@@ -379,7 +380,7 @@ class TestBackupConfigEndpoints(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        if not Path("Backups/Elysium-sql-tests/backup.sqlite").exists():
+        if not (DATA_ROOT / "Backups" / "Elysium-sql-tests" / "backup.sqlite").exists():
             migrate_for_tests("1791895360")
             SceneManager.clear_cache()
             close_all_engines()
@@ -430,12 +431,12 @@ class TestBackupConfigEndpoints(unittest.TestCase):
     def test_admin_reset_and_migrate_testing_backup(self):
         reset_res = reset_testing_backup()
         self.assertEqual(reset_res["status"], "success")
-        self.assertFalse(Path("Backups/Elysium-sql-tests/backup.sqlite").exists())
+        self.assertFalse((DATA_ROOT / "Backups" / "Elysium-sql-tests" / "backup.sqlite").exists())
 
         mig_res = migrate_testing_backup()
         self.assertEqual(mig_res["status"], "success")
         self.assertIn("report", mig_res)
-        self.assertTrue(Path("Backups/Elysium-sql-tests/backup.sqlite").exists())
+        self.assertTrue((DATA_ROOT / "Backups" / "Elysium-sql-tests" / "backup.sqlite").exists())
         self.assertEqual(mig_res["report"]["characters_count"], 20)
         self.assertEqual(mig_res["report"]["scenes_count"], 12)
 
