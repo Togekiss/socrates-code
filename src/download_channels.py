@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 import time
 import utils.tricks as t
 import utils.exceptions as exc
-from models import ServerBackup
+from models import ServerBackup, Step
 t.set_path()
 from res import constants as c
 
@@ -70,26 +70,23 @@ def load_status():
     is_update = False
 
     try: 
-        t.log("debug", f'  Loading backup info from file: {c.BACKUP_INFO}')
+        t.log("debug", f'  Loading backup info from SQLite...')
 
-        backup = ServerBackup.from_json(c.BACKUP_INFO)
+        backup = ServerBackup.load(scope="base")
+        date = ""
         
         # If it's in update mode, we'll use the update info file
         if backup.is_updating():
-
             is_update = True
             date = backup.exported_at
+            t.log("debug", "An update is running. Using the update info\n")
+            backup = ServerBackup.load(scope="update")
 
-            t.log("debug", "An update is running. Using the update info file\n")
-
-            backup = ServerBackup.from_json(c.BACKUP_INFO_UPDATE)
-
-        if backup.is_running():
+        if backup.is_other_step_running(Step.DOWNLOAD):
             raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
         
         if not backup.can_download():
             raise exc.DataNotReadyError("The channel list is not up to date. Ensure the previous step ran and try again.")
-
 
         t.log("debug", f"  The current status of the backup is '{backup.status}'\n")
 
@@ -98,7 +95,7 @@ def load_status():
         # flag it as running in case another execution of the script is launched
         backup.start_download()
 
-        t.log("debug", "  Backup info file is ready.\n")
+        t.log("debug", "  Backup info is ready.\n")
 
     except (exc.DataNotReadyError, exc.AlreadyRunningError) as e:
         raise e
@@ -177,7 +174,7 @@ def download_channels():
             t.log("base", f"### Downloading finished --- {time.time() - start_time:.2f} seconds --- ###\n")
 
             if is_update and backup.is_failed():
-                main_backup = ServerBackup.from_json(c.BACKUP_INFO)
+                main_backup = ServerBackup.load(scope="base")
                 main_backup.finish_update(success=False)
 
         except Exception as e:
@@ -196,9 +193,9 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         t.log("error", "\nProcess interrupted by user.\n")
         try:
-            backup = ServerBackup.from_json(c.BACKUP_INFO)
+            backup = ServerBackup.load(scope="base")
             if backup.is_updating():
-                update = ServerBackup.from_json(c.BACKUP_INFO_UPDATE)
+                update = ServerBackup.load(scope="update")
                 update.set_failed()
                 backup.finish_update(success=False)
             else:

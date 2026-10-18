@@ -1,144 +1,116 @@
 from pathlib import Path
-import json
 from typing import List, Dict, Any, Optional
+
 
 class SceneManager:
     _instances: Dict[str, 'SceneManager'] = {}
-    
+
     def __init__(self, backup_id: str, base_path: str, scenes_path: Optional[str] = None):
-        self.backup_id = backup_id
-        self.base_path = base_path
-        self.scenes = []
-        self._load_scenes(scenes_path)
-        
+        self.backup_id = str(backup_id)
+        self.base_path = str(base_path)
+
     @classmethod
-    def get_instance(cls, backup_id: str, base_path: str) -> 'SceneManager':
-        if backup_id not in cls._instances or cls._instances[backup_id].base_path != base_path:
-            cls._instances[backup_id] = cls(backup_id, base_path)
-        return cls._instances[backup_id]
+    def get_instance(cls, backup_id: Optional[str] = None, base_path: Optional[str] = None) -> 'SceneManager':
+        from res import constants as c
+        b_id = backup_id or getattr(c, "BACKUP_ID", None)
+        b_path = base_path or getattr(c, "BACKUP_BASE", None)
+
+        if not b_id or not b_path:
+            try:
+                from models.backup_context import get_current_context
+                ctx = get_current_context()
+                b_id = b_id or ctx.backup_id
+                b_path = b_path or ctx.backup_base
+            except Exception:
+                pass
+
+        b_id = str(b_id or "")
+        b_path = str(b_path or "")
+        if b_id not in cls._instances or cls._instances[b_id].base_path != b_path:
+            cls._instances[b_id] = cls(b_id, b_path)
+        return cls._instances[b_id]
 
     @classmethod
     def clear_cache(cls, backup_id: Optional[str] = None):
         if backup_id is not None:
-            cls._instances.pop(backup_id, None)
+            cls._instances.pop(str(backup_id), None)
         else:
             cls._instances.clear()
 
-    def _load_scenes(self, custom_path: Optional[str] = None):
-        scenes_path = custom_path or (Path(self.base_path) / 'Data' / '_scenes.json').as_posix()
-        if Path(scenes_path).exists():
-            with open(scenes_path, 'r', encoding='utf-8') as f:
-                self.scenes = json.load(f)
-        else:
-            self.scenes = []
+    @property
+    def has_sqlite(self) -> bool:
+        from db.session import has_sqlite_db
+        return has_sqlite_db(self.base_path)
 
-    def filter_scenes(self, 
-                      categories: Optional[List[str]] = None,
-                      statuses: Optional[List[str]] = None,
-                      types: Optional[List[str]] = None,
-                      character_ids: Optional[List[int]] = None,
-                      character_logic: str = 'OR',
-                      include_alter_egos: bool = False,
-                      include_familiars: bool = False,
-                      include_npcs: bool = False,
-                      writer_names: Optional[List[str]] = None,
-                      writer_logic: str = 'OR',
-                      char_list = None,
-                      before: Optional[str] = None,
-                      after: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Filters the in-memory scenes based on the criteria."""
-        filtered = []
-        
-        for scene in self.scenes:
-            # 1. OR Filters
-            if categories and scene.get('category') not in categories:
-                continue
-            if statuses and scene.get('status') not in statuses:
-                continue
-            if types and scene.get('type') not in types:
-                continue
-                
-            # Date filters (ISO 8601 strings)
-            start_timestamp = scene.get('start', {}).get('timestamp', '')
-            if before and start_timestamp and start_timestamp >= before:
-                continue
-            if after and start_timestamp and start_timestamp <= after:
-                continue
-                
-            scene_chars = set(scene.get('characters', []))
-            
-            # 2. Characters logic
-            if character_ids:
-                if character_logic == 'AND':
-                    valid = True
-                    for cid in character_ids:
-                        family = {cid}
-                        if char_list:
-                            main = next((c for c in char_list if c.get('id') == cid), None)
-                            if main and main.get('other_versions'):
-                                for v in main['other_versions']:
-                                    tags = v.get('tags', [])
-                                    if include_alter_egos and 'alter_ego' in tags: family.add(v['id'])
-                                    if include_familiars and 'familiar' in tags: family.add(v['id'])
-                                    if include_npcs and 'npc' in tags: family.add(v['id'])
-                        if not family.intersection(scene_chars):
-                            valid = False
-                            break
-                    if not valid:
-                        continue
-                else: # OR
-                    any_match = False
-                    for cid in character_ids:
-                        family = {cid}
-                        if char_list:
-                            main = next((c for c in char_list if c.get('id') == cid), None)
-                            if main and main.get('other_versions'):
-                                for v in main['other_versions']:
-                                    tags = v.get('tags', [])
-                                    if include_alter_egos and 'alter_ego' in tags: family.add(v['id'])
-                                    if include_familiars and 'familiar' in tags: family.add(v['id'])
-                                    if include_npcs and 'npc' in tags: family.add(v['id'])
-                        if family.intersection(scene_chars):
-                            any_match = True
-                            break
-                    if not any_match:
-                        continue
-                        
-            # 3. Writers logic
-            if writer_names and char_list:
-                scene_writers = set()
-                for cid in scene_chars:
-                    char, _ = char_list.find_character(cid)
-                    if char:
-                        for w in char.writer:
-                            scene_writers.add(w)
-                            
-                target_writers = set(writer_names)
-                if writer_logic == 'AND':
-                    if not target_writers.issubset(scene_writers):
-                        continue
-                else: # OR
-                    if not target_writers.intersection(scene_writers):
-                        continue
-                        
-            filtered.append(scene)
-            
-        return filtered
+    def save_scenes(
+        self,
+        scenes: List[Dict[str, Any]],
+        bad_scenes: Optional[List[Dict[str, Any]]] = None,
+        debug_files: bool = False
+    ) -> None:
+        """Persists indexed scenes into SQLite via scene_service."""
+        from db import scene_service
+        scene_service.save_indexed_scenes(
+            backup_id=self.backup_id,
+            base_path=self.base_path,
+            scenes=scenes,
+            bad_scenes=bad_scenes,
+            debug_files=debug_files
+        )
 
-    def get_paginated_scenes(self, page: int, per_page: int, **kwargs) -> Dict[str, Any]:
-        filtered = self.filter_scenes(**kwargs)
-        total_items = len(filtered)
-        total_pages = (total_items + per_page - 1) // per_page
-        
-        # Guard page range
-        page = max(1, min(page, max(1, total_pages)))
-        
-        start_idx = (page - 1) * per_page
-        end_idx = start_idx + per_page
-        
-        return {
-            "scenes": filtered[start_idx:end_idx],
-            "total_pages": total_pages,
-            "current_page": page,
-            "total_items": total_items
-        }
+    def filter_scenes(
+        self,
+        categories: Optional[List[str]] = None,
+        statuses: Optional[List[str]] = None,
+        status: str = "all",
+        types: Optional[List[str]] = None,
+        character_ids: Optional[List[int]] = None,
+        character_logic: str = 'OR',
+        writer_names: Optional[List[str]] = None,
+        writer_logic: str = 'OR',
+        include_alter_egos: bool = False,
+        include_familiars: bool = False,
+        include_npcs: bool = False,
+        search_folder: str = "",
+        before: Optional[str] = None,
+        after: Optional[str] = None,
+        **kwargs
+    ) -> List[Dict[str, Any]]:
+        """Delegates scene filtering directly to SQLite via scene_service."""
+        from db import scene_service
+        return scene_service.query_scenes(
+            backup_id=self.backup_id,
+            base_path=self.base_path,
+            categories=categories,
+            statuses=statuses,
+            status=status,
+            types=types,
+            character_ids=character_ids,
+            character_logic=character_logic,
+            writer_names=writer_names,
+            writer_logic=writer_logic,
+            include_alter_egos=include_alter_egos,
+            include_familiars=include_familiars,
+            include_npcs=include_npcs,
+            search_folder=search_folder,
+            before=before,
+            after=after,
+            page=None,
+            **kwargs
+        )
+
+    def get_paginated_scenes(
+        self,
+        page: int = 1,
+        per_page: int = 50,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Delegates paginated scene queries directly to SQLite via scene_service."""
+        from db import scene_service
+        return scene_service.query_scenes(
+            backup_id=self.backup_id,
+            base_path=self.base_path,
+            page=page,
+            per_page=per_page,
+            **kwargs
+        )

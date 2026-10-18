@@ -18,6 +18,7 @@
   --danger: #ef4444;
   --success: #10b981;
   --warning: #f59e0b;
+  --warning-dark: #D97706;
 
   /* Glassmorphism */
   --glass-bg: rgba(23, 25, 30, 0.6);
@@ -56,10 +57,11 @@ body {
 }
 
 #root {
-  max-width: 1280px;
+  max-width: 1600px;
   margin: 0 auto;
-  padding: 2rem;
+  padding: 1rem;
   width: 100%;
+  min-height: 100vh;
 }
 
 h1, h2, h3, h4, h5, h6 {

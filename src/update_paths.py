@@ -52,7 +52,7 @@ def load_status():
     try: 
         t.log("debug", f'  Loading backup info from file: {c.BACKUP_INFO}')
 
-        backup = ServerBackup.from_json(c.BACKUP_INFO)
+        backup = ServerBackup.load(scope="base")
         
         # If it's in update mode, we'll use the update info file
         if backup.is_updating():
@@ -61,7 +61,7 @@ def load_status():
 
             t.log("debug", "An update is running. Using the update info file\n")
 
-            backup = ServerBackup.from_json(c.BACKUP_INFO_UPDATE)
+            backup = ServerBackup.load(scope="update")
 
         if backup.is_running():
             raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
@@ -150,8 +150,6 @@ def detect_deleted(main_backup: ServerBackup, update_backup: ServerBackup):
                 else:
                     t.log("debug", f"  Thread '{thread.name}' is part of the update.")
                     thread.is_deleted = False
-    
-    main_backup.save()
 
 
 """
@@ -177,8 +175,6 @@ def compare_thread(thread: Thread, main_backup: ServerBackup, main_channel: Chan
         t.log("debug", f"\t\tThread '{thread.name}' is new.")
 
         main_channel.add_thread_from_update(thread)
-        main_backup.save()
-
         t.log("debug", f"\t\tThread '{thread.name}' added to the main backup.")
 
     # If the thread exists in the main backup
@@ -226,7 +222,6 @@ def compare_channel(channel: Channel, main_backup: ServerBackup, main_cat: Categ
 
         # This adds the channel along with its threads into the target category
         main_cat.add_channel_from_update(channel)
-        main_backup.save()
 
         t.log("debug", f"\t\tChannel '{channel.name}' and its threads added to the main backup.")
 
@@ -247,7 +242,6 @@ def compare_channel(channel: Channel, main_backup: ServerBackup, main_cat: Categ
 
             main_cat_origin.remove_channel_by_id(main_channel.id)
             main_cat.add_channel_from_update(main_channel)
-            main_backup.save()
 
             t.log("debug", f"\t\t\tChannel '{channel.name}' moved to the right category in the main backup.")
 
@@ -332,7 +326,7 @@ def compare_update(backup_update:ServerBackup):
     t.log("info", "\nChecking if the update's structure matches the main backup...\n")
 
     # Load the main backup info
-    main_backup = ServerBackup.from_json(c.BACKUP_INFO)
+    main_backup = ServerBackup.load(scope="base")
 
 
     t.log("info", "\n\tChecking if items are in the same location...\n")
@@ -340,8 +334,6 @@ def compare_update(backup_update:ServerBackup):
     # Iterate over the categories
     for cat in backup_update.categories:
         compare_category(cat, main_backup)
-
-    main_backup.save()
 
     # Look for deleted items
     detect_deleted(main_backup, backup_update)
@@ -356,6 +348,7 @@ def compare_update(backup_update:ServerBackup):
     if repeated_position is not None:
         raise exc.MergeError(f"The update file has a repeated position in item ({repeated_position}). Please check the file.")
     
+    main_backup.save()
     t.log("info", "Structure verified!\n")
 
     return main_backup
@@ -479,8 +472,8 @@ def fix_paths(main_backup:ServerBackup):
 
             for thread in channel.threads:
                 update_file_path(thread)
-        
-        main_backup.save()
+
+    main_backup.save()
 
 
     t.log("debug", "\nCleaning up old folders...\n")
@@ -537,7 +530,7 @@ def update_paths():
             t.log("base", f"### Path updates finished --- {time.time() - start_time:.2f} seconds --- ###\n")
             
             if is_update and backup.is_failed():
-                main_backup = ServerBackup.from_json(c.BACKUP_INFO)
+                main_backup = ServerBackup.load(scope="base")
                 main_backup.finish_update(success=False)
 
         except Exception as e:
@@ -555,9 +548,9 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         t.log("error", "\nProcess interrupted by user.\n")
         try:
-            backup = ServerBackup.from_json(c.BACKUP_INFO)
+            backup = ServerBackup.load(scope="base")
             if backup.is_updating():
-                update = ServerBackup.from_json(c.BACKUP_INFO_UPDATE)
+                update = ServerBackup.load(scope="update")
                 update.set_failed()
                 backup.finish_update(success=False)
             else:

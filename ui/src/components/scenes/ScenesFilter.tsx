@@ -40,6 +40,8 @@ interface ScenesFilterProps {
   setBefore: (v: string) => void;
   after: string;
   setAfter: (v: string) => void;
+  byMe: boolean;
+  setByMe: (v: boolean) => void;
   
   allCharacters: any[];
 }
@@ -55,6 +57,7 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
   includeNPCs, setIncludeNPCs,
   before, setBefore,
   after, setAfter,
+  byMe, setByMe,
   allCharacters
 }) => {
   const [collapsed, setCollapsed] = useState(false);
@@ -190,14 +193,60 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
 
           {/* Writers */}
           <div style={{ flex: '1 1 200px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
               <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Writers</label>
-              <button onClick={() => setWriterLogic(writerLogic === 'AND' ? 'OR' : 'AND')} style={{ fontSize: '0.7rem', padding: '0.1rem 0.4rem', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'white', borderRadius: '4px', cursor: 'pointer' }}>
-                Logic: {writerLogic}
-              </button>
+              <div style={{ display: 'flex', gap: '0.35rem' }}>
+                <button
+                  type="button"
+                  onClick={() => setByMe(!byMe)}
+                  style={{
+                    fontSize: '0.7rem',
+                    padding: '0.1rem 0.45rem',
+                    background: byMe ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
+                    border: '1px solid var(--border-color)',
+                    color: byMe ? '#fff' : 'white',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontWeight: byMe ? 'bold' : 'normal'
+                  }}
+                  title="Filter to scenes written by the logged-in Discord user"
+                >
+                  ★ By Me
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setWriterLogic(writerLogic === 'AND' ? 'OR' : 'AND')}
+                  style={{
+                    fontSize: '0.7rem',
+                    padding: '0.1rem 0.4rem',
+                    background: 'var(--bg-tertiary)',
+                    border: '1px solid var(--border-color)',
+                    color: 'white',
+                    borderRadius: '4px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Logic: {writerLogic}
+                </button>
+              </div>
             </div>
             <form onSubmit={addWriterFilter} style={{ display: 'flex', gap: '0.5rem' }}>
-              <input type="text" value={writerInput} onChange={e => setWriterInput(e.target.value)} placeholder="Add writer..." style={{ flex: 1, background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'white', padding: '0.5rem', borderRadius: '4px' }} />
+              <input
+                type="text"
+                value={writerInput}
+                onChange={e => setWriterInput(e.target.value)}
+                placeholder={byMe ? 'Bound to user session' : 'Add writer...'}
+                disabled={byMe}
+                style={{
+                  flex: 1,
+                  background: 'var(--bg-tertiary)',
+                  border: '1px solid var(--border-color)',
+                  color: 'white',
+                  padding: '0.5rem',
+                  borderRadius: '4px',
+                  opacity: byMe ? 0.5 : 1
+                }}
+              />
             </form>
             {writersFilter.length > 0 && (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.5rem' }}>

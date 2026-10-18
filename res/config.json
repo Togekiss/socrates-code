@@ -29,7 +29,7 @@
             "console": true,
             "log": true,
             "dryRun": false,
-            "debugFiles": true
+            "debugFiles": false
         },
         "backupName": "Elysium-sql-tests",
         "path": "Backups/Elysium-sql-tests"

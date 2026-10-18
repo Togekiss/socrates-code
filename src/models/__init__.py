@@ -1,4 +1,4 @@
-from .server_backup import ServerBackup
+from .server_backup import ServerBackup, Step
 from .category import Category
 from .channel import Channel
 from .thread import Thread
@@ -16,4 +16,5 @@ __all__ = [
     "SceneManager",
     "BackupContext",
     "get_current_context",
+    "Step"
 ]

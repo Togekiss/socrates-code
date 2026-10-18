@@ -85,3 +85,12 @@ class IndexScenesError(BackupError):
 
 class FindCharacterScenesError(BackupError):
     pass
+
+class DatabaseError(BackupError):
+    pass
+
+class DatabaseConnectionError(DatabaseError):
+    pass
+
+class MigrationError(BackupError):
+    pass

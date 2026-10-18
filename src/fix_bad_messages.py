@@ -1,11 +1,13 @@
 import os
+import sys
 from pathlib import Path
 import time
 import re
 import utils.tricks as t
 import utils.exceptions as exc
 from find_character_scenes import has_end_tag
-from models import ServerBackup
+from models import ServerBackup, Step
+from db import curation_service
 t.set_path()
 from res import constants as c
 
@@ -35,16 +37,13 @@ load_status()
 def load_status():
 
     try: 
-        t.log("debug", f'  Loading backup info from file: {c.BACKUP_INFO}')
+        backup = ServerBackup.load(scope="base")
 
-        backup = ServerBackup.from_json(c.BACKUP_INFO)
-
-        if backup.is_running():
+        if backup.is_other_step_running(Step.FIX_MESSAGES):
             raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
         
         if not backup.can_fix_messages():
             raise exc.DataNotReadyError("The data may be corrupted or incomplete. Ensure the download is verified and IDs are assigned and try again.")
-
 
         t.log("debug", f"  The current status of the backup is '{backup.status}'\n")
 
@@ -63,82 +62,73 @@ def load_status():
 
 
 """
-fix_messages_in_channel(file_path)
+fix_messages_in_channel(file_path, backup, overrides, flagged_items)
 
     This function traverses through all the messages in a channel and,
-    if it finds a message that has a fixed version in the fixed_messages dictionary,
+    if it finds a message that has a fixed version in the overrides dictionary,
     it will replace it with the corresponding message from the dictionary.
 
     It also deletes messages from non-bot users if they only have a mention.
 
     Args:
         file_path (str): The path to the channel JSON file.
+        backup (ServerBackup): The ServerBackup instance.
+        overrides (dict): Active overrides mapping message_id -> {"content": ..., "author": ...}.
+        flagged_items (list): Accumulator list for flagged messages to be saved to SQLite.
 
     Returns:
-        channel (dict): The modified channel dictionary.
+        None
 """
-def fix_messages_in_channel(file_path, backup: ServerBackup):
+def fix_messages_in_channel(file_path, backup: ServerBackup, overrides: dict, flagged_items: list):
 
     channel = t.load_from_json(file_path)
-    fixed_messages = t.load_from_json(c.FIXED_MESSAGES)
-
+    is_modified = False
     messages_to_remove = []
 
-    for message in channel["messages"]:
+    pattern = r"^@[\w ]+$"
+    pattern2 = r"^@deleted-role$"
+    pattern3 = r"^@unknown-role$"
 
-        # if ID in fixed_messages, replace it
-        if message["id"] in fixed_messages:
-            
-            t.log("debug", f"\tFound bad message {message['id']} from {message['author']['name']}.")
-            t.log("debug", f"\t    Replacing it with fixed message from {fixed_messages[message['id']]['author']['name']}.")
+    for message in channel.get("messages", []):
+        msg_id = str(message.get("id"))
 
-            message["content"] = fixed_messages[message["id"]]["content"]
-            message["author"] = fixed_messages[message["id"]]["author"]
-        
+        # if ID in overrides, replace it
+        if msg_id in overrides:
+            override = overrides[msg_id]
+            t.log("debug", f"\tFound bad message {msg_id} from {message.get('author', {}).get('name')}.")
+            t.log("debug", f"\t    Replacing it with fixed message from {override.get('author', {}).get('name')}.")
 
-        # regex that match mentions
-        pattern = r"^@[\w ]+$"
-        pattern2 = r"^@deleted-role$"
-        pattern3 = r"^@unknown-role$"
-        
-        # if the message has a only a mention, remove it
-        if re.search(pattern, message["content"]) or re.search(pattern2, message["content"]) or re.search(pattern3, message["content"]):
+            message["content"] = override.get("content", message.get("content"))
+            message["author"] = override.get("author", message.get("author"))
+            is_modified = True
 
-            t.log("debug", f"\tFound message with only a mention '{message['content']}' from {message['author']['name']}.")
-
-            # remove message from messages
+        content = message.get("content", "")
+        # if the message has only a mention, remove it
+        if re.search(pattern, content) or re.search(pattern2, content) or re.search(pattern3, content):
+            t.log("debug", f"\tFound message with only a mention '{content}' from {message.get('author', {}).get('name')}.")
             messages_to_remove.append(message)
 
-
         # if message is from a non-tupper user
-        if message["type"] == "Default" and int(message["author"]["id"]) >= 10000:
+        author_id = message.get("author", {}).get("id")
+        try:
+            author_id_int = int(author_id)
+        except (ValueError, TypeError):
+            author_id_int = 0
 
-            t.log("debug", f"\tFound message from non-tupper user '{message['author']['name']}'.")
+        if message.get("type") == "Default" and author_id_int >= 10000:
+            t.log("debug", f"\tFound message from non-tupper user '{message.get('author', {}).get('name')}'.")
+            kind = "non_tupper_end_tag" if has_end_tag(message) else "non_tupper"
+            flagged_items.append({
+                "message_id": msg_id,
+                "channel_discord_id": channel.get("channel", {}).get("id"),
+                "kind": kind,
+                "content": message.get("content", ""),
+                "author": message.get("author", {}),
+            })
 
-            if has_end_tag(message):
-                bad_end_list = t.load_from_json(c.BAD_END_MESSAGES)
-                bad_end_list[message["id"]] = {
-                    "content": message["content"],
-                    "author": message["author"],
-                    "link": f"https://discord.com/channels/{channel['guild']['id']}/{channel['channel']['id']}/{message['id']}"
-                }
-                t.save_to_json(bad_end_list, c.BAD_END_MESSAGES)
-                t.log("debug", f"\t    Saved message with an end tag to {c.BAD_END_MESSAGES}")
-
-            else:
-                # append to c.BAD_MESSAGES
-                bad_message_list = t.load_from_json(c.BAD_MESSAGES)
-                bad_message_list[message["id"]] = {
-                    "content": message["content"],
-                    "author": message["author"],
-                    "link": f"https://discord.com/channels/{channel['guild']['id']}/{channel['channel']['id']}/{message['id']}"
-                }
-                t.save_to_json(bad_message_list, c.BAD_MESSAGES)
-                t.log("debug", f"\t    Saved message to {c.BAD_MESSAGES}")
-        
         # if message is a thread creation, delete it
-        if message["type"] == "ThreadCreated":
-            t.log("debug", f"\tFound thread creation message {message['id']} from {message['author']['name']}.")
+        if message.get("type") == "ThreadCreated":
+            t.log("debug", f"\tFound thread creation message {msg_id} from {message.get('author', {}).get('name')}.")
             messages_to_remove.append(message)
 
     if len(messages_to_remove) > 0:
@@ -146,20 +136,22 @@ def fix_messages_in_channel(file_path, backup: ServerBackup):
         # remove messages from channel
         for message in messages_to_remove:
             channel["messages"].remove(message)
+        is_modified = True
 
-    channel["messageCount"] = len(channel["messages"])
-    backup.update_message_count(channel["channel"]["id"], channel["messageCount"])
+    if is_modified:
+        channel["messageCount"] = len(channel["messages"])
+        backup.update_message_count(channel["channel"]["id"], channel["messageCount"])
+        t.log("debug", f"\tSaving channel to {file_path}")
+        t.save_to_json(channel, file_path)
 
-    # save channel
-    t.log("debug", f"\tSaving channel to {file_path}")
-
-    t.save_to_json(channel, file_path)
 
 ################# Main function #################
 
 def fix_bad_messages():
 
     backup = load_status()
+    b_id = backup.backup_id or getattr(c, "BACKUP_ID", None)
+    b_path = backup.path or getattr(c, "BACKUP_BASE", None)
 
     try:
 
@@ -167,26 +159,26 @@ def fix_bad_messages():
 
         start_time = time.time()
 
-        try:
-            fixed_messages = t.load_from_json(c.FIXED_MESSAGES)
-            t.log("debug", f"    Loaded {len(fixed_messages)} fixed messages from {c.FIXED_MESSAGES}\n")
-        except FileNotFoundError:
-            t.log("debug", f"    No fixed messages file found. Creating a new one at {c.FIXED_MESSAGES}\n")
-            fixed_messages = {}
-            t.save_to_json(fixed_messages, c.FIXED_MESSAGES)
+        overrides = curation_service.get_overrides_map(b_id, b_path)
+        t.log("info", f"    Found {len(overrides)} messages to patch\n")
 
-        t.log("info", f"    Found {len(fixed_messages)} messages to patch\n")
-
-        # clean the bad messages files
-        t.save_to_json({}, c.BAD_MESSAGES)
-        t.save_to_json({}, c.BAD_END_MESSAGES)
+        flagged_items = []
 
         for path in backup.get_all_paths():
             file_path = (Path(c.DATA_FOLDER) / path).as_posix()
             t.log("log", f"\t    Analysing {file_path}...")
-            fix_messages_in_channel(file_path, backup)
+            fix_messages_in_channel(file_path, backup, overrides, flagged_items)
 
-        backup.finish_fix_messages()
+        # Save flagged messages to SQLite (and optionally snapshots if c.DEBUG_FILES)
+        curation_service.save_flagged_messages(
+            backup_id=b_id,
+            base_path=b_path,
+            flagged_items=flagged_items,
+            debug_files=c.DEBUG_FILES,
+        )
+
+        backup.save()
+        backup.finish_fix_messages(success=True)
 
     except Exception as e:
         backup.finish_fix_messages(success=False)
@@ -209,16 +201,18 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         t.log("error", "\nProcess interrupted by user.\n")
         try:
-            backup = ServerBackup.from_json(c.BACKUP_INFO)
+            backup = ServerBackup.load(scope="base")
             if backup.is_updating():
-                update = ServerBackup.from_json(c.BACKUP_INFO_UPDATE)
+                update = ServerBackup.load(scope="update")
                 update.set_failed()
                 backup.finish_update(success=False)
             else:
                 backup.set_failed()
         except Exception:
             pass
+        sys.exit(1)
 
     except Exception as e:
         t.log("error", f"\n{exc.unwrap(e)}\n")
+        sys.exit(1)
     

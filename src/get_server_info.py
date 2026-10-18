@@ -69,40 +69,42 @@ def load_status():
     t.log("debug", f'  Info folder "{c.INFO_FOLDER}" is ready.')
     
     try: 
-        # Load the JSON file 
-        t.log("debug", f'  Loading backup info from file: {c.BACKUP_INFO}')
-        backup = ServerBackup.from_json(c.BACKUP_INFO)
+        # Load the status from SQLite
+        t.log("debug", f'  Checking backup status for {c.BACKUP_NAME} ({c.BACKUP_ID})...')
+        existing_backup = ServerBackup.load(scope="base")
 
-        if backup.is_running():
+        if existing_backup.is_running():
             raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
         
-        t.log("debug", f"  The current status of the backup is '{backup.status}'")
+        t.log("debug", f"  The current status of the backup is '{existing_backup.status}'")
 
         # If there already is a completed export, it will be an update
-        if backup.needs_update():
+        if existing_backup.needs_update():
             is_update = True
-
             t.log("debug", "  The backup was completed. It will be an update.")
+            existing_backup.start_update()
 
-            # We save the update status in the main file
-            backup.start_update()
+    except (exc.AlreadyRunningError, exc.DataNotReadyError) as e:
+        raise e
+    except Exception:
+        t.log("debug", '  No existing backup status found. Will start one from scratch.')
+        is_update = False
 
-    except FileNotFoundError:
-        t.log("debug", '  No backup info file was found. Will start one from scratch.')
+    t.log("debug", "  Preparing the backup export in SQLite...\n")
 
-    t.log("debug", "  Preparing the backup info file for the export...\n")
-
-    # If we can start, we'll create a new info file
-    backup = ServerBackup(
-        path = c.BACKUP_INFO_UPDATE if is_update else c.BACKUP_INFO,
-        id = c.SERVER_ID,
-        name = c.BACKUP_NAME,
-        updated_at = datetime.now().astimezone().isoformat(sep='T', timespec='microseconds')
+    scope = "update" if is_update else "base"
+    backup = ServerBackup.init_export(
+        scope=scope,
+        backup_id=c.BACKUP_ID,
+        backup_path=c.BACKUP_BASE,
+        backup_name=c.BACKUP_NAME,
+        server_id=c.SERVER_ID,
+        server_name=c.SERVER_NAME,
     )
 
     backup.start_get_info()
 
-    t.log("debug", "  Backup info file is ready.\n")
+    t.log("debug", "  Backup export is ready.\n")
 
     return backup, is_update
 
@@ -339,8 +341,7 @@ def get_server_info():
     finally:
         try:
             if is_update and backup.is_failed():
-
-                main_backup = ServerBackup.from_json(c.BACKUP_INFO)
+                main_backup = ServerBackup.load(scope="base")
                 main_backup.finish_update(success=False)
     
         except Exception as e:
@@ -363,9 +364,9 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         t.log("error", "\nProcess interrupted by user.\n")
         try:
-            backup = ServerBackup.from_json(c.BACKUP_INFO)
+            backup = ServerBackup.load(scope="base")
             if backup.is_updating():
-                update = ServerBackup.from_json(c.BACKUP_INFO_UPDATE)
+                update = ServerBackup.load(scope="update")
                 update.set_failed()
                 backup.finish_update(success=False)
             else:

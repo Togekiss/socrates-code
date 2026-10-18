@@ -57,6 +57,7 @@ class BackupContext:
     fixed_messages: str = ""
     bad_messages: str = ""
     bad_end_messages: str = ""
+    sqlite_db: str = ""
 
     # Discord parameters
     server_id: str = ""
@@ -118,6 +119,8 @@ class BackupContext:
             return self.backup_base
         if name in ("PATH_FROM_CFG",):
             return self.path_from_cfg
+        if name in ("SQLITE_DB",):
+            return self.sqlite_db
         raise AttributeError(f"'BackupContext' object has no attribute '{name}'")
 
     @classmethod
@@ -184,6 +187,21 @@ class BackupContext:
             else:
                 backup_base = (Path(BACKUPS_DIR) / backup_name).as_posix()
 
+        # Auto-resolve _backup_id from backups_index.json by matching backup_base
+        if not _backup_id and backup_base and Path(BACKUPS_INDEX).exists():
+            try:
+                with open(BACKUPS_INDEX, 'r', encoding='utf-8') as f:
+                    backups_index = json.load(f)
+                norm_base = Path(backup_base).resolve().as_posix()
+                for b in backups_index:
+                    entry_path = b.get("path", "")
+                    entry_full = Path(entry_path) if Path(entry_path).is_absolute() else (Path(DATA_ROOT) / entry_path)
+                    if entry_full.resolve().as_posix() == norm_base:
+                        _backup_id = str(b.get("backup_id"))
+                        break
+            except Exception:
+                pass
+
         info_folder = (Path(backup_base) / 'Info').as_posix()
         character = user_cfg.get('character', "")
 
@@ -211,6 +229,7 @@ class BackupContext:
             fixed_messages=(Path(info_folder) / 'fixed_messages.json').as_posix(),
             bad_messages=(Path(info_folder) / 'bad_messages.json').as_posix(),
             bad_end_messages=(Path(info_folder) / 'bad_end_messages.json').as_posix(),
+            sqlite_db=(Path(backup_base) / 'backup.sqlite').as_posix(),
             server_id=admin_cfg.get('serverId', ""),
             dm_categories=admin_cfg.get('dmCategories', []),
             categories_to_ignore=set(admin_cfg.get('categoriesToIgnore', [])),

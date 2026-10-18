@@ -49,18 +49,15 @@ def load_status():
     is_update = False
 
     try: 
-        t.log("debug", f'  Loading backup info from file: {c.BACKUP_INFO}')
+        t.log("debug", f'  Loading backup info from SQLite...')
 
-        backup = ServerBackup.from_json(c.BACKUP_INFO)
+        backup = ServerBackup.load(scope="base")
         
         # If it's in update mode, we'll use the update info file
         if backup.is_updating():
-
             is_update = True
-
-            t.log("debug", "An update is running. Using the update info file\n")
-
-            backup = ServerBackup.from_json(c.BACKUP_INFO_UPDATE)
+            t.log("debug", "An update is running. Using the update info\n")
+            backup = ServerBackup.load(scope="update")
 
         if backup.is_running():
             raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
@@ -72,7 +69,7 @@ def load_status():
 
         backup.start_verify()
 
-        t.log("debug", "  Backup info file is ready.\n")
+        t.log("debug", "  Backup info is ready.\n")
 
     except (exc.AlreadyRunningError, exc.DataNotReadyError) as e:
         raise e
@@ -282,7 +279,6 @@ def verify_files(backup: ServerBackup, is_update):
         # Check each category
         for cat in backup.categories:
             verify_category_folder(cat, folder)
-            backup.to_json()
             
         t.log("info", f"\nAll folders have been verified.\n")
     
@@ -315,7 +311,7 @@ def verify_download():
             t.log("info", "\n\tFinished verifying file paths\n")
 
             if is_update and backup.is_failed():
-                main_backup = ServerBackup.from_json(c.BACKUP_INFO)
+                main_backup = ServerBackup.load(scope="base")
                 main_backup.finish_update(success=False)
 
         except Exception as e:
@@ -334,9 +330,9 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         t.log("error", "\nProcess interrupted by user.\n")
         try:
-            backup = ServerBackup.from_json(c.BACKUP_INFO)
+            backup = ServerBackup.load(scope="base")
             if backup.is_updating():
-                update = ServerBackup.from_json(c.BACKUP_INFO_UPDATE)
+                update = ServerBackup.load(scope="update")
                 update.set_failed()
                 backup.finish_update(success=False)
             else:

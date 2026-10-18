@@ -43,9 +43,24 @@ set_path()
 
 """
 def set_path():
+    src_dir = Path(__file__).resolve().parents[1].as_posix()
+    if src_dir not in sys.path:
+        sys.path.insert(0, src_dir)
     project_root = Path(__file__).resolve().parents[2].as_posix()
     if project_root not in sys.path:
         sys.path.append(project_root)
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    if hasattr(sys.stderr, "reconfigure"):
+        try:
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+set_path()
 
 """
 save_to_json(data, file_path), load_from_json(file_path)
@@ -66,19 +81,45 @@ def load_from_json(file_path):
                 raise e
             time.sleep(0.1)
 
-def save_to_json(data, file_path):
+def save_json_atomic(data, target_path):
+    """
+    Atomically writes data to a JSON file using a temporary file, fsync, and os.replace().
+    Prevents truncated or corrupted files if interrupted mid-write.
+    """
     import time
+    target = Path(target_path).resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = target.with_name(f"{target.name}.tmp.{os.getpid()}")
+
+    try:
+        with open(temp_path, "w", encoding="utf-8") as file:
+            json.dump(data, file, indent=4)
+            file.flush()
+            os.fsync(file.fileno())
+    except Exception:
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+        raise
+
     for attempt in range(5):
         try:
-            with open(file_path, "w", encoding="utf-8") as file:
-                json.dump(data, file, indent=4)
+            os.replace(temp_path, target)
             return
-        except FileNotFoundError:
-            raise
         except OSError as e:
             if attempt == 4:
+                if temp_path.exists():
+                    try:
+                        temp_path.unlink()
+                    except OSError:
+                        pass
                 raise e
             time.sleep(0.1)
+
+def save_to_json(data, file_path):
+    save_json_atomic(data, file_path)
 
 def get_backups_index():
     set_path()
@@ -89,15 +130,27 @@ def get_backups_index():
     
     return load_from_json(c.BACKUPS_INDEX)
 
+def get_backup_path(backup_id: str) -> str:
+    """
+    Returns the absolute directory path for a backup_id found in backups_index.json.
+    """
+    set_path()
+    from res import constants as c
+
+    index = get_backups_index()
+    for b in index:
+        if str(b.get("backup_id")) == str(backup_id):
+            return (Path(c.DATA_ROOT) / b["path"]).as_posix()
+    raise exc.BackupError(f"Backup ID '{backup_id}' not found in index")
+
 def add_backup_to_index(backup_name, server_id, server_name, path):
     set_path()
     from res import constants as c
 
     index = get_backups_index()
 
-    # if there's no conflict with the path, generate new id and add backup to index
-    if not any(b["path"] == path for b in index):
-
+    matching = next((b for b in index if b["path"] == path), None)
+    if matching is None:
         # Generate backup id
         import time
         backup_id = f"{int(time.time())}"
@@ -111,17 +164,23 @@ def add_backup_to_index(backup_name, server_id, server_name, path):
             "path": path
         })
 
-        save_to_json(index, c.BACKUPS_INDEX)
-        return True
+        save_json_atomic(index, c.BACKUPS_INDEX)
     else:
         # If there's conflict with the path, and other fields don't match, raise error
-        for backup in index:
-            if backup["path"] == path:
-                if backup["backup_name"] != backup_name or backup["server_id"] != server_id or backup["server_name"] != server_name:
-                    raise exc.BackupError("There's a different backup using the same path.")
-                return False
+        if matching["backup_name"] != backup_name or matching["server_id"] != server_id or matching["server_name"] != server_name:
+            raise exc.BackupError("There's a different backup using the same path.")
+        backup_id = str(matching["backup_id"])
 
-    return False
+    # Update active context if available
+    try:
+        from models.backup_context import get_current_context
+        ctx = get_current_context()
+        ctx.backup_id = backup_id
+    except Exception:
+        pass
+
+    return backup_id
+
 
 
 """
@@ -174,7 +233,7 @@ def log(level="base", message=""):
             print(BLUE + message + RESET)
     elif level == "console":
         if c.CONSOLE:
-            print(GRAY + message, end="")
+            print(GRAY + message + RESET, end="")
     elif level == "error":
         print(RED + message + RESET)
     
@@ -295,14 +354,44 @@ def create_merge_folder():
 
     # delete all the folders named "Scenes" and all the files that end with "_scenes.json" from the "Merge" folder
     for root, dirs, files in os.walk(c.MERGE_FOLDER):
-        for dir in dirs:
-            if dir == "Scenes":
-                shutil.rmtree((Path(root) / dir).as_posix())
+        for dir_name in list(dirs):
+            if dir_name == "Scenes":
+                shutil.rmtree((Path(root) / dir_name).as_posix(), ignore_errors=True)
+                dirs.remove(dir_name)
         for file in files:
             if file.endswith("_scenes.json"):
-                (Path(root) / file).unlink() 
+                (Path(root) / file).unlink(missing_ok=True) 
     
     log("base", f"Finished creating merge folder: {c.MERGE_FOLDER}\n")
+
+def is_debug_files_enabled(backup_id=None, backup_path=None) -> bool:
+    """
+    Determines if debug files (JSON snapshots and auxiliary debug files) should be created.
+    Checks the active BackupContext first, falling back to inspecting backup_config.json on disk.
+    """
+    try:
+        from res import constants as c
+        ctx_id = getattr(c, "BACKUP_ID", None)
+        if backup_id is None or ctx_id is None or str(ctx_id) == str(backup_id):
+            if hasattr(c, "DEBUG_FILES"):
+                return bool(c.DEBUG_FILES)
+    except Exception:
+        pass
+
+    try:
+        target_path = backup_path
+        if not target_path and backup_id:
+            target_path = get_backup_path(str(backup_id))
+        if target_path:
+            cfg_file = Path(target_path) / "backup_config.json"
+            if cfg_file.exists():
+                cfg = load_from_json(cfg_file.as_posix())
+                return bool(cfg.get("admin", {}).get("verbosity", {}).get("debugFiles", False))
+    except Exception:
+        pass
+
+    return False
+
 
 ################ End Functions ################
 

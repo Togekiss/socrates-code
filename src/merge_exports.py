@@ -46,7 +46,7 @@ def load_status():
     try: 
         t.log("debug", f'  Loading backup info from file: {c.BACKUP_INFO}')
 
-        backup = ServerBackup.from_json(c.BACKUP_INFO)
+        backup = ServerBackup.load(scope="base")
         
         # If it's in update mode, we'll use the update info file
         if backup.is_updating():
@@ -55,7 +55,7 @@ def load_status():
 
             t.log("debug", "An update is running. Using the update info file\n")
 
-            backup = ServerBackup.from_json(c.BACKUP_INFO_UPDATE)
+            backup = ServerBackup.load(scope="update")
 
         if backup.is_running():
             raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
@@ -137,6 +137,7 @@ def merge_channel(old, update, main_backup):
     # set counters
     full_index = 0
     update_index = 0
+    found_new = False
 
     # For each new message in the update
     for i, new_message in enumerate(update_messages):
@@ -154,6 +155,7 @@ def merge_channel(old, update, main_backup):
         
         # If not, it means it's new. exit
         if index is None:
+            found_new = True
             break
 
         # If found, update the message and continue
@@ -162,7 +164,8 @@ def merge_channel(old, update, main_backup):
             full_messages[full_index] = new_message
 
     # Append all the new messages
-    full_messages.extend(update_messages[update_index:])
+    if found_new:
+        full_messages.extend(update_messages[update_index:])
           
     # Update metadata and messages to the whole JSON 
     old_data['exportedAt'] = update_data['exportedAt']
@@ -239,11 +242,12 @@ def merge_exports():
 
         start_time = time.time()
 
-        main_backup = ServerBackup.from_json(c.BACKUP_INFO)
+        main_backup = ServerBackup.load(scope="base")
 
         for path in backup.get_all_paths():
             merge_file(path, c.UPDATE_FOLDER, c.MERGE_FOLDER, main_backup)
 
+        main_backup.save()
         backup.finish_merge()
 
     except Exception as e:
@@ -255,7 +259,7 @@ def merge_exports():
             t.log("base", f"### Merging finished --- {time.time() - start_time:.2f} seconds --- ###\n")
             
             if is_update and backup.is_failed():
-                main_backup = ServerBackup.from_json(c.BACKUP_INFO)
+                main_backup = ServerBackup.load(scope="base")
                 main_backup.finish_update(success=False)
 
         except Exception as e:
@@ -273,9 +277,9 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         t.log("error", "\nProcess interrupted by user.\n")
         try:
-            backup = ServerBackup.from_json(c.BACKUP_INFO)
+            backup = ServerBackup.load(scope="base")
             if backup.is_updating():
-                update = ServerBackup.from_json(c.BACKUP_INFO_UPDATE)
+                update = ServerBackup.load(scope="update")
                 update.set_failed()
                 backup.finish_update(success=False)
             else:
