@@ -117,7 +117,7 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
       </div>
       
       {!collapsed && (
-        <div style={{ padding: '1rem', borderTop: '1px solid var(--border-color)', display: 'flex', flexWrap: 'wrap', gap: '1.5rem' }}>
+        <div style={{ padding: '1rem', borderTop: '1px solid var(--border-color)', display: 'flex', flexWrap: 'wrap', gap: '0.5rem 1.5rem' }}>
           
           {/* Characters */}
           <div style={{ flex: '1 1 300px' }}>
@@ -281,7 +281,7 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
             <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Status (OR)</label>
             <div style={{ display: 'flex', gap: '0.5rem' }}>
               {['closed', 'open', 'no_end_tag'].map(s => (
-                <button key={s} onClick={() => toggleArrayItem(statusesFilter, setStatusesFilter, s)} style={{ padding: '0.2rem 0.5rem', borderRadius: '4px', border: '1px solid var(--border-color)', background: statusesFilter.includes(s) ? 'var(--accent-primary)' : 'var(--bg-tertiary)', color: statusesFilter.includes(s) ? '#000' : 'white' }}>{s.replace(/_/g, ' ')}</button>
+                <button key={s} onClick={() => toggleArrayItem(statusesFilter, setStatusesFilter, s)} style={{ padding: '0.2rem 0.5rem', borderRadius: '4px', border: '1px solid var(--border-color)', background: statusesFilter.includes(s) ? 'var(--accent-primary)' : 'var(--bg-tertiary)', color: statusesFilter.includes(s) ? '#000' : 'white' }}>{s.replace('no_end_tag', 'issues')}</button>
               ))}
             </div>
             
@@ -294,12 +294,27 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
           </div>
 
           {/* Dates */}
-          <div style={{ flex: '1 1 150px' }}>
-            <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Before</label>
-            <input type="date" value={before} onChange={e => setBefore(e.target.value)} style={{ width: '100%', padding: '0.5rem', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'white', borderRadius: '4px' }} />
-            
-            <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '1rem', marginBottom: '0.25rem' }}>After</label>
-            <input type="date" value={after} onChange={e => setAfter(e.target.value)} style={{ width: '100%', padding: '0.5rem', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'white', borderRadius: '4px' }} />
+          <div style={{ flex: '1 1 260px' }}>
+            <div style={{ display: 'flex', gap: '0.75rem' }}>
+              <div style={{ flex: 1 }}>
+                <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Before</label>
+                <input 
+                  type="date" 
+                  value={before} 
+                  onChange={e => setBefore(e.target.value)} 
+                  style={{ width: '100%', padding: '0.5rem', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'white', borderRadius: '4px' }} 
+                />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>After</label>
+                <input 
+                  type="date" 
+                  value={after} 
+                  onChange={e => setAfter(e.target.value)} 
+                  style={{ width: '100%', padding: '0.5rem', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'white', borderRadius: '4px' }} 
+                />
+              </div>
+            </div>
           </div>
 
         </div>
