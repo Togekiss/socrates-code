@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { ExternalLink, ChevronDown, ChevronRight } from 'lucide-react';
+import { ExternalLink, ChevronDown, ChevronRight, Check, AlertCircle } from 'lucide-react';
+import type { SceneIssueRef } from '../../types';
 
 interface SceneCardProps {
   scene: any;
@@ -57,6 +58,58 @@ export const SceneCard: React.FC<SceneCardProps> = ({ scene, allCharacters, char
           </div>
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
             <span style={{ padding: '0.2rem 0.5rem', background: 'rgba(255,255,255,0.1)', borderRadius: '4px', fontSize: '0.8rem' }}>{scene.status}</span>
+            {scene.issues && scene.issues.map((issue: SceneIssueRef) => {
+              const isResolved = issue.resolved || Boolean(issue.resolved_at);
+              const kindLabel =
+                issue.kind === 'auto_split'
+                  ? 'Auto Split'
+                  : issue.kind === 'soft_boundary'
+                  ? 'Soft Boundary'
+                  : (issue.kind || 'Issue').replace(/_/g, ' ');
+
+              const badgeStyle: React.CSSProperties = isResolved
+                ? {
+                    background: 'rgba(16, 185, 129, 0.15)',
+                    border: '1px solid var(--success)',
+                    color: '#34d399',
+                  }
+                : issue.kind === 'auto_split'
+                ? {
+                    background: 'rgba(245, 158, 11, 0.15)',
+                    border: '1px solid #f59e0b',
+                    color: '#fbbf24',
+                  }
+                : {
+                    background: 'rgba(139, 92, 246, 0.15)',
+                    border: '1px solid #8b5cf6',
+                    color: '#c4b5fd',
+                  };
+
+              const tooltipText = isResolved
+                ? `Resolved Issue: ${kindLabel}${issue.resolution ? ` (${issue.resolution})` : ''}${issue.resolved_note ? ` — ${issue.resolved_note}` : ''}`
+                : `Unresolved Issue: ${kindLabel}${issue.reason ? ` (${issue.reason.replace(/_/g, ' ')})` : ''}`;
+
+              return (
+                <span
+                  key={issue.id}
+                  title={tooltipText}
+                  style={{
+                    padding: '0.2rem 0.5rem',
+                    borderRadius: '4px',
+                    fontSize: '0.75rem',
+                    fontWeight: 600,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '0.3rem',
+                    cursor: 'default',
+                    ...badgeStyle,
+                  }}
+                >
+                  {isResolved ? <Check size={12} /> : <AlertCircle size={12} />}
+                  {isResolved ? `${kindLabel} (Resolved)` : kindLabel}
+                </span>
+              );
+            })}
             <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
               {scene.end && scene.start ? (scene.end.index - scene.start.index + 1) : 0} msgs
             </span>

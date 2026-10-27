@@ -193,6 +193,18 @@ export interface SceneParticipant {
   message_count: number;
 }
 
+export interface SceneIssueRef {
+  id: number;
+  kind: IssueKind | string;
+  reason: IssueReason | string;
+  candidate_message_id?: string | null;
+  candidate_index?: number | null;
+  resolved: boolean;
+  resolved_at?: string | null;
+  resolved_note?: string | null;
+  resolution?: IssueResolution | string | null;
+}
+
 export interface Scene {
   id: number;
   scene_key: string;
@@ -206,6 +218,30 @@ export interface Scene {
   participants: SceneParticipant[];
   status?: string;
   discord_url?: string;
+  category?: string;
+  channel?: string;
+  type?: string;
+  thread_name?: string | null;
+  characters?: number[];
+  issues?: SceneIssueRef[];
+  start?: {
+    id?: string;
+    timestamp?: string;
+    index?: number;
+    authorID?: string;
+    content?: string;
+    excerpt?: string;
+    link?: string;
+  };
+  end?: {
+    id?: string;
+    timestamp?: string;
+    index?: number;
+    authorID?: string;
+    content?: string;
+    excerpt?: string;
+    link?: string;
+  };
 }
 
 export interface SuggestedCharacter {

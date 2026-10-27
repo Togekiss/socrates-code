@@ -221,7 +221,7 @@ class TestScenesEndpoint(unittest.TestCase):
         self.assertEqual(len(scenes_res["scenes"]), 5)
 
         first_scene = scenes_res["scenes"][0]
-        for key in ("category", "channel", "type", "status", "start", "end", "characters"):
+        for key in ("category", "channel", "type", "status", "start", "end", "characters", "issues"):
             self.assertIn(key, first_scene)
 
     def test_get_scenes_writer_filter(self):

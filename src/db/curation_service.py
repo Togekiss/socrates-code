@@ -721,7 +721,7 @@ def _split_scene_at(
     scene.end_index = prev_idx
     scene.end_at = t.parse_datetime(prev_msg.get("timestamp")) or scene.end_at
     scene.end_author_id = str(t.get_author_id(prev_msg) or prev_msg.get("author", {}).get("id", ""))
-    scene.end_excerpt = prev_content[-EXCERPT_MAX_LEN:]
+    scene.end_excerpt = prev_content if len(prev_content) <= EXCERPT_MAX_LEN else "..." + prev_content[-(EXCERPT_MAX_LEN-3):]
     scene.status = SceneStatus.NO_END_TAG.value
 
     # Insert Scene 2 (right half)
@@ -742,7 +742,7 @@ def _split_scene_at(
         end_at=orig_end_at,
         start_author_id=cand_author_id,
         end_author_id=orig_end_author_id,
-        start_excerpt=cand_content[:EXCERPT_MAX_LEN],
+        start_excerpt=cand_content if len(cand_content) <= EXCERPT_MAX_LEN else cand_content[:(EXCERPT_MAX_LEN-3)] + "...",
         end_excerpt=orig_end_excerpt,
     )
     session.add(scene2)

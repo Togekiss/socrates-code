@@ -11,7 +11,6 @@ from find_character_scenes import (
     scene_info,
     MENTION_ONLY_PAT,
     END_TAG_SHORT_MSG_MAX_LEN,
-    EXCERPT_MAX_LEN,
     AUTO_SPLIT_MIN_TUPPERS,
     ROSTER_CHANGE_MIN_TUPPERS,
 )
@@ -190,7 +189,7 @@ def _recursive_split_block(
                 "reason": split_reason,
                 "candidate_index": blk[k]["index"],
                 "candidate_id": blk[k].get("id", ""),
-                "candidate_excerpt": blk[k].get("content", "")[:EXCERPT_MAX_LEN],
+                "candidate_excerpt": blk[k].get("content", ""),
                 "previous_chars": sorted(previous_set),
                 "next_chars": sorted(next_set),
             }
@@ -542,7 +541,7 @@ def find_all_scenes_in_channel(
                     "reason": ps["reason"],
                     "candidate_index": cand_idx,
                     "candidate_id": cand_id,
-                    "candidate_excerpt": str(cand_msg.get("content", ""))[:EXCERPT_MAX_LEN],
+                    "candidate_excerpt": str(cand_msg.get("content", "")),
                     "previous_chars": ps["previous_chars"],
                     "next_chars": ps["next_chars"],
                 })

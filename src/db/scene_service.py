@@ -20,6 +20,7 @@ from db.models import (
     SceneStatus,
     IssueKind,
 )
+from find_character_scenes import EXCERPT_MAX_LEN
 import utils.tricks as t
 
 _parse_dt = t.parse_datetime
@@ -141,6 +142,10 @@ def save_indexed_scenes(
                 end_at = _parse_dt(s.get("end", {}).get("timestamp")) or datetime.now(timezone.utc)
                 start_msg_id = str(s.get("start", {}).get("id", ""))
                 end_msg_id = str(s.get("end", {}).get("id", ""))
+                start_message = str(s.get("start", {}).get("content", ""))
+                start_excerpt = start_message if len(start_message) <= EXCERPT_MAX_LEN else start_message[:EXCERPT_MAX_LEN-3] + "..."
+                end_message = str(s.get("end", {}).get("content", ""))
+                end_excerpt = end_message if len(end_message) <= EXCERPT_MAX_LEN else "..." + end_message[-(EXCERPT_MAX_LEN-3):]
 
                 scene_model = SceneModel(
                     backup_id=str(backup_id),
@@ -156,8 +161,8 @@ def save_indexed_scenes(
                     end_at=end_at,
                     start_author_id=str(s.get("start", {}).get("authorID") or s.get("start", {}).get("author", {}).get("id", "")),
                     end_author_id=str(s.get("end", {}).get("authorID") or s.get("end", {}).get("author", {}).get("id", "")),
-                    start_excerpt=str(s.get("start", {}).get("content", ""))[:250],
-                    end_excerpt=str(s.get("end", {}).get("content", ""))[-250:],
+                    start_excerpt=start_excerpt,
+                    end_excerpt=end_excerpt,
                 )
                 session.add(scene_model)
                 created_scenes.append((scene_model, s))
@@ -205,6 +210,8 @@ def save_indexed_scenes(
                             continue
 
                         cand_excerpt = iss.get("candidate_excerpt")
+                        if cand_excerpt:
+                            cand_excerpt = str(cand_excerpt) if len(str(cand_excerpt)) <= EXCERPT_MAX_LEN else str(cand_excerpt)[:(EXCERPT_MAX_LEN-3)] + "..."
                         prev_chars = iss.get("previous_chars") or []
                         nxt_chars = iss.get("next_chars") or []
                         reason = iss.get("reason") or ""
@@ -217,7 +224,7 @@ def save_indexed_scenes(
                             reason=reason,
                             candidate_message_id=cand_id_str,
                             candidate_index=int(cand_idx) if cand_idx is not None else None,
-                            candidate_excerpt=str(cand_excerpt)[:250] if cand_excerpt else None,
+                            candidate_excerpt=cand_excerpt,
                             previous_chars=prev_chars,
                             next_chars=nxt_chars,
                             created_at=scene_model.start_at,
@@ -419,7 +426,7 @@ def query_scenes(
                         return {"total_items": 0, "current_page": page or 1, "per_page": per_page, "total_pages": 0, "scenes": []} if page is not None else []
 
         total_items = query.count()
-        query = query.order_by(SceneModel.start_at.asc(), SceneModel.pk.asc())
+        query = query.order_by(SceneModel.start_at.asc(), SceneModel.pk.asc()).options(selectinload(SceneModel.issues))
 
         if page is not None:
             total_pages = math.ceil(total_items / per_page) if per_page > 0 else 1
@@ -458,6 +465,20 @@ def query_scenes(
                 "thread_name": thread_name,
                 "status": s.status,
                 "characters": participants,
+                "issues": [
+                    {
+                        "id": iss.pk,
+                        "kind": iss.kind,
+                        "reason": iss.reason,
+                        "candidate_message_id": iss.candidate_message_id,
+                        "candidate_index": iss.candidate_index,
+                        "resolved": iss.resolved_at is not None,
+                        "resolved_at": iss.resolved_at.isoformat() if iss.resolved_at else None,
+                        "resolved_note": iss.resolved_note,
+                        "resolution": iss.resolution,
+                    }
+                    for iss in s.issues
+                ],
                 "start": {
                     "id": s.start_message_id,
                     "timestamp": s.start_at.isoformat() if s.start_at else "",
