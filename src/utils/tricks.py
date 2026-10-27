@@ -1,4 +1,5 @@
 import datetime
+from typing import Any, Optional
 from pathlib import Path
 import sys
 import os
@@ -393,7 +394,59 @@ def is_debug_files_enabled(backup_id=None, backup_path=None) -> bool:
     return False
 
 
+TUPPER_ID_MAX = 10000
+
+
+def is_tupper(aid: Any) -> bool:
+    """Returns True if the author id represents a Tupperbox character bot (< 10000)."""
+    if aid is None:
+        return False
+    try:
+        aid_int = int(aid)
+        return aid_int < TUPPER_ID_MAX
+    except (ValueError, TypeError):
+        return False
+
+
+def get_author_id(m: Any) -> Any:
+    """
+    Safely extracts integer author ID from a message dictionary.
+    Returns None if missing, null, non-dict, or unparseable.
+    """
+    if not isinstance(m, dict):
+        return None
+    author = m.get("author")
+    if not isinstance(author, dict):
+        return None
+    raw_id = author.get("id")
+    if raw_id is None:
+        return None
+    try:
+        return int(raw_id)
+    except (ValueError, TypeError):
+        return None
+
+
+def parse_datetime(val: Any) -> Any:
+    """Parses a datetime object or ISO-8601 string to a UTC datetime object."""
+    if not val:
+        return None
+    if isinstance(val, datetime.datetime):
+        if val.tzinfo is None:
+            return val.replace(tzinfo=datetime.timezone.utc)
+        return val.astimezone(datetime.timezone.utc)
+    if isinstance(val, str) and val.strip():
+        try:
+            dt = datetime.datetime.fromisoformat(val)
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=datetime.timezone.utc)
+            return dt.astimezone(datetime.timezone.utc)
+        except Exception:
+            return None
+    return None
+
+
 ################ End Functions ################
 
 if __name__ == "__main__":
-    print("\nThis module is not intended to be run directly.\n")
+    pass

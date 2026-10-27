@@ -1,11 +1,10 @@
-from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 
 class SceneManager:
     _instances: Dict[str, 'SceneManager'] = {}
 
-    def __init__(self, backup_id: str, base_path: str, scenes_path: Optional[str] = None):
+    def __init__(self, backup_id: str, base_path: str):
         self.backup_id = str(backup_id)
         self.base_path = str(base_path)
 
@@ -45,7 +44,6 @@ class SceneManager:
     def save_scenes(
         self,
         scenes: List[Dict[str, Any]],
-        bad_scenes: Optional[List[Dict[str, Any]]] = None,
         debug_files: bool = False
     ) -> None:
         """Persists indexed scenes into SQLite via scene_service."""
@@ -54,7 +52,6 @@ class SceneManager:
             backup_id=self.backup_id,
             base_path=self.base_path,
             scenes=scenes,
-            bad_scenes=bad_scenes,
             debug_files=debug_files
         )
 

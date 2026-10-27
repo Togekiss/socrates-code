@@ -1,10 +1,11 @@
 import os
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker, Session
-from .models import Base
+from .models import Base, SchemaVersionModel, CURRENT_SCHEMA_VERSION
 from utils import exceptions as exc
 
 
@@ -66,12 +67,69 @@ def get_db_session(backup_id: Optional[str] = None, backup_path: Optional[str] =
     return session_factory()
 
 
-def init_db(engine_or_backup_id=None, backup_path: Optional[str] = None) -> Engine:
-    """Initializes tables for the target engine or backup."""
-    if hasattr(engine_or_backup_id, "connect"):
-        engine = engine_or_backup_id
+def get_db_schema_version(engine: Engine) -> int:
+    """Returns the current schema version recorded in the database, or 0 if unversioned/legacy."""
+    from sqlalchemy import inspect
+    inspector = inspect(engine)
+    if "schema_version" not in inspector.get_table_names():
+        return 0
+    with Session(engine) as session:
+        latest = session.query(SchemaVersionModel).order_by(SchemaVersionModel.version.desc()).first()
+        return latest.version if latest else 0
+
+
+def stamp_schema_version(
+    engine_or_session,
+    version: int = CURRENT_SCHEMA_VERSION,
+    description: str = "Schema creation or upgrade",
+) -> None:
+    """Stamps the schema_version table with the specified version in one unified place."""
+    record = SchemaVersionModel(
+        version=version,
+        applied_at=datetime.now(timezone.utc),
+        description=description,
+    )
+    if isinstance(engine_or_session, Session):
+        engine_or_session.add(record)
+        engine_or_session.flush()
     else:
-        engine = get_engine(backup_id=engine_or_backup_id, backup_path=backup_path)
+        with Session(engine_or_session) as session:
+            session.add(record)
+            session.commit()
+
+
+def init_db(
+    engine_or_backup_id=None,
+    backup_path: Optional[str] = None,
+    backup_id: Optional[str] = None,
+    check_version: bool = True
+) -> Engine:
+    """Initializes tables for the target engine or backup and verifies schema version."""
+    target_id = engine_or_backup_id if engine_or_backup_id is not None else backup_id
+    if hasattr(target_id, "connect"):
+        engine = target_id
+    else:
+        engine = get_engine(backup_id=target_id, backup_path=backup_path)
+
+    from sqlalchemy import inspect
+    inspector = inspect(engine)
+    existing_tables = inspector.get_table_names()
+
+    if not existing_tables:
+        # Brand-new database: create all tables and stamp current schema version
+        Base.metadata.create_all(bind=engine)
+        stamp_schema_version(engine, CURRENT_SCHEMA_VERSION, description="Initial schema creation")
+        return engine
+
+    # Database has existing tables: check schema version
+    version = get_db_schema_version(engine)
+    if check_version and version < CURRENT_SCHEMA_VERSION:
+        raise exc.DatabaseSchemaMismatchError(
+            f"Database schema version {version} is older than required version {CURRENT_SCHEMA_VERSION}. "
+            f"Please run 'python src/db/upgrade.py --backup-id <backup_id>' to upgrade the database schema."
+        )
+
+    # Ensure any new tables from latest Base.metadata are created
     Base.metadata.create_all(bind=engine)
     return engine
 

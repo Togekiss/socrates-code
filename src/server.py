@@ -36,8 +36,9 @@ from dotenv import load_dotenv
 # Add src to sys.path so that 'utils' and 'db' can be imported
 sys.path.insert(0, Path(__file__).resolve().parent.as_posix())
 import utils.tricks as t
+from utils import exceptions as exc
 from db import character_service, curation_service, status_service
-from db.models import Step, Status
+from db.models import Step, Status, IssueResolution
 
 
 class MergeCharactersRequest(BaseModel):
@@ -84,6 +85,7 @@ class AssignCharacterWriterRequest(BaseModel):
 
 
 class ResolveIssueRequest(BaseModel):
+    resolution: str
     note: Optional[str] = None
 
 
@@ -388,6 +390,25 @@ def get_backup_info(backup_id: str):
         data["number_of_characters"] = character_service.get_character_count(backup_id, base_path)
     except Exception:
         data["number_of_characters"] = 0
+
+    try:
+        from db.session import get_engine, get_db_schema_version, has_sqlite_db
+        from db.models import CURRENT_SCHEMA_VERSION
+
+        data["current_schema_version"] = CURRENT_SCHEMA_VERSION
+        if has_sqlite_db(base_path):
+            engine = get_engine(backup_id=backup_id, backup_path=base_path)
+            schema_ver = get_db_schema_version(engine)
+            data["schema_version"] = schema_ver
+            data["is_schema_outdated"] = bool(schema_ver < CURRENT_SCHEMA_VERSION) if schema_ver is not None else False
+        else:
+            data["schema_version"] = None
+            data["is_schema_outdated"] = False
+    except Exception as e:
+        t.global_log("debug", f"API: Failed to check schema version for {backup_id}: {e}")
+        data["schema_version"] = None
+        data.setdefault("current_schema_version", 2)
+        data["is_schema_outdated"] = False
 
     return data
 
@@ -961,6 +982,7 @@ def assign_character_writer(backup_id: str, char_id: int, req: AssignCharacterWr
 def get_scene_issues(
     backup_id: str,
     kind: Optional[str] = Query(None),
+    reason: Optional[str] = Query(None),
     status: Optional[str] = Query("unresolved"),
     channel_id: Optional[str] = Query(None),
     page: int = Query(1),
@@ -972,6 +994,7 @@ def get_scene_issues(
             backup_id,
             base_path,
             kind=kind,
+            reason=reason,
             status=status,
             channel_id=channel_id,
             page=page,
@@ -981,18 +1004,37 @@ def get_scene_issues(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.put("/api/backups/{backup_id}/scene-issues/{issue_id}/resolve")
-def resolve_scene_issue(backup_id: str, issue_id: int, req: Optional[ResolveIssueRequest] = None):
-    api_log(backup_id, "info", f"Resolving scene issue #{issue_id}...")
-    base_path = get_backup_path(backup_id)
-    note = req.note if req else None
+def check_not_indexing(backup_id: str, base_path: str):
     try:
-        res = curation_service.resolve_scene_issue(backup_id, base_path, issue_id=issue_id, note=note)
+        statuses = status_service.get_step_statuses(backup_id, base_path)
+        if statuses.get(Step.INDEX_SCENES.value) == Status.RUNNING.value:
+            raise exc.ConflictError("Cannot modify scene issues while scene indexing is in progress.")
+    except exc.ConflictError:
+        raise
+    except Exception:
+        pass
+
+
+@app.put("/api/backups/{backup_id}/scene-issues/{issue_id}/resolve")
+def resolve_scene_issue(backup_id: str, issue_id: int, req: ResolveIssueRequest):
+    api_log(backup_id, "info", f"Resolving scene issue #{issue_id} with resolution '{req.resolution}'...")
+    base_path = get_backup_path(backup_id)
+    try:
+        check_not_indexing(backup_id, base_path)
+        res = curation_service.resolve_scene_issue(
+            backup_id, base_path, issue_id=issue_id, note=req.note, resolution=req.resolution
+        )
         api_log(backup_id, "base", "Scene issue resolved.")
         return res
-    except ValueError as e:
-        api_log(backup_id, "error", f"Resolving scene issue failed: {e}")
+    except exc.ConflictError as e:
+        api_log(backup_id, "error", f"Resolving scene issue conflict: {e}")
+        raise HTTPException(status_code=409, detail=str(e))
+    except exc.NotFoundError as e:
+        api_log(backup_id, "error", f"Scene issue not found: {e}")
         raise HTTPException(status_code=404, detail=str(e))
+    except (exc.ValidationError, ValueError) as e:
+        api_log(backup_id, "error", f"Resolving scene issue validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         api_log(backup_id, "error", f"Resolving scene issue failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1003,12 +1045,19 @@ def reopen_scene_issue(backup_id: str, issue_id: int):
     api_log(backup_id, "info", f"Reopening scene issue #{issue_id}...")
     base_path = get_backup_path(backup_id)
     try:
+        check_not_indexing(backup_id, base_path)
         res = curation_service.reopen_scene_issue(backup_id, base_path, issue_id=issue_id)
         api_log(backup_id, "base", "Scene issue reopened.")
         return res
-    except ValueError as e:
-        api_log(backup_id, "error", f"Reopening scene issue failed: {e}")
+    except exc.ConflictError as e:
+        api_log(backup_id, "error", f"Reopening scene issue conflict: {e}")
+        raise HTTPException(status_code=409, detail=str(e))
+    except exc.NotFoundError as e:
+        api_log(backup_id, "error", f"Scene issue not found: {e}")
         raise HTTPException(status_code=404, detail=str(e))
+    except (exc.ValidationError, ValueError) as e:
+        api_log(backup_id, "error", f"Reopening scene issue validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         api_log(backup_id, "error", f"Reopening scene issue failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1257,6 +1306,56 @@ def migrate_testing_backup():
         raise
     except Exception as e:
         t.global_log("error", f"API: Error migrating testing backup: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/backups/{backup_id}/upgrade")
+def upgrade_backup_database(backup_id: str):
+    t.global_log("info", f"API: Upgrading database for backup {backup_id}...")
+    _release_db_locks()
+    try:
+        base_path = get_backup_path(backup_id)
+        index = t.get_backups_index()
+        backup = next((b for b in index if str(b.get("backup_id")) == str(backup_id)), None)
+        if not backup:
+            backup = {
+                "backup_id": backup_id,
+                "backup_name": backup_id,
+                "path": Path(base_path).name,
+            }
+
+        from db.upgrade import upgrade_single_backup
+        report = upgrade_single_backup(backup, dry_run=False, reindex_scenes=False)
+        _release_db_locks()
+        msg = f"Database upgraded successfully for backup {backup_id}."
+        t.global_log("base", f"API: {msg}")
+        return {"status": "success", "message": msg, "report": report}
+    except HTTPException:
+        _release_db_locks()
+        raise
+    except Exception as e:
+        _release_db_locks()
+        t.global_log("error", f"API: Error upgrading database for backup {backup_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/admin/upgrade-all")
+def upgrade_all_databases():
+    t.global_log("info", "API: Upgrading all SQLite databases...")
+    _release_db_locks()
+    try:
+        from db.upgrade import run_all_upgrades
+        run_all_upgrades(dry_run=False, reindex_scenes=False)
+        _release_db_locks()
+        msg = "All databases upgraded successfully."
+        t.global_log("base", f"API: {msg}")
+        return {"status": "success", "message": msg}
+    except HTTPException:
+        _release_db_locks()
+        raise
+    except Exception as e:
+        _release_db_locks()
+        t.global_log("error", f"API: Error upgrading all databases: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

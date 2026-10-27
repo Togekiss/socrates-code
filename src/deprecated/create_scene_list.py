@@ -6,6 +6,12 @@ from res import constants as c
 ################ File summary #################
 
 """
+DEPRECATED:
+    This legacy utility created text files with scene links from JSON files generated
+    by the old standalone find_character_scenes script. With the transition to SQLite
+    and SceneManager, scene querying and link presentation are handled directly by the
+    FastAPI backend and React UI. This module is retained for reference and scheduled
+    for manual cleanup.
 
 This module creates a text file with the scene starts and ends.
 

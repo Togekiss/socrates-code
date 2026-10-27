@@ -109,13 +109,9 @@ def fix_messages_in_channel(file_path, backup: ServerBackup, overrides: dict, fl
             messages_to_remove.append(message)
 
         # if message is from a non-tupper user
-        author_id = message.get("author", {}).get("id")
-        try:
-            author_id_int = int(author_id)
-        except (ValueError, TypeError):
-            author_id_int = 0
+        author_id_int = t.get_author_id(message)
 
-        if message.get("type") == "Default" and author_id_int >= 10000:
+        if message.get("type") == "Default" and not t.is_tupper(author_id_int):
             t.log("debug", f"\tFound message from non-tupper user '{message.get('author', {}).get('name')}'.")
             kind = "non_tupper_end_tag" if has_end_tag(message) else "non_tupper"
             flagged_items.append({

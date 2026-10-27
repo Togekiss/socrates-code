@@ -280,8 +280,8 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
           <div style={{ flex: '1 1 150px' }}>
             <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Status (OR)</label>
             <div style={{ display: 'flex', gap: '0.5rem' }}>
-              {['closed', 'open', 'timeout'].map(s => (
-                <button key={s} onClick={() => toggleArrayItem(statusesFilter, setStatusesFilter, s)} style={{ padding: '0.2rem 0.5rem', borderRadius: '4px', border: '1px solid var(--border-color)', background: statusesFilter.includes(s) ? 'var(--accent-primary)' : 'var(--bg-tertiary)', color: statusesFilter.includes(s) ? '#000' : 'white' }}>{s}</button>
+              {['closed', 'open', 'no_end_tag'].map(s => (
+                <button key={s} onClick={() => toggleArrayItem(statusesFilter, setStatusesFilter, s)} style={{ padding: '0.2rem 0.5rem', borderRadius: '4px', border: '1px solid var(--border-color)', background: statusesFilter.includes(s) ? 'var(--accent-primary)' : 'var(--bg-tertiary)', color: statusesFilter.includes(s) ? '#000' : 'white' }}>{s.replace(/_/g, ' ')}</button>
               ))}
             </div>
             

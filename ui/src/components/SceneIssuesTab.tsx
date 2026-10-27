@@ -1,12 +1,15 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  AlertTriangle,
   CheckCircle,
   Loader2,
+  Info,
+  ChevronDown,
 } from 'lucide-react';
 import { api } from '../api';
 import { ResolveIssueModal } from './curation/ResolveIssueModal';
+import { ActionConfirmationModal } from './curation/ActionConfirmationModal';
 import { SceneIssueCard } from './curation/SceneIssueCard';
+import { SceneIssuesFilters } from './curation/SceneIssuesFilters';
 import type { SceneIssue, SceneIssuesResponse } from '../types';
 
 interface SceneIssuesTabProps {
@@ -22,12 +25,30 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
     per_page: 50,
     total_pages: 1,
   });
+  const [statusCounts, setStatusCounts] = useState<{ unresolved: number; resolved: number; all: number }>({
+    unresolved: 0,
+    resolved: 0,
+    all: 0,
+  });
   const [statusFilter, setStatusFilter] = useState<'unresolved' | 'resolved' | 'all'>('unresolved');
   const [kindFilter, setKindFilter] = useState<string>('');
+  const [reasonFilter, setReasonFilter] = useState<string>('');
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [resolvingIssue, setResolvingIssue] = useState<SceneIssue | null>(null);
+  const [oppositeAction, setOppositeAction] = useState<{ action: 'merge' | 'split'; issue: SceneIssue } | null>(null);
   const [reopeningId, setReopeningId] = useState<number | null>(null);
+  const [guideCollapsed, setGuideCollapsed] = useState(() => {
+    return localStorage.getItem('socrates_scene_guide_collapsed') === 'true';
+  });
+
+  const toggleGuide = () => {
+    setGuideCollapsed(prev => {
+      const next = !prev;
+      localStorage.setItem('socrates_scene_guide_collapsed', String(next));
+      return next;
+    });
+  };
 
   const fetchIssues = useCallback(() => {
     if (!backupId) return;
@@ -38,24 +59,38 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
     params.append('per_page', '50');
     if (statusFilter !== 'all') params.append('status', statusFilter);
     if (kindFilter) params.append('kind', kindFilter);
+    if (reasonFilter) params.append('reason', reasonFilter);
 
     api
       .getSceneIssues(backupId, params)
       .then(res => {
         setData(res);
+        if (res.status_counts) {
+          setStatusCounts(res.status_counts);
+        }
       })
       .catch(console.error)
       .finally(() => {
         setLoading(false);
         if (onRefreshSummary) onRefreshSummary();
       });
-  }, [backupId, statusFilter, kindFilter, page, onRefreshSummary]);
+  }, [backupId, statusFilter, kindFilter, reasonFilter, page, onRefreshSummary]);
 
   useEffect(() => {
     fetchIssues();
   }, [fetchIssues]);
 
   const handleReopen = async (issueId: number) => {
+    const targetIssue = data.issues.find(i => i.id === issueId);
+    if (targetIssue?.action_performed) {
+      if (
+        !window.confirm(
+          'Reopening this issue will undo the previous merge/split and modify scenes again. Continue?'
+        )
+      ) {
+        return;
+      }
+    }
     setReopeningId(issueId);
     try {
       await api.reopenSceneIssue(backupId, issueId);
@@ -67,97 +102,135 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
     }
   };
 
+  const handleOpenOppositeAction = (action: 'merge' | 'split', issue: SceneIssue) => {
+    setOppositeAction({ action, issue });
+  };
+
+  const handleCloseOppositeAction = () => {
+    setOppositeAction(null);
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
       {/* Header & Filter Controls */}
+      <SceneIssuesFilters
+        totalItems={data.total_items}
+        statusFilter={statusFilter}
+        onStatusChange={st => {
+          setStatusFilter(st);
+          setPage(1);
+        }}
+        statusCounts={statusCounts}
+        kindFilter={kindFilter}
+        onKindChange={k => {
+          setKindFilter(k);
+          setPage(1);
+        }}
+        reasonFilter={reasonFilter}
+        onReasonChange={r => {
+          setReasonFilter(r);
+          setPage(1);
+        }}
+      />
+
+      {/* Informational Guide (Muted appearance, styled like Scenes tab Filters box) */}
       <div
-        className="glass-panel"
         style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          flexWrap: 'wrap',
-          gap: '1rem',
+          background: 'var(--bg-secondary)',
+          borderRadius: '8px',
+          border: '1px solid var(--border-color)',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+        <div
+          onClick={toggleGuide}
+          style={{
+            padding: '0.65rem 1rem',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            cursor: 'pointer',
+            userSelect: 'none',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <Info size={16} color="var(--accent-secondary)" />
+            <strong style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+              How "Scene Issues" Work
+            </strong>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+            <span>{guideCollapsed ? 'Show' : 'Hide'}</span>
+            <ChevronDown
+              size={14}
+              style={{
+                transform: guideCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
+                transition: 'transform var(--transition-fast)',
+              }}
+            />
+          </div>
+        </div>
+
+        {!guideCollapsed && (
           <div
             style={{
-              width: '40px',
-              height: '40px',
-              borderRadius: '8px',
-              background: 'rgba(239, 68, 68, 0.15)',
+              padding: '0.85rem 1rem',
+              borderTop: '1px solid var(--border-color)',
+              fontSize: '0.825rem',
+              lineHeight: '1.5',
+              color: 'var(--text-secondary)',
               display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: 'var(--danger)',
+              flexDirection: 'column',
+              gap: '0.45rem',
             }}
           >
-            <AlertTriangle size={22} />
+            <div>
+              Socrates detects scenes using pattern recognition. When{' '}
+              <code style={{ color: 'var(--accent-secondary)' }}>[END]</code> tags aren't clear, it makes a decision and leaves it here for human review.
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', marginTop: '0.15rem' }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
+                <span
+                  style={{
+                    background: 'rgba(234, 179, 8, 0.15)',
+                    border: '1px solid rgba(234, 179, 8, 0.35)',
+                    color: '#facc15',
+                    padding: '0.08rem 0.4rem',
+                    borderRadius: '4px',
+                    fontSize: '0.7rem',
+                    fontWeight: 700,
+                    letterSpacing: '0.02em',
+                    flexShrink: 0,
+                  }}
+                >
+                  AUTO SPLIT
+                </span>
+                <span style={{ fontSize: '0.825rem', color: 'var(--text-muted)' }}>
+                  Socrates registered this as the start of a new scene. If this is a mistake, you can merge the two scenes.
+                </span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
+                <span
+                  style={{
+                    background: 'rgba(139, 92, 246, 0.15)',
+                    border: '1px solid rgba(139, 92, 246, 0.35)',
+                    color: '#c4b5fd',
+                    padding: '0.08rem 0.4rem',
+                    borderRadius: '4px',
+                    fontSize: '0.7rem',
+                    fontWeight: 700,
+                    letterSpacing: '0.02em',
+                    flexShrink: 0,
+                  }}
+                >
+                  SOFT BOUNDARY
+                </span>
+                <span style={{ fontSize: '0.825rem', color: 'var(--text-muted)' }}>
+                  Socrates doubted, but didn't start a new scene. If this is a mistake, you can register this as a new scene.
+                </span>
+              </div>
+            </div>
           </div>
-          <div>
-            <h2 style={{ margin: 0, fontSize: '1.25rem', color: 'var(--text-primary)' }}>
-              Scene Issues Review Queue
-            </h2>
-            <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-              Anomalous scenes flagged during pipeline indexing ({data.total_items} total)
-            </p>
-          </div>
-        </div>
-
-        {/* Filter Controls */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-          {/* Status Buttons */}
-          <div style={{ display: 'flex', gap: '0.35rem' }}>
-            {(['unresolved', 'resolved', 'all'] as const).map(st => (
-              <button
-                key={st}
-                onClick={() => {
-                  setStatusFilter(st);
-                  setPage(1);
-                }}
-                style={{
-                  padding: '0.35rem 0.8rem',
-                  borderRadius: '6px',
-                  fontSize: '0.85rem',
-                  textTransform: 'capitalize',
-                  border: statusFilter === st ? '1px solid var(--accent-secondary)' : '1px solid var(--border-color)',
-                  background: statusFilter === st ? 'rgba(109, 40, 217, 0.25)' : 'var(--bg-tertiary)',
-                  color: statusFilter === st ? '#fff' : 'var(--text-secondary)',
-                  fontWeight: statusFilter === st ? 600 : 400,
-                  cursor: 'pointer',
-                }}
-              >
-                {st}
-              </button>
-            ))}
-          </div>
-
-          {/* Kind Select */}
-          <select
-            value={kindFilter}
-            onChange={e => {
-              setKindFilter(e.target.value);
-              setPage(1);
-            }}
-            style={{
-              padding: '0.4rem 0.75rem',
-              background: 'var(--bg-tertiary)',
-              border: '1px solid var(--border-color)',
-              borderRadius: '6px',
-              color: 'white',
-              fontSize: '0.85rem',
-            }}
-          >
-            <option value="">All Issue Kinds</option>
-            <option value="non_tupper_author">Non-Tupper Author</option>
-            <option value="gap">Gap</option>
-            <option value="consecutive">Consecutive</option>
-            <option value="early_end_merged">Early End Merged</option>
-            <option value="late_start_merged">Late Start Merged</option>
-            <option value="overlap">Overlap</option>
-          </select>
-        </div>
+        )}
       </div>
 
       {/* Issues List */}
@@ -187,6 +260,7 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
               isReopening={reopeningId === iss.id}
               onResolve={setResolvingIssue}
               onReopen={handleReopen}
+              onOppositeAction={(action, targetIssue) => handleOpenOppositeAction(action, targetIssue)}
             />
           ))}
         </div>
@@ -242,6 +316,18 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
           onResolved={fetchIssues}
         />
       )}
+
+      {/* Opposite Action Confirmation Modal */}
+      {oppositeAction && (
+        <ActionConfirmationModal
+          backupId={backupId}
+          issue={oppositeAction.issue}
+          action={oppositeAction.action}
+          onClose={handleCloseOppositeAction}
+          onResolved={fetchIssues}
+        />
+      )}
+
     </div>
   );
 };

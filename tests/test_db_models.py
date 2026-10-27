@@ -14,6 +14,7 @@ for p in (SRC_DIR.as_posix(), PROJECT_ROOT.as_posix()):
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
 
+# pyrefly: ignore [missing-import]
 from db.models import (
     Base,
     BackupModel,
@@ -31,17 +32,25 @@ from db.models import (
     SceneIssueModel,
     MessageOverrideModel,
     FlaggedMessageModel,
+    SchemaVersionModel,
+    CURRENT_SCHEMA_VERSION,
     Scope,
     Step,
     Status,
     SceneStatus,
     IssueKind,
+    IssueReason,
     FlaggedKind,
     VersionType,
     Origin,
     Activity,
 )
-from db.session import init_db
+
+# pyrefly: ignore [missing-import]
+from db.session import init_db, get_db_schema_version
+# pyrefly: ignore [missing-import]
+from utils import exceptions as exc
+# pyrefly: ignore [missing-import]
 import utils.tricks as t
 
 
@@ -75,6 +84,7 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
             "scene_issues",
             "message_overrides",
             "flagged_messages",
+            "schema_version",
         }
         missing = expected_tables - tables
         self.assertEqual(len(missing), 0, f"Missing expected tables: {missing}")
@@ -226,6 +236,44 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
             self.assertIsNotNone(loaded_flag)
             self.assertEqual(loaded_flag.kind, FlaggedKind.NON_TUPPER)
             self.assertEqual(loaded_flag.author["name"], "BadBot")
+
+    def test_issue_kind_and_scene_status_enums(self):
+        """Verifies that IssueKind and SceneStatus enums only contain active modern members."""
+        expected_kinds = {"auto_split", "soft_boundary"}
+        actual_kinds = {k.value for k in IssueKind}
+        self.assertEqual(actual_kinds, expected_kinds)
+
+        expected_statuses = {"open", "closed", "no_end_tag"}
+        actual_statuses = {s.value for s in SceneStatus}
+        self.assertEqual(actual_statuses, expected_statuses)
+
+        expected_reasons = {"separate_roster", "start_tag_roster_change", "start_tag_same_roster", "roster_change"}
+        actual_reasons = {r.value for r in IssueReason}
+        self.assertEqual(actual_reasons, expected_reasons)
+
+    def test_schema_version_tracking(self):
+        """Verifies that schema_version table correctly tracks CURRENT_SCHEMA_VERSION."""
+        current_ver = get_db_schema_version(self.engine)
+        self.assertEqual(current_ver, CURRENT_SCHEMA_VERSION)
+
+        with self.Session() as session:
+            record = session.query(SchemaVersionModel).filter_by(version=CURRENT_SCHEMA_VERSION).first()
+            self.assertIsNotNone(record)
+            self.assertIsNotNone(record.applied_at)
+
+    def test_schema_version_mismatch_raises_error(self):
+        """Verifies that init_db raises DatabaseSchemaMismatchError when DB version < CURRENT_SCHEMA_VERSION."""
+        # Wipe schema_version table to simulate legacy v0 database with existing tables
+        with self.Session() as session:
+            session.query(SchemaVersionModel).delete()
+            session.commit()
+
+        self.assertEqual(get_db_schema_version(self.engine), 0)
+
+        # Calling init_db with check_version=True should raise DatabaseSchemaMismatchError
+        with self.assertRaises(exc.DatabaseSchemaMismatchError) as ctx:
+            init_db(self.engine, check_version=True)
+        self.assertIn("older than required version", str(ctx.exception))
 
 
 class TestAtomicUtilities(unittest.TestCase):

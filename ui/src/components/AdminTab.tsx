@@ -23,7 +23,7 @@ export const AdminTab = ({ onRefreshSummary }: AdminTabProps) => {
   const [logs, setLogs] = useState<string[]>([]);
   const [loadingLogs, setLoadingLogs] = useState(false);
 
-  const [activeTestAction, setActiveTestAction] = useState<'reset' | 'migrate' | 'suite' | null>(null);
+  const [activeTestAction, setActiveTestAction] = useState<'reset' | 'migrate' | 'suite' | 'upgrade-all' | null>(null);
   const [testResult, setTestResult] = useState<AdminTestActionResponse | null>(null);
 
   const logsEndRef = useRef<HTMLDivElement>(null);
@@ -79,7 +79,7 @@ export const AdminTab = ({ onRefreshSummary }: AdminTabProps) => {
     api.updateGlobalConfig(newConfig).catch(console.error);
   };
 
-  const handleTestAction = async (action: 'reset' | 'migrate' | 'suite') => {
+  const handleTestAction = async (action: 'reset' | 'migrate' | 'suite' | 'upgrade-all') => {
     if (activeTestAction) return;
     setActiveTestAction(action);
     setTestResult(null);
@@ -90,6 +90,8 @@ export const AdminTab = ({ onRefreshSummary }: AdminTabProps) => {
         res = await api.resetTestingBackup();
       } else if (action === 'migrate') {
         res = await api.migrateTestingBackup();
+      } else if (action === 'upgrade-all') {
+        res = await api.upgradeAllDatabases();
       } else {
         res = await api.runPythonTests();
       }
@@ -172,6 +174,32 @@ export const AdminTab = ({ onRefreshSummary }: AdminTabProps) => {
               <Database size={16} />
             )}
             {activeTestAction === 'migrate' ? 'Migrating...' : 'Migrate Testing Backup'}
+          </button>
+
+          <button
+            onClick={() => handleTestAction('upgrade-all')}
+            disabled={isTestBusy}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              padding: '0.55rem 1.1rem',
+              background: 'var(--bg-tertiary)',
+              border: '1px solid var(--border-color)',
+              color: 'var(--text-primary)',
+              borderRadius: '6px',
+              cursor: isTestBusy ? 'not-allowed' : 'pointer',
+              opacity: isTestBusy && activeTestAction !== 'upgrade-all' ? 0.5 : 1,
+              fontSize: '0.9rem',
+              fontWeight: 500,
+            }}
+          >
+            {activeTestAction === 'upgrade-all' ? (
+              <Loader2 size={16} className="animate-spin" style={{ color: 'var(--accent-secondary)' }} />
+            ) : (
+              <Database size={16} />
+            )}
+            {activeTestAction === 'upgrade-all' ? 'Upgrading...' : 'Upgrade all databases'}
           </button>
 
           <button

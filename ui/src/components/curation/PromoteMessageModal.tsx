@@ -16,8 +16,10 @@ export const PromoteMessageModal: React.FC<PromoteMessageModalProps> = ({
   onClose,
   onPromoted,
 }) => {
+  const suggested = message?.suggested_character;
   const [content, setContent] = useState(message?.content || '');
   const [authorName, setAuthorName] = useState(message?.author?.name || message?.author?.nickname || '');
+  const [authorId, setAuthorId] = useState(message?.author?.id || '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -29,6 +31,7 @@ export const PromoteMessageModal: React.FC<PromoteMessageModalProps> = ({
     try {
       const authorPayload = {
         ...message.author,
+        id: authorId.trim() || message.author?.id,
         name: authorName.trim() || message.author?.name,
       };
 
@@ -124,25 +127,93 @@ export const PromoteMessageModal: React.FC<PromoteMessageModalProps> = ({
             Promoting registers this message as a permanent <code>message_override</code> so scene indexing and attribution pipelines treat it as legitimate roleplay dialogue.
           </p>
 
-          <div>
-            <label style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: 600, display: 'block', marginBottom: '0.35rem' }}>
-              Author Name
-            </label>
-            <input
-              type="text"
-              value={authorName}
-              onChange={e => setAuthorName(e.target.value)}
-              placeholder="e.g. Character / Pen Name"
+          {/* 1-Click Character Suggestion Card */}
+          {suggested && (
+            <div
               style={{
-                width: '100%',
-                padding: '0.55rem 0.75rem',
-                background: 'var(--bg-tertiary)',
-                border: '1px solid var(--border-color)',
-                borderRadius: '6px',
-                color: 'white',
-                fontSize: '0.9rem',
+                background: 'rgba(16, 185, 129, 0.12)',
+                border: '1px solid rgba(16, 185, 129, 0.35)',
+                borderRadius: '8px',
+                padding: '0.75rem 1rem',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: '0.5rem',
               }}
-            />
+            >
+              <div>
+                <div style={{ fontSize: '0.85rem', color: 'var(--success)', fontWeight: 600 }}>
+                  Suggested Character: #{suggested.char_id} {suggested.name}
+                </div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  {suggested.writer_name ? `Writer: ${suggested.writer_name} • ` : ''}Reason: {suggested.reason}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthorId(String(suggested.char_id));
+                  setAuthorName(suggested.name);
+                }}
+                style={{
+                  padding: '0.35rem 0.75rem',
+                  background: 'var(--success)',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '6px',
+                  fontSize: '0.8rem',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                Apply Suggestion
+              </button>
+            </div>
+          )}
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '0.75rem' }}>
+            <div>
+              <label style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: 600, display: 'block', marginBottom: '0.35rem' }}>
+                Author ID
+              </label>
+              <input
+                type="text"
+                value={authorId}
+                onChange={e => setAuthorId(e.target.value)}
+                placeholder="e.g. 25"
+                style={{
+                  width: '100%',
+                  padding: '0.55rem 0.75rem',
+                  background: 'var(--bg-tertiary)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '6px',
+                  color: 'white',
+                  fontSize: '0.9rem',
+                }}
+              />
+            </div>
+            <div>
+              <label style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: 600, display: 'block', marginBottom: '0.35rem' }}>
+                Author Name
+              </label>
+              <input
+                type="text"
+                value={authorName}
+                onChange={e => setAuthorName(e.target.value)}
+                placeholder="e.g. Character / Pen Name"
+                style={{
+                  width: '100%',
+                  padding: '0.55rem 0.75rem',
+                  background: 'var(--bg-tertiary)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '6px',
+                  color: 'white',
+                  fontSize: '0.9rem',
+                }}
+              />
+            </div>
           </div>
 
           <div>

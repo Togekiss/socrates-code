@@ -1,4 +1,5 @@
 from enum import StrEnum
+from typing import Optional
 from sqlalchemy import (
     Column,
     String,
@@ -12,6 +13,8 @@ from sqlalchemy import (
     JSON,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
+
+CURRENT_SCHEMA_VERSION = 2  # See docs/database_design.md for full schema changelog
 
 
 class Scope(StrEnum):
@@ -43,16 +46,40 @@ class Status(StrEnum):
 class SceneStatus(StrEnum):
     OPEN = "open"
     CLOSED = "closed"
-    TIMEOUT = "timeout"
+    NO_END_TAG = "no_end_tag"
 
 
 class IssueKind(StrEnum):
-    NON_TUPPER_AUTHOR = "non_tupper_author"
-    GAP = "gap"
-    CONSECUTIVE = "consecutive"
-    OVERLAP = "overlap"
-    LATE_START_MERGED = "late_start_merged"
-    EARLY_END_MERGED = "early_end_merged"
+    AUTO_SPLIT = "auto_split"
+    SOFT_BOUNDARY = "soft_boundary"
+
+
+class IssueReason(StrEnum):
+    SEPARATE_ROSTER = "separate_roster"
+    START_TAG_ROSTER_CHANGE = "start_tag_roster_change"
+    START_TAG_SAME_ROSTER = "start_tag_same_roster"
+    ROSTER_CHANGE = "roster_change"
+
+
+class IssueResolution(StrEnum):
+    SPLIT = "split"
+    MERGED = "merged"
+
+
+def get_default_resolution(kind: str | IssueKind) -> str:
+    k = kind.value if isinstance(kind, IssueKind) else str(kind)
+    if k == IssueKind.AUTO_SPLIT.value:
+        return IssueResolution.SPLIT.value
+    if k == IssueKind.SOFT_BOUNDARY.value:
+        return IssueResolution.MERGED.value
+    return IssueResolution.SPLIT.value
+
+
+def is_action_performed(kind: str | IssueKind, resolution: Optional[str | IssueResolution] = None) -> bool:
+    if not resolution:
+        return False
+    res_val = resolution.value if isinstance(resolution, IssueResolution) else str(resolution)
+    return res_val != get_default_resolution(kind)
 
 
 class FlaggedKind(StrEnum):
@@ -74,6 +101,7 @@ class Origin(StrEnum):
 class Activity(StrEnum):
     ACTIVE = "active"
     INACTIVE = "inactive"
+
 
 
 class Base(DeclarativeBase):
@@ -252,7 +280,7 @@ class SceneModel(Base):
     scene_key = Column(String(32), nullable=False)
     channel_pk = Column(Integer, ForeignKey("channels.pk", ondelete="CASCADE"), nullable=False, index=True)
     category_pk = Column(Integer, ForeignKey("channels.pk", ondelete="CASCADE"), nullable=False, index=True)
-    status = Column(String(32), nullable=False, index=True)  # "open", "closed", "timeout"
+    status = Column(String(32), nullable=False, index=True)  # "open", "closed", "no_end_tag"
     start_message_id = Column(String(20), nullable=False)
     end_message_id = Column(String(20), nullable=False)
     start_index = Column(Integer, nullable=False)
@@ -268,7 +296,7 @@ class SceneModel(Base):
     channel = relationship("ChannelModel", foreign_keys=[channel_pk])
     category = relationship("ChannelModel", foreign_keys=[category_pk])
     participants = relationship("SceneParticipantModel", back_populates="scene", cascade="all, delete-orphan")
-    issues = relationship("SceneIssueModel", back_populates="scene", cascade="all, delete-orphan")
+    issues = relationship("SceneIssueModel", foreign_keys="[SceneIssueModel.scene_pk]", back_populates="scene", passive_deletes=True)
 
 
 class SceneParticipantModel(Base):
@@ -286,15 +314,22 @@ class SceneIssueModel(Base):
 
     pk = Column(Integer, primary_key=True, autoincrement=True)
     backup_id = Column(String(64), ForeignKey("backups.backup_id", ondelete="CASCADE"), nullable=False, index=True)
-    scene_pk = Column(Integer, ForeignKey("scenes.pk", ondelete="CASCADE"), nullable=False, index=True)
-    kind = Column(String(64), nullable=False)
-    discord_user_id = Column(String(20), nullable=True)
-    details = Column(JSON, nullable=True)
+    scene_pk = Column(Integer, ForeignKey("scenes.pk", ondelete="SET NULL"), nullable=True, index=True)
+    next_scene_pk = Column(Integer, ForeignKey("scenes.pk", ondelete="SET NULL"), nullable=True, index=True)
+    kind = Column(String(32), nullable=False)
+    reason = Column(String(32), nullable=False)
+    candidate_message_id = Column(String(20), nullable=True, index=True)
+    candidate_index = Column(Integer, nullable=True)
+    candidate_excerpt = Column(String(250), nullable=True)
+    previous_chars = Column(JSON, nullable=True)
+    next_chars = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False)
     resolved_at = Column(DateTime(timezone=True), nullable=True)
     resolved_note = Column(Text, nullable=True)
+    resolution = Column(String(32), nullable=True, index=True)
 
-    scene = relationship("SceneModel", back_populates="issues")
+    scene = relationship("SceneModel", foreign_keys=[scene_pk], back_populates="issues")
+    next_scene = relationship("SceneModel", foreign_keys=[next_scene_pk])
 
 
 class MessageOverrideModel(Base):
@@ -329,3 +364,11 @@ class FlaggedMessageModel(Base):
 
     backup = relationship("BackupModel", back_populates="flagged_messages")
     channel = relationship("ChannelModel")
+
+
+class SchemaVersionModel(Base):
+    __tablename__ = "schema_version"
+
+    version = Column(Integer, primary_key=True)
+    applied_at = Column(DateTime(timezone=True), nullable=False)
+    description = Column(String(255), nullable=True)

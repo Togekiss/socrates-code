@@ -14,7 +14,12 @@ import {
 import { BackupForm } from './BackupForm';
 import type { BackupConfig, BackupInfo, GlobalConfig } from '../types';
 
-export const RunTab = ({ backupId }: { backupId: string }) => {
+interface RunTabProps {
+  backupId: string;
+  onRefreshSummary?: () => void;
+}
+
+export const RunTab = ({ backupId, onRefreshSummary }: RunTabProps) => {
   const [globalConfig, setGlobalConfig] = useState<GlobalConfig | null>(null);
   const [backupInfo, setBackupInfo] = useState<BackupInfo | null>(null);
   const [backupConfig, setBackupConfig] = useState<BackupConfig | null>(null);
@@ -22,6 +27,7 @@ export const RunTab = ({ backupId }: { backupId: string }) => {
   const [backupLogs, setBackupLogs] = useState<string[]>([]);
   const [streamActive, setStreamActive] = useState(false);
   const [isPolling, setIsPolling] = useState(false);
+  const [isUpgrading, setIsUpgrading] = useState(false);
 
   const backupLogsEndRef = useRef<HTMLDivElement>(null);
 
@@ -64,6 +70,7 @@ export const RunTab = ({ backupId }: { backupId: string }) => {
   }, [backupLogs]);
 
   const isAnyRunning =
+    isUpgrading ||
     backupInfo?.status === 'pending' ||
     backupInfo?.status === 'running' ||
     Boolean(backupInfo?.steps && Object.values(backupInfo.steps).some(s => s === 'running'));
@@ -171,6 +178,25 @@ export const RunTab = ({ backupId }: { backupId: string }) => {
         fetchBackupData();
         setIsPolling(false);
       });
+  };
+
+  const handleUpgradeDatabase = async () => {
+    if (!backupId || isUpgrading || isAnyRunning) return;
+    setIsUpgrading(true);
+    setStreamActive(true);
+    try {
+      await api.upgradeBackup(backupId);
+      fetchBackupData();
+      if (onRefreshSummary) {
+        onRefreshSummary();
+      }
+      api.getBackupLogs(backupId, 100).then(res => setBackupLogs(res.lines || [])).catch(() => {});
+    } catch (err) {
+      console.error('Failed to upgrade database:', err);
+      fetchBackupData();
+    } finally {
+      setIsUpgrading(false);
+    }
   };
 
   const cancelRun = () => {
@@ -470,6 +496,28 @@ export const RunTab = ({ backupId }: { backupId: string }) => {
             >
               <RotateCw size={12} className={isFixMessagesRunning ? 'animate-spin' : ''} />
               {isFixMessagesRunning ? 'Fixing...' : 'Fix messages'}
+            </button>
+
+            <button
+              onClick={handleUpgradeDatabase}
+              disabled={isAnyRunning}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.35rem',
+                padding: '0.35rem 0.75rem',
+                fontSize: '0.8rem',
+                background: isUpgrading ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
+                border: '1px solid var(--border-color)',
+                color: 'var(--text-primary)',
+                borderRadius: '6px',
+                cursor: isAnyRunning ? 'not-allowed' : 'pointer',
+                opacity: isAnyRunning && !isUpgrading ? 0.45 : 1,
+                fontWeight: isUpgrading ? 700 : 500,
+              }}
+            >
+              <RotateCw size={12} className={isUpgrading ? 'animate-spin' : ''} />
+              {isUpgrading ? 'Upgrading...' : 'Upgrade database'}
             </button>
 
             <button

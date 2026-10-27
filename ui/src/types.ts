@@ -60,6 +60,9 @@ export interface BackupInfo {
   number_of_channels?: number;
   number_of_threads?: number;
   updated_at?: string;
+  schema_version?: number;
+  current_schema_version?: number;
+  is_schema_outdated?: boolean;
 }
 
 export interface BackupConfig {
@@ -205,19 +208,42 @@ export interface Scene {
   discord_url?: string;
 }
 
+export interface SuggestedCharacter {
+  char_id: number;
+  name: string;
+  writer_name?: string;
+  reason: string;
+}
+
+export type IssueKind = 'auto_split' | 'soft_boundary';
+export type IssueResolution = 'split' | 'merged';
+export type IssueReason = 'separate_roster' | 'start_tag_roster_change' | 'start_tag_same_roster' | 'roster_change';
+export type SceneStatus = 'open' | 'closed' | 'no_end_tag';
+
 export interface SceneIssue {
   id: number;
-  kind: string;
+  kind: IssueKind;
+  reason: IssueReason | string;
   scene_pk: number | null;
   scene_key: string;
   channel_name: string;
   channel_discord_id: string;
-  discord_user_id: string | null;
-  details: Record<string, unknown> | null;
+  next_scene_pk?: number | null;
+  next_scene_key?: string | null;
+  candidate_message_id?: string | null;
+  candidate_index?: number | null;
+  candidate_excerpt?: string | null;
+  previous_chars?: number[] | null;
+  next_chars?: number[] | null;
+  previous_char_names?: string[] | null;
+  next_char_names?: string[] | null;
   discord_link: string;
+  candidate_discord_link?: string | null;
   created_at: string | null;
   resolved_at: string | null;
   resolved_note: string | null;
+  resolution?: IssueResolution | null;
+  action_performed: boolean;
 }
 
 export interface DiscordAuthor {
@@ -238,6 +264,7 @@ export interface FlaggedMessage {
   author: DiscordAuthor;
   discord_link: string;
   flagged_at: string | null;
+  suggested_character?: SuggestedCharacter | null;
 }
 
 export interface MessageOverride {
@@ -260,6 +287,11 @@ export interface PaginatedResponse {
 
 export interface SceneIssuesResponse extends PaginatedResponse {
   issues: SceneIssue[];
+  status_counts?: {
+    unresolved: number;
+    resolved: number;
+    all: number;
+  };
 }
 
 export interface FlaggedMessagesResponse extends PaginatedResponse {

@@ -13,7 +13,7 @@ for p in (SRC_DIR.as_posix(), PROJECT_ROOT.as_posix()):
         sys.path.insert(0, p)
 
 import utils.tricks as t
-from db.models import FlaggedMessageModel, SceneIssueModel, WriterModel
+from db.models import FlaggedMessageModel, WriterModel
 from db.session import db_session, has_sqlite_db
 
 t.set_path()
@@ -31,7 +31,7 @@ def normalize_tokens(text: str) -> Set[str]:
 def find_writer_link_suggestions(
     backup_id: str, base_path: Optional[str] = None
 ) -> List[Dict[str, Any]]:
-    """Analyzes non-tupper authors in flagged messages and scene issues to suggest
+    """Analyzes non-tupper authors in flagged messages to suggest
     Discord User ID links for unlinked writers. Read-only operation.
     """
     if base_path is None:
@@ -83,36 +83,12 @@ def find_writer_link_suggestions(
                     "username": username,
                     "nickname": nickname,
                     "flagged_count": 0,
-                    "issue_count": 0,
                 }
             candidates[aid]["flagged_count"] += 1
             if not candidates[aid]["nickname"] and nickname:
                 candidates[aid]["nickname"] = nickname
 
-        # 3. Collect candidates from scene_issues (non_tupper_author)
-        scene_issues = (
-            session.query(SceneIssueModel)
-            .filter(
-                SceneIssueModel.backup_id == str(backup_id),
-                SceneIssueModel.kind == "non_tupper_author",
-                SceneIssueModel.discord_user_id.isnot(None),
-            )
-            .all()
-        )
-
-        for issue in scene_issues:
-            aid = str(issue.discord_user_id)
-            if aid not in candidates:
-                candidates[aid] = {
-                    "discord_user_id": aid,
-                    "username": "",
-                    "nickname": "",
-                    "flagged_count": 0,
-                    "issue_count": 0,
-                }
-            candidates[aid]["issue_count"] += 1
-
-        # 4. Match candidates against unlinked writers
+        # 3. Match candidates against unlinked writers
         for writer in unlinked_writers:
             writer_aliases = [writer.display_name] + [
                 a.alias for a in writer.aliases
@@ -184,7 +160,6 @@ def find_writer_link_suggestions(
                     score = (
                         (2 if conf_level == "high" else 1) * 100
                         + cand["flagged_count"]
-                        + cand["issue_count"]
                     )
                     if best_match is None or score > best_match["_score"]:
                         best_match = {
@@ -199,8 +174,7 @@ def find_writer_link_suggestions(
                             "confidence": confidence,
                             "confidence_level": conf_level,
                             "reason": reason,
-                            "evidence_count": cand["flagged_count"]
-                            + cand["issue_count"],
+                            "evidence_count": cand["flagged_count"],
                             "_score": score,
                         }
 

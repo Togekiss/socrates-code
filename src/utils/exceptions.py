@@ -92,5 +92,24 @@ class DatabaseError(BackupError):
 class DatabaseConnectionError(DatabaseError):
     pass
 
+class DatabaseSchemaMismatchError(DatabaseError):
+    pass
+
+class DatabaseUpgradeError(DatabaseError):
+    pass
+
 class MigrationError(BackupError):
     pass
+
+class CurationError(BackupError):
+    pass
+
+class NotFoundError(CurationError):
+    pass
+
+class ValidationError(CurationError):
+    pass
+
+class ConflictError(CurationError):
+    pass
+

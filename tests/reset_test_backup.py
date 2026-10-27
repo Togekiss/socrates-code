@@ -29,6 +29,8 @@ def reset_test_backup() -> bool:
         from models import SceneManager
         SceneManager.clear_cache()
         close_all_engines()
+        import gc
+        gc.collect()
     except Exception:
         pass
 

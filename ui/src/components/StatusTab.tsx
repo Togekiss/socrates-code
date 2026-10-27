@@ -125,36 +125,58 @@ export const StatusTab = ({ backupId, setTab, curationSummary: parentSummary }: 
           <h2 style={{ fontSize: '1.5rem', margin: 0, color: 'var(--text-primary)' }}>{title}</h2>
           <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>ID: {backupId}</span>
         </div>
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.5rem',
-            padding: '0.4rem 0.8rem',
-            borderRadius: '20px',
-            background: 'var(--bg-tertiary)',
-            color:
-              info.status === 'success'
-                ? 'var(--success)'
-                : info.status === 'failed'
-                ? 'var(--danger)'
-                : 'var(--warning)',
-          }}
-        >
-          {info.status === 'success' ? (
-            <CheckCircle size={18} />
-          ) : info.status === 'failed' ? (
-            <AlertCircle size={18} />
-          ) : (
-            <Clock size={18} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+          {info.schema_version !== undefined && info.schema_version !== null && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                padding: '0.4rem 0.8rem',
+                borderRadius: '20px',
+                background: 'var(--bg-tertiary)',
+                color: info.is_schema_outdated ? 'var(--danger)' : 'var(--success)',
+              }}
+            >
+              <Database size={18} />
+              <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>
+                {info.is_schema_outdated
+                  ? `Schema v${info.schema_version} (Outdated)`
+                  : `Schema v${info.schema_version}`}
+              </span>
+            </div>
           )}
-          <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>
-            {info.status === 'success'
-              ? 'Ready'
-              : info.status === 'failed'
-              ? 'Failed'
-              : 'Pending / Running'}
-          </span>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              padding: '0.4rem 0.8rem',
+              borderRadius: '20px',
+              background: 'var(--bg-tertiary)',
+              color:
+                info.status === 'success'
+                  ? 'var(--success)'
+                  : info.status === 'failed'
+                  ? 'var(--danger)'
+                  : 'var(--warning)',
+            }}
+          >
+            {info.status === 'success' ? (
+              <CheckCircle size={18} />
+            ) : info.status === 'failed' ? (
+              <AlertCircle size={18} />
+            ) : (
+              <Clock size={18} />
+            )}
+            <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>
+              {info.status === 'success'
+                ? 'Ready'
+                : info.status === 'failed'
+                ? 'Failed'
+                : 'Pending / Running'}
+            </span>
+          </div>
         </div>
       </div>
 

@@ -31,8 +31,8 @@
             "dryRun": false,
             "debugFiles": false
         },
-        "backupName": "Elysium-sql-tests",
-        "path": "Backups/Elysium-sql-tests"
+        "backupName": "Elysium-raw",
+        "path": "Backups/Elysium-raw"
     },
     "user": {
         "searchFolder": "",

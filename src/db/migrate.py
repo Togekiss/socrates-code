@@ -1,12 +1,10 @@
 import argparse
 from datetime import datetime, timezone
-import json
-import os
 from pathlib import Path
 import re
 import shutil
 import sys
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set
 
 # Ensure project root is in sys.path
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.as_posix()
@@ -48,14 +46,10 @@ from db.models import (
     SceneIssueModel,
     MessageOverrideModel,
     FlaggedMessageModel,
+    SchemaVersionModel,
+    CURRENT_SCHEMA_VERSION,
     Scope,
-    Step,
-    Status,
-    SceneStatus,
     IssueKind,
-    FlaggedKind,
-    Origin,
-    Activity,
 )
 from db.session import get_engine, init_db, db_session
 from db.snapshots import export_backup_info_snapshot, export_character_list_snapshot
@@ -451,6 +445,13 @@ def migrate_single_backup(
 
     with session_context as session:
 
+        # 0. Stamp Schema Version
+        session.add(SchemaVersionModel(
+            version=CURRENT_SCHEMA_VERSION,
+            applied_at=datetime.now(timezone.utc),
+            description="Migrated from JSON",
+        ))
+
         # 1. Backups & Base Export
         server_id = backup["server_id"]
         server_name = backup["server_name"]
@@ -696,8 +697,7 @@ def migrate_single_backup(
 
             for idx, s in enumerate(chan_scenes):
                 scene_key = f"{key_prefix}-{idx + 1}"
-                raw_status = s.get("status", "closed")
-                lifecycle_status = "closed" if raw_status in ["gap", "consecutive"] else raw_status
+                lifecycle_status = s.get("status", "closed")
 
                 start_at = parse_datetime(s["start"].get("timestamp")) or datetime.now(timezone.utc)
                 end_at = parse_datetime(s["end"].get("timestamp")) or datetime.now(timezone.utc)
@@ -723,53 +723,37 @@ def migrate_single_backup(
                 session.flush()
                 report_metrics["scenes_count"] += 1
 
-                # Validation status issues
-                if raw_status in ["gap", "consecutive"]:
-                    session.add(SceneIssueModel(
-                        backup_id=backup_model.backup_id,
-                        scene_pk=scene_model.pk,
-                        kind=raw_status,
-                        discord_user_id=None,
-                        details={"original_status": raw_status},
-                        created_at=start_at,
-                    ))
-                    report_metrics["scene_issues_count"] += 1
-
-                # Participants & Non-tupper authors
+                # Participants
                 for participant_id in s.get("characters", []):
-                    p_int = int(participant_id)
-                    if p_int < 10000:
-                        if p_int in char_id_to_pk:
-                            session.add(SceneParticipantModel(
-                                scene_pk=scene_model.pk,
-                                character_pk=char_id_to_pk[p_int],
-                            ))
-                    else:
-                        # Snowflake Discord user ID (author posting without tupper)
+                    try:
+                        p_int = int(participant_id)
+                    except (ValueError, TypeError):
+                        continue
+                    if t.is_tupper(p_int) and p_int in char_id_to_pk:
+                        session.add(SceneParticipantModel(
+                            scene_pk=scene_model.pk,
+                            character_pk=char_id_to_pk[p_int],
+                        ))
+
+                # Issues
+                for iss in s.get("issues", []):
+                    ikind = iss.get("kind")
+                    if ikind == "timeout":
+                        ikind = "auto_split"
+                    if ikind == "possible_split":
+                        ikind = IssueKind.SOFT_BOUNDARY.value
+                    if ikind in (IssueKind.AUTO_SPLIT.value, IssueKind.SOFT_BOUNDARY.value):
                         session.add(SceneIssueModel(
                             backup_id=backup_model.backup_id,
                             scene_pk=scene_model.pk,
-                            kind="non_tupper_author",
-                            discord_user_id=str(p_int),
-                            details={"author_id": str(p_int)},
+                            kind=ikind,
+                            reason=iss.get("reason") or "roster_split",
+                            candidate_message_id=str(iss.get("candidate_id") or "") or None,
+                            candidate_index=iss.get("candidate_index"),
+                            candidate_excerpt=iss.get("candidate_excerpt"),
+                            previous_chars=iss.get("previous_chars") or [],
+                            next_chars=iss.get("next_chars") or [],
                             created_at=start_at,
-                        ))
-                        report_metrics["scene_issues_count"] += 1
-
-        # Check for any _bad_scenes.json in Data/
-        for root, _, files in os.walk((Path(backup_path) / "Data").as_posix()):
-            for f in files:
-                if f.endswith("_bad_scenes.json"):
-                    bad_list = t.load_from_json(os.path.join(root, f))
-                    for item in bad_list:
-                        # Record discarded scenes
-                        session.add(SceneIssueModel(
-                            backup_id=backup_model.backup_id,
-                            scene_pk=scene_model.pk,  # Associate with last scene
-                            kind="late_start_merged" if item.get("status") == "late_start" else "early_end_merged",
-                            discord_user_id=None,
-                            details=item,
-                            created_at=datetime.now(timezone.utc),
                         ))
                         report_metrics["scene_issues_count"] += 1
 
@@ -857,7 +841,7 @@ def migrate_single_backup(
 | Top-level Characters | {report_metrics['characters_count']} | Top-level characters & group siblings |
 | Nested Tuppers | {report_metrics['tuppers_count']} | Alter egos, NPCs, familiars |
 | Scenes | {report_metrics['scenes_count']} | Recomputed separator keys (`100% unique`) |
-| Scene Issues | {report_metrics['scene_issues_count']} | Non-tupper authors, gaps, consecutive |
+| Scene Issues | {report_metrics['scene_issues_count']} | Auto-splits & possible splits |
 | Message Overrides | {report_metrics['message_overrides_count']} | Promoted message replacements |
 | Flagged Messages | {report_metrics['flagged_messages_count']} | Non-tupper messages & end tags |
 

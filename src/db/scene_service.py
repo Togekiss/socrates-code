@@ -1,10 +1,11 @@
 from datetime import datetime, timezone
 import math
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
-from sqlalchemy import func, or_, and_
+from typing import Any, Dict, List, Optional, Tuple
+from sqlalchemy import func, or_
+from sqlalchemy.orm import selectinload, joinedload
 
-from db.session import db_session, require_sqlite_db
+from db.session import db_session, require_sqlite_db, init_db
 from db.models import (
     SceneModel,
     SceneParticipantModel,
@@ -16,60 +17,63 @@ from db.models import (
     BackupModel,
     ExportModel,
     Scope,
-    Status,
     SceneStatus,
     IssueKind,
 )
 import utils.tricks as t
 
-
-def _parse_dt(dt_val: Any) -> Optional[datetime]:
-    if not dt_val:
-        return None
-    if isinstance(dt_val, datetime):
-        return dt_val
-    try:
-        dt = datetime.fromisoformat(str(dt_val))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except Exception:
-        return None
+_parse_dt = t.parse_datetime
 
 
 def save_indexed_scenes(
     backup_id: str,
     base_path: str,
     scenes: List[Dict[str, Any]],
-    bad_scenes: Optional[List[Dict[str, Any]]] = None,
     debug_files: bool = False
 ) -> None:
     """
     Persists indexed scenes, participants, and detected issues into SQLite.
     Preserves existing resolved issue notes (resolved_at, resolved_note) across re-indexing runs.
-    Optionally exports debug JSON snapshots (_scenes.json, _bad_scenes.json) if debug_files is True.
+    Optionally exports debug JSON snapshots (_scenes.json) if debug_files is True.
     """
     require_sqlite_db(base_path)
+    init_db(engine_or_backup_id=backup_id, backup_path=base_path)
 
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
-        # 1. Capture previously resolved issues to preserve manual curation across re-runs
+        # 1. Delete unresolved issues and capture surviving resolved issues across re-indexing runs
+        session.query(SceneIssueModel).filter(
+            SceneIssueModel.backup_id == str(backup_id),
+            SceneIssueModel.resolved_at.is_(None),
+        ).delete()
+        session.flush()
+
         existing_resolved = (
             session.query(SceneIssueModel)
-            .join(SceneModel, SceneIssueModel.scene_pk == SceneModel.pk)
             .filter(
                 SceneIssueModel.backup_id == str(backup_id),
                 SceneIssueModel.resolved_at.isnot(None),
             )
+            .order_by(SceneIssueModel.resolved_at.asc())
             .all()
         )
-        resolved_map: Dict[Tuple[str, str], Tuple[Optional[datetime], Optional[str]]] = {}
-        for issue in existing_resolved:
-            resolved_map[(issue.scene.start_message_id, issue.kind)] = (
-                issue.resolved_at,
-                issue.resolved_note,
-            )
+        resolved_by_candidate: Dict[str, SceneIssueModel] = {
+            str(iss.candidate_message_id): iss for iss in existing_resolved if iss.candidate_message_id
+        }
 
-        # 2. Delete existing scenes for this backup (cascades to participants & issues)
+        # Detach surviving resolved issues from scene foreign keys so re-linking can attach them cleanly
+        session.query(SceneIssueModel).filter(
+            SceneIssueModel.backup_id == str(backup_id),
+            SceneIssueModel.resolved_at.isnot(None),
+        ).update({"scene_pk": None, "next_scene_pk": None}, synchronize_session="fetch")
+        session.flush()
+
+        # 2. Delete existing scene participants for this backup explicitly
+        old_scene_pks = session.query(SceneModel.pk).filter(SceneModel.backup_id == str(backup_id))
+        session.query(SceneParticipantModel).filter(
+            SceneParticipantModel.scene_pk.in_(old_scene_pks)
+        ).delete(synchronize_session=False)
+
+        # Delete existing scenes for this backup
         session.query(SceneModel).filter(SceneModel.backup_id == str(backup_id)).delete()
         session.flush()
 
@@ -92,9 +96,15 @@ def save_indexed_scenes(
         chan_by_discord_id = {ch.discord_id: ch for ch in channels}
         chan_by_pk = {ch.pk: ch for ch in channels}
 
-        chars = session.query(CharacterModel).filter(
-            CharacterModel.backup_id == str(backup_id)
-        ).all()
+        chars = (
+            session.query(CharacterModel)
+            .options(
+                selectinload(CharacterModel.names),
+                joinedload(CharacterModel.writer)
+            )
+            .filter(CharacterModel.backup_id == str(backup_id))
+            .all()
+        )
         char_id_to_pk = {c.char_id: c.pk for c in chars}
 
         # 4. Group scenes by channelId to build accurate hierarchical keys
@@ -102,6 +112,9 @@ def save_indexed_scenes(
         for s in scenes:
             chan_id = str(s.get("channelId") or s.get("channel", {}).get("id", ""))
             scenes_by_channel.setdefault(chan_id, []).append(s)
+
+        all_created_scene_models: List[SceneModel] = []
+        channel_scenes_map: Dict[int, List[Tuple[SceneModel, Dict[str, Any]]]] = {}
 
         for chan_discord_id, chan_scenes in scenes_by_channel.items():
             chan_scenes.sort(key=lambda x: x.get("start", {}).get("index", 0))
@@ -119,10 +132,10 @@ def save_indexed_scenes(
                 category_pk = cat_chan.pk if cat_chan else chan_model.pk
                 key_prefix = f"{cat_chan.position if cat_chan else 0}-{chan_model.position}"
 
+            created_scenes: List[Tuple[SceneModel, Dict[str, Any]]] = []
             for idx, s in enumerate(chan_scenes):
                 scene_key = f"{key_prefix}-{idx + 1}"
-                raw_status = s.get("status", "closed")
-                lifecycle_status = "closed" if raw_status in ["gap", "consecutive"] else raw_status
+                lifecycle_status = s.get("status", SceneStatus.CLOSED.value)
 
                 start_at = _parse_dt(s.get("start", {}).get("timestamp")) or datetime.now(timezone.utc)
                 end_at = _parse_dt(s.get("end", {}).get("timestamp")) or datetime.now(timezone.utc)
@@ -144,12 +157,18 @@ def save_indexed_scenes(
                     start_author_id=str(s.get("start", {}).get("authorID") or s.get("start", {}).get("author", {}).get("id", "")),
                     end_author_id=str(s.get("end", {}).get("authorID") or s.get("end", {}).get("author", {}).get("id", "")),
                     start_excerpt=str(s.get("start", {}).get("content", ""))[:250],
-                    end_excerpt=str(s.get("end", {}).get("content", ""))[:250],
+                    end_excerpt=str(s.get("end", {}).get("content", ""))[-250:],
                 )
                 session.add(scene_model)
-                session.flush()
+                created_scenes.append((scene_model, s))
+                all_created_scene_models.append(scene_model)
+                channel_scenes_map.setdefault(chan_model.pk, []).append((scene_model, s))
 
-                # Add participants and detect non-tupper authors
+            session.flush()
+
+            for idx, (scene_model, s) in enumerate(created_scenes):
+                # Add participants (deduplicating to prevent unique constraint collisions)
+                seen_char_pks = set()
                 for participant_id in s.get("characters", []):
                     try:
                         p_int = int(participant_id)
@@ -157,46 +176,90 @@ def save_indexed_scenes(
                         continue
 
                     if p_int in char_id_to_pk:
-                        session.add(SceneParticipantModel(
-                            scene_pk=scene_model.pk,
-                            character_pk=char_id_to_pk[p_int]
-                        ))
-                    elif p_int >= 10000:
-                        res_info = resolved_map.get((start_msg_id, "non_tupper_author"))
+                        char_pk = char_id_to_pk[p_int]
+                        if char_pk not in seen_char_pks:
+                            seen_char_pks.add(char_pk)
+                            session.add(SceneParticipantModel(
+                                scene_pk=scene_model.pk,
+                                character_pk=char_pk
+                            ))
+
+                # Identify next scene in channel if this scene was auto-split
+                next_scene_model = created_scenes[idx + 1][0] if idx + 1 < len(created_scenes) else None
+                next_scene_pk = next_scene_model.pk if next_scene_model else None
+
+                # Persist auto_split and soft_boundary issues that haven't been resolved yet
+                for iss in s.get("issues", []):
+                    ikind = iss.get("kind")
+                    # TODO: Should not happen after migration
+                    if ikind == "possible_split":
+                        ikind = IssueKind.SOFT_BOUNDARY.value
+
+                    if ikind in (IssueKind.AUTO_SPLIT.value, IssueKind.SOFT_BOUNDARY.value):
+                        cand_id = iss.get("candidate_id")
+                        cand_id_str = str(cand_id) if cand_id else None
+                        cand_idx = iss.get("candidate_index")
+
+                        # If this candidate point has already been resolved by reviewer, skip inserting duplicate
+                        if not cand_id_str or cand_id_str in resolved_by_candidate:
+                            continue
+
+                        cand_excerpt = iss.get("candidate_excerpt")
+                        prev_chars = iss.get("previous_chars") or []
+                        nxt_chars = iss.get("next_chars") or []
+                        reason = iss.get("reason") or ""
+
                         session.add(SceneIssueModel(
                             backup_id=str(backup_id),
                             scene_pk=scene_model.pk,
-                            kind="non_tupper_author",
-                            discord_user_id=str(p_int),
-                            details={"author_id": p_int},
-                            created_at=start_at,
-                            resolved_at=res_info[0] if res_info else None,
-                            resolved_note=res_info[1] if res_info else None,
+                            next_scene_pk=next_scene_pk if ikind == IssueKind.AUTO_SPLIT.value else None,
+                            kind=ikind,
+                            reason=reason,
+                            candidate_message_id=cand_id_str,
+                            candidate_index=int(cand_idx) if cand_idx is not None else None,
+                            candidate_excerpt=str(cand_excerpt)[:250] if cand_excerpt else None,
+                            previous_chars=prev_chars,
+                            next_chars=nxt_chars,
+                            created_at=scene_model.start_at,
+                            resolved_at=None,
+                            resolved_note=None,
+                            resolution=None,
                         ))
 
-                # Record gap / consecutive issues
-                if raw_status in ["gap", "consecutive"]:
-                    res_info = resolved_map.get((start_msg_id, raw_status))
-                    session.add(SceneIssueModel(
-                        backup_id=str(backup_id),
-                        scene_pk=scene_model.pk,
-                        kind=raw_status,
-                        discord_user_id=None,
-                        details={"original_status": raw_status},
-                        created_at=start_at,
-                        resolved_at=res_info[0] if res_info else None,
-                        resolved_note=res_info[1] if res_info else None,
-                    ))
+        # 5. Re-link surviving resolved issues to newly generated scenes using indexer-reported tags
+        applied_cand_ids = set()
+        for chan_pk, chan_scenes in channel_scenes_map.items():
+            for sc_idx, (sc_model, s_dict) in enumerate(chan_scenes):
+                # Role 'start': forced cut on split decision
+                res_start = s_dict.get("resolved_start")
+                if res_start and str(res_start) in resolved_by_candidate:
+                    iss = resolved_by_candidate[str(res_start)]
+                    prev_sc = chan_scenes[sc_idx - 1][0] if sc_idx > 0 else None
+                    iss.scene_pk = prev_sc.pk if prev_sc else None
+                    iss.next_scene_pk = sc_model.pk
+                    applied_cand_ids.add(str(res_start))
 
-        session.commit()
+                # Role 'inside': candidate(s) inside this scene suppressed by a 'merged' decision
+                res_inside = s_dict.get("resolved_inside", [])
+                for cand_id in res_inside:
+                    cand_id_str = str(cand_id)
+                    if cand_id_str in resolved_by_candidate:
+                        iss = resolved_by_candidate[cand_id_str]
+                        iss.scene_pk = sc_model.pk
+                        iss.next_scene_pk = None
+                        applied_cand_ids.add(cand_id_str)
+
+        unapplied_count = len(resolved_by_candidate) - len(applied_cand_ids)
+        if unapplied_count > 0:
+            t.log("info", f"{unapplied_count} resolved curation decision(s) were unapplied/orphaned during re-indexing.")
+
+        session.flush()
 
     # 5. Optionally export debug snapshots
     if debug_files:
         data_dir = Path(base_path) / "Data"
         data_dir.mkdir(parents=True, exist_ok=True)
         t.save_json_atomic(scenes, (data_dir / "_scenes.json").as_posix())
-        if bad_scenes is not None:
-            t.save_json_atomic(bad_scenes, (data_dir / "_bad_scenes.json").as_posix())
 
 
 def query_scenes(

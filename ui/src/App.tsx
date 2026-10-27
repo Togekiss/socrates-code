@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from './api';
-import { Database, LogIn, Loader2, AlertCircle } from 'lucide-react';
+import { Database, LogIn, Loader2, AlertCircle, AlertTriangle } from 'lucide-react';
 import { Sidebar, type TabType } from './components/Sidebar';
 import { StatusTab } from './components/StatusTab';
 import { RunTab } from './components/RunTab';
@@ -188,6 +188,7 @@ function Dashboard() {
   const [curationSummary, setCurationSummary] = useState<CurationSummary | null>(null);
   const [backupInfo, setBackupInfo] = useState<BackupInfo | null>(null);
   const [myWriter, setMyWriter] = useState<MyWriter | null>(null);
+  const [isUpgrading, setIsUpgrading] = useState(false);
 
   const refreshSummary = useCallback(() => {
     if (!selectedBackupId) {
@@ -207,6 +208,19 @@ function Dashboard() {
       setMyWriter(writerRes);
     });
   }, [selectedBackupId]);
+
+  const handleUpgradeDatabase = async () => {
+    if (!selectedBackupId || isUpgrading) return;
+    setIsUpgrading(true);
+    try {
+      await api.upgradeBackup(selectedBackupId);
+      refreshSummary();
+    } catch (err) {
+      console.error('Failed to upgrade database:', err);
+    } finally {
+      setIsUpgrading(false);
+    }
+  };
 
   useEffect(() => {
     refreshSummary();
@@ -329,6 +343,49 @@ function Dashboard() {
 
       {/* Main Content View Area */}
       <main style={{ flex: 1, minWidth: 0, paddingBottom: '2rem' }}>
+        {backupInfo?.is_schema_outdated && (
+          <div
+            style={{
+              marginBottom: '1.25rem',
+              padding: '1rem 1.25rem',
+              backgroundColor: 'rgba(239, 68, 68, 0.15)',
+              border: '1px solid var(--danger)',
+              borderRadius: '8px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '1rem',
+              flexWrap: 'wrap',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', color: 'var(--text-primary)' }}>
+              <AlertTriangle size={24} style={{ color: 'var(--danger)', flexShrink: 0 }} />
+              <div>
+                <strong>Database schema is outdated:</strong> Backup database is schema v{backupInfo.schema_version ?? 0}, but the application requires v{backupInfo.current_schema_version ?? 2}. Please upgrade the database.
+              </div>
+            </div>
+            <button
+              onClick={handleUpgradeDatabase}
+              disabled={isUpgrading}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                backgroundColor: 'var(--danger)',
+                color: '#fff',
+                border: 'none',
+                padding: '0.5rem 1rem',
+                borderRadius: '6px',
+                fontWeight: 600,
+                cursor: isUpgrading ? 'not-allowed' : 'pointer',
+                opacity: isUpgrading ? 0.7 : 1,
+              }}
+            >
+              {isUpgrading && <Loader2 size={16} className="animate-spin" />}
+              {isUpgrading ? 'Upgrading Database...' : 'Upgrade Database Now'}
+            </button>
+          </div>
+        )}
         <ErrorBoundary fallbackTab={() => setActiveTab('status')}>
           {activeTab === 'new_backup' && (
             <NewBackupTab
@@ -356,7 +413,7 @@ function Dashboard() {
             />
           )}
 
-          {activeTab === 'run' && selectedBackupId && <RunTab backupId={selectedBackupId} />}
+          {activeTab === 'run' && selectedBackupId && <RunTab backupId={selectedBackupId} onRefreshSummary={refreshSummary} />}
 
           {activeTab === 'writers' && selectedBackupId && (
             <WritersTab backupId={selectedBackupId} onRefreshSummary={refreshSummary} />

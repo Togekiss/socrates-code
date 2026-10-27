@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, Check, Loader2 } from 'lucide-react';
 import { api } from '../../api';
 import type { SceneIssue } from '../../types';
@@ -20,13 +20,27 @@ export const ResolveIssueModal: React.FC<ResolveIssueModalProps> = ({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(() => {
+    setNote('');
+    setError(null);
+    setSaving(false);
+  }, [issue]);
+
   if (!issue) return null;
+
+  const handleClose = () => {
+    if (saving) return;
+    setError(null);
+    setNote('');
+    onClose();
+  };
 
   const handleResolve = async () => {
     setSaving(true);
     setError(null);
     try {
-      await api.resolveSceneIssue(backupId, issue.id, note.trim() || undefined);
+      const resolution = issue.kind === 'auto_split' ? 'split' : 'merged';
+      await api.resolveSceneIssue(backupId, issue.id, resolution, note.trim() || undefined);
       onResolved();
       onClose();
     } catch (err: unknown) {
@@ -51,7 +65,7 @@ export const ResolveIssueModal: React.FC<ResolveIssueModalProps> = ({
         backdropFilter: 'blur(4px)',
       }}
       onClick={e => {
-        if (e.target === e.currentTarget && !saving) onClose();
+        if (e.target === e.currentTarget && !saving) handleClose();
       }}
     >
       <div
@@ -77,10 +91,14 @@ export const ResolveIssueModal: React.FC<ResolveIssueModalProps> = ({
           }}
         >
           <h2 style={{ margin: 0, fontSize: '1.15rem', color: 'var(--text-primary)' }}>
-            Resolve Issue #{issue.id}
+            {issue.kind === 'auto_split'
+              ? `Accept Split — Scene ${issue.scene_key}`
+              : issue.kind === 'soft_boundary'
+              ? `Accept Merge — Scene ${issue.scene_key}`
+              : `Resolve Issue #${issue.id}`}
           </h2>
           <button
-            onClick={onClose}
+            onClick={handleClose}
             disabled={saving}
             style={{
               background: 'transparent',
@@ -111,9 +129,28 @@ export const ResolveIssueModal: React.FC<ResolveIssueModalProps> = ({
             </div>
           )}
 
-          <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-            Marking issue for scene <strong style={{ color: 'var(--text-primary)' }}>{issue.scene_key}</strong> (
-            <code>{issue.kind}</code>) in <strong>#{issue.channel_name}</strong> as resolved.
+          <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: '1.45' }}>
+            {issue.kind === 'auto_split' ? (
+              <>
+                Accepting this split confirms that Socrates was correct in dividing this into{' '}
+                <strong style={{ color: 'var(--text-primary)' }}>Scene {issue.scene_key}</strong>
+                {issue.next_scene_key && (
+                  <> and <strong style={{ color: 'var(--text-primary)' }}>Scene {issue.next_scene_key}</strong></>
+                )}{' '}
+                in <strong>#{issue.channel_name}</strong>.
+              </>
+            ) : issue.kind === 'soft_boundary' ? (
+              <>
+                Accepting this merge confirms that Socrates was correct in keeping{' '}
+                <strong style={{ color: 'var(--text-primary)' }}>Scene {issue.scene_key}</strong> in{' '}
+                <strong>#{issue.channel_name}</strong> as a single continuous scene.
+              </>
+            ) : (
+              <>
+                Marking issue for scene <strong style={{ color: 'var(--text-primary)' }}>{issue.scene_key}</strong> (
+                <code>{issue.kind}</code>) in <strong>#{issue.channel_name}</strong> as resolved.
+              </>
+            )}
           </div>
 
           <div>
@@ -130,7 +167,13 @@ export const ResolveIssueModal: React.FC<ResolveIssueModalProps> = ({
             </label>
             <input
               type="text"
-              placeholder="e.g. Verified intentional non-tupper dialogue"
+              placeholder={
+                issue.kind === 'auto_split'
+                  ? 'e.g. Verified separate scene'
+                  : issue.kind === 'soft_boundary'
+                  ? 'e.g. Verified continuous dialogue across split point'
+                  : 'e.g. Verified resolution'
+              }
               value={note}
               onChange={e => setNote(e.target.value)}
               style={{
@@ -159,7 +202,7 @@ export const ResolveIssueModal: React.FC<ResolveIssueModalProps> = ({
           }}
         >
           <button
-            onClick={onClose}
+            onClick={handleClose}
             disabled={saving}
             style={{
               padding: '0.45rem 1rem',
@@ -191,7 +234,11 @@ export const ResolveIssueModal: React.FC<ResolveIssueModalProps> = ({
             }}
           >
             {saving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
-            Confirm Resolution
+            {issue.kind === 'auto_split'
+              ? 'Accept Split'
+              : issue.kind === 'soft_boundary'
+              ? 'Accept Merge'
+              : 'Confirm Resolution'}
           </button>
         </div>
       </div>

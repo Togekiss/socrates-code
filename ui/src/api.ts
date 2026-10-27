@@ -16,6 +16,7 @@ import type {
   DiscordAuthor,
   FlaggedMessagesResponse,
   GlobalConfig,
+  IssueResolution,
   MeResponse,
   MessageOverridesResponse,
   MyWriter,
@@ -134,6 +135,11 @@ export const api = {
 
   rerunAction: (backupId: string, action: string): Promise<{ status: string; action: string }> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/rerun/${action}`, {
+      method: 'POST',
+    }).then(res => res.json()),
+
+  upgradeBackup: (backupId: string): Promise<{ status: string; message?: string; report?: Record<string, unknown> }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/upgrade`, {
       method: 'POST',
     }).then(res => res.json()),
 
@@ -261,15 +267,29 @@ export const api = {
   resolveSceneIssue: (
     backupId: string,
     issueId: number,
+    resolution: IssueResolution,
     note?: string
-  ): Promise<{ status: string; issue_id: number; resolved_at: string; resolved_note: string }> =>
+  ): Promise<{
+    status: string;
+    issue_id: number;
+    resolved_at: string;
+    resolved_note: string;
+    resolution: string;
+    action_performed?: boolean;
+    action?: string;
+    scene_pk?: number;
+    scene_key?: string;
+    merged_scene_key?: string;
+    next_scene_pk?: number;
+    next_scene_key?: string;
+  }> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/scene-issues/${issueId}/resolve`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ note }),
+      body: JSON.stringify({ resolution, note }),
     }).then(res => res.json()),
 
-  reopenSceneIssue: (backupId: string, issueId: number): Promise<{ status: string; issue_id: number }> =>
+  reopenSceneIssue: (backupId: string, issueId: number): Promise<{ status: string; issue_id: number; reopened: boolean }> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/scene-issues/${issueId}/reopen`, {
       method: 'PUT',
     }).then(res => res.json()),
@@ -282,7 +302,7 @@ export const api = {
     backupId: string,
     messageId: string,
     data: { content?: string; author?: DiscordAuthor } = {}
-  ): Promise<{ status: string; message_id: string }> =>
+  ): Promise<{ status: string; message_id: string; override_id?: number; promoted_at?: string; is_update?: boolean }> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/flagged-messages/${messageId}/promote`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -308,6 +328,11 @@ export const api = {
 
   migrateTestingBackup: (): Promise<AdminTestActionResponse> =>
     fetchWithAuth(`${API_BASE}/admin/test-backup/migrate`, {
+      method: 'POST',
+    }).then(res => res.json()),
+
+  upgradeAllDatabases: (): Promise<AdminTestActionResponse> =>
+    fetchWithAuth(`${API_BASE}/admin/upgrade-all`, {
       method: 'POST',
     }).then(res => res.json()),
 

@@ -42,8 +42,6 @@ from fix_bad_messages import fix_bad_messages
 # pyrefly: ignore [missing-import]
 from index_scenes import index_scenes
 # pyrefly: ignore [missing-import]
-from find_character_scenes import find_character_scenes
-# pyrefly: ignore [missing-import]
 from backup_server import backup_server
 from tests.reset_test_backup import reset_test_backup
 # pyrefly: ignore [missing-import]
@@ -174,9 +172,9 @@ class TestPipelineIntegration(unittest.TestCase):
 
         t.log("console", "index_scenes executed successfully and saved scenes to SQLite.")
 
-    def test_05_find_character_scenes_execution(self):
-        """Phase 5: Test find_character_scenes() filtering scenes from SQLite via SceneManager."""
-        t.log("console", "Testing find_character_scenes step...")
+    def test_05_scene_manager_character_filtering(self):
+        """Phase 5: Test SceneManager filtering scenes by character IDs directly from SQLite."""
+        t.log("console", "Testing SceneManager character scene filtering...")
         ctx = BackupContext.create(
             backup_id=self.backup_id,
             backup_path=self.backup_path,
@@ -185,13 +183,6 @@ class TestPipelineIntegration(unittest.TestCase):
         ctx.character = "Ophelia"
 
         with BackupContext.activate(context=ctx):
-            find_character_scenes()
-
-            # Output file should exist
-            out_scenes = Path(ctx.output_scenes)
-            self.assertTrue(out_scenes.exists(), f"Output scenes file must exist at {out_scenes}")
-
-            # Direct filter query via SceneManager
             manager = SceneManager.get_instance(backup_id=self.backup_id, base_path=self.backup_path)
             char_list = CharacterList.load()
             ophelia_ids = char_list.get_all_character_ids("Ophelia")
@@ -201,7 +192,7 @@ class TestPipelineIntegration(unittest.TestCase):
             self.assertIsInstance(filtered, list)
             self.assertGreater(len(filtered), 0, "Should find scenes for Ophelia in SQLite")
 
-        t.log("console", "find_character_scenes successfully filtered scenes from SQLite.")
+        t.log("console", "SceneManager successfully filtered character scenes from SQLite.")
 
     @patch("utils.tricks.run_command")
     def test_06_update_with_backup_server(self, mock_run_cmd):
