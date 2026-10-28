@@ -55,7 +55,8 @@ from db.models import (
     SceneModel,
     SceneParticipantModel,
     SceneIssueModel,
-    MessageOverrideModel,
+    FlaggedKind,
+    FlaggedResolution,
     FlaggedMessageModel,
     SchemaVersionModel,
     CURRENT_SCHEMA_VERSION,
@@ -382,11 +383,11 @@ def populate_schema(
             new_s_pk = scene_pk_map.get(iss.get("scene_pk")) if iss.get("scene_pk") is not None else None
             new_next_s_pk = scene_pk_map.get(iss.get("next_scene_pk")) if iss.get("next_scene_pk") is not None else None
             raw_kind = str(iss["kind"])
-            # SCHEMA_VERSION = 1
+            # SCHEMA_VERSION = 2
             # "possible_split" -> "soft_boundary"
             migrated_kind = "soft_boundary" if raw_kind == "possible_split" else raw_kind
             raw_res = iss.get("resolution")
-            # SCHEMA_VERSION = 1
+            # SCHEMA_VERSION = 3
             # "accepted" -> "split" if migrated_kind == "auto_split" else "merged"
             if raw_res == "accepted":
                 migrated_res = "split" if migrated_kind == "auto_split" else "merged"
@@ -410,30 +411,81 @@ def populate_schema(
             ))
             metrics["scene_issues"] += 1
 
-        # 11. Overrides & Flagged Messages
-        for o in data.get("message_overrides", []):
-            new_chan_pk = chan_pk_map.get(o.get("channel_pk")) if o.get("channel_pk") is not None else None
-            session.add(MessageOverrideModel(
-                backup_id=str(o["backup_id"]),
-                message_id=str(o["message_id"]),
-                channel_pk=new_chan_pk,
-                content=str(o["content"]),
-                author=o.get("author", {}),
-                created_at=parse_datetime(o.get("created_at")) or datetime.now(timezone.utc),
-            ))
-            metrics["message_overrides"] += 1
+        # 11. Overrides & Flagged Messages (Unified into FlaggedMessageModel)
+        # SCHEMA_VERSION = 3
+        # Remove message_overrides table, now it's integrated in flagged_messages
+        overrides_by_mid = {str(o["message_id"]): o for o in data.get("message_overrides", [])}
+        processed_mids = set()
 
         for f in data.get("flagged_messages", []):
+            mid = str(f["message_id"])
+            if mid in processed_mids:
+                continue
             new_chan_pk = chan_pk_map.get(f.get("channel_pk")) if f.get("channel_pk") is not None else None
+            raw_kind = str(f.get("kind", ""))
+            if raw_kind == "non_tupper_end_tag":
+                migrated_kind = FlaggedKind.OOC_BOUNDARY.value
+            elif raw_kind == "non_tupper":
+                migrated_kind = FlaggedKind.FAILED_TUPPER.value
+            elif raw_kind in (e.value for e in FlaggedKind):
+                migrated_kind = raw_kind
+            else:
+                migrated_kind = FlaggedKind.OOC_MESSAGE.value
+
+            if mid in overrides_by_mid:
+                o = overrides_by_mid[mid]
+                o_chan_pk = chan_pk_map.get(o.get("channel_pk")) if o.get("channel_pk") is not None else new_chan_pk
+                session.add(FlaggedMessageModel(
+                    backup_id=str(f["backup_id"]),
+                    message_id=mid,
+                    channel_pk=o_chan_pk,
+                    kind=migrated_kind,
+                    content=str(f["content"]),
+                    author=f.get("author", {}),
+                    flagged_at=parse_datetime(f.get("flagged_at")) or datetime.now(timezone.utc),
+                    resolution=FlaggedResolution.OVERRIDE.value,
+                    override_content=str(o["content"]),
+                    override_author=o.get("author", {}),
+                    resolved_at=parse_datetime(o.get("created_at")) or datetime.now(timezone.utc),
+                    resolved_note="Migrated from message_overrides",
+                ))
+            else:
+                session.add(FlaggedMessageModel(
+                    backup_id=str(f["backup_id"]),
+                    message_id=mid,
+                    channel_pk=new_chan_pk,
+                    kind=migrated_kind,
+                    content=str(f["content"]),
+                    author=f.get("author", {}),
+                    flagged_at=parse_datetime(f.get("flagged_at")) or datetime.now(timezone.utc),
+                    resolution=f.get("resolution"),
+                    override_content=f.get("override_content"),
+                    override_author=f.get("override_author"),
+                    resolved_at=parse_datetime(f.get("resolved_at")),
+                    resolved_note=f.get("resolved_note"),
+                ))
+            processed_mids.add(mid)
+            metrics["flagged_messages"] += 1
+
+        for mid, o in overrides_by_mid.items():
+            if mid in processed_mids:
+                continue
+            new_chan_pk = chan_pk_map.get(o.get("channel_pk")) if o.get("channel_pk") is not None else None
             session.add(FlaggedMessageModel(
-                backup_id=str(f["backup_id"]),
-                message_id=str(f["message_id"]),
+                backup_id=str(o["backup_id"]),
+                message_id=mid,
                 channel_pk=new_chan_pk,
-                kind=str(f["kind"]),
-                content=str(f["content"]),
-                author=f.get("author", {}),
-                flagged_at=parse_datetime(f.get("flagged_at")) or datetime.now(timezone.utc),
+                kind=FlaggedKind.FAILED_TUPPER.value,
+                content=str(o["content"]),
+                author=o.get("author", {}),
+                flagged_at=parse_datetime(o.get("created_at")) or datetime.now(timezone.utc),
+                resolution=FlaggedResolution.OVERRIDE.value,
+                override_content=str(o["content"]),
+                override_author=o.get("author", {}),
+                resolved_at=parse_datetime(o.get("created_at")) or datetime.now(timezone.utc),
+                resolved_note="Migrated from message_overrides",
             ))
+            processed_mids.add(mid)
             metrics["flagged_messages"] += 1
 
         session.commit()
@@ -507,6 +559,11 @@ def upgrade_single_backup(
     # 3. Create safety backup copy of the SQLite database
     bak_path = f"{sqlite_path}.bak"
     t.log("info", f"Creating safety database backup at: {bak_path}")
+    try:
+        with source_engine.connect() as conn:
+            conn.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)")
+    except Exception:
+        pass
     close_all_engines()
     shutil.copy2(sqlite_path, bak_path)
 
@@ -514,7 +571,13 @@ def upgrade_single_backup(
         # 4. Rebuild schema cleanly using Base.metadata
         t.log("info", "Rebuilding database schema...")
         engine = get_engine(backup_id=backup_id, backup_path=backup_path)
-        Base.metadata.drop_all(bind=engine)
+        with engine.connect() as conn:
+            conn.exec_driver_sql("PRAGMA foreign_keys = OFF")
+            existing_tables = [r[0] for r in conn.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]
+            for t_name in existing_tables:
+                conn.exec_driver_sql(f'DROP TABLE IF EXISTS "{t_name}"')
+            conn.exec_driver_sql("PRAGMA foreign_keys = ON")
+            conn.commit()
         Base.metadata.create_all(bind=engine)
 
         # 5. Populate new schema with preserved data
@@ -560,6 +623,12 @@ def upgrade_single_backup(
         t.log("error", f"Upgrade failed for '{backup_name}': {exc.unwrap(e)}")
         # Restore from safety copy
         close_all_engines()
+        for p in (f"{sqlite_path}-wal", f"{sqlite_path}-shm"):
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
         if os.path.exists(bak_path):
             t.log("info", f"Restoring safety backup from {bak_path}...")
             shutil.copy2(bak_path, sqlite_path)

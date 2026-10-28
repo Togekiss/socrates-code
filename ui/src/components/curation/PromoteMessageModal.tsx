@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { X, Check, Loader2 } from 'lucide-react';
 import { api } from '../../api';
-import type { FlaggedMessage } from '../../types';
+import type { FlaggedMessage, Character } from '../../types';
+import { CharacterSearchPicker } from './CharacterSearchPicker';
 
 interface PromoteMessageModalProps {
   backupId: string;
@@ -18,26 +19,106 @@ export const PromoteMessageModal: React.FC<PromoteMessageModalProps> = ({
 }) => {
   const suggested = message?.suggested_character;
   const [content, setContent] = useState(message?.content || '');
-  const [authorName, setAuthorName] = useState(message?.author?.name || message?.author?.nickname || '');
-  const [authorId, setAuthorId] = useState(message?.author?.id || '');
+  const [characters, setCharacters] = useState<Character[]>([]);
+  const [loadingCharacters, setLoadingCharacters] = useState(false);
+  const [selectedCharacterId, setSelectedCharacterId] = useState<number | ''>(
+    suggested?.char_id ?? ''
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (!backupId) return;
+    setLoadingCharacters(true);
+    api.getCharacters(backupId)
+      .then(res => {
+        if (Array.isArray(res)) {
+          setCharacters(res);
+        }
+      })
+      .catch(console.error)
+      .finally(() => setLoadingCharacters(false));
+  }, [backupId]);
+
+  const characterOptions = useMemo(() => {
+    const list: Array<{ id: number; name: string; writerName?: string | null }> = [];
+
+    characters.forEach(char => {
+      const mainName = char.name || char.names?.[0] || `Character #${char.id}`;
+      const writer = char.writer_name || (Array.isArray(char.writer) ? char.writer[0] : null);
+      list.push({ id: char.id, name: mainName, writerName: writer });
+
+      const versions = char.versions || [];
+      versions.forEach((v: { id: number; name?: string }) => {
+        const vName = v.name || `Version #${v.id}`;
+        list.push({
+          id: v.id,
+          name: `${vName} (${mainName})`,
+          writerName: writer,
+        });
+      });
+    });
+
+    const uniqueMap = new Map<number, { id: number; name: string; writerName?: string | null }>();
+    list.forEach(item => {
+      if (!uniqueMap.has(item.id)) {
+        uniqueMap.set(item.id, item);
+      }
+    });
+
+    if (suggested && !uniqueMap.has(suggested.char_id)) {
+      uniqueMap.set(suggested.char_id, {
+        id: suggested.char_id,
+        name: suggested.name,
+        writerName: suggested.writer_name,
+      });
+    }
+
+    return Array.from(uniqueMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [characters, suggested]);
+
   if (!message) return null;
 
+  const handleApplySuggestion = () => {
+    if (!suggested) return;
+    setSelectedCharacterId(suggested.char_id);
+    const escapedName = suggested.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const prefixRegex = new RegExp(`^\\s*${escapedName}\\s*:\\s*`, 'i');
+    const wordPrefixRegex = /^\s*[\w-]+:\s*/;
+    if (prefixRegex.test(content)) {
+      setContent(prev => prev.replace(prefixRegex, ''));
+    } else if (wordPrefixRegex.test(content)) {
+      setContent(prev => prev.replace(wordPrefixRegex, ''));
+    }
+  };
+
   const handlePromote = async () => {
+    if (selectedCharacterId === '') {
+      setError('Please select a character from the dropdown.');
+      return;
+    }
+
+    const chosenChar = characterOptions.find(c => c.id === Number(selectedCharacterId));
+    if (!chosenChar) {
+      setError('Selected character not found.');
+      return;
+    }
+
     setSaving(true);
     setError(null);
     try {
       const authorPayload = {
         ...message.author,
-        id: authorId.trim() || message.author?.id,
-        name: authorName.trim() || message.author?.name,
+        id: String(chosenChar.id),
+        name: chosenChar.name,
+        nickname: chosenChar.name,
+        isBot: true,
       };
 
-      await api.promoteFlaggedMessage(backupId, message.message_id, {
-        content: content.trim(),
-        author: authorPayload,
+      await api.resolveFlaggedMessage(backupId, message.message_id, {
+        resolution: 'override',
+        override_content: content.trim(),
+        override_author: authorPayload,
       });
       onPromoted();
       onClose();
@@ -69,7 +150,7 @@ export const PromoteMessageModal: React.FC<PromoteMessageModalProps> = ({
       <div
         style={{
           background: 'var(--bg-primary)',
-          width: '540px',
+          width: '720px',
           maxWidth: '92vw',
           borderRadius: '12px',
           border: '1px solid var(--border-color)',
@@ -81,7 +162,7 @@ export const PromoteMessageModal: React.FC<PromoteMessageModalProps> = ({
         {/* Header */}
         <div
           style={{
-            padding: '1rem 1.25rem',
+            padding: '0.75rem 0.5rem 0.5rem 1.5rem',
             borderBottom: '1px solid var(--border-color)',
             display: 'flex',
             justifyContent: 'space-between',
@@ -89,7 +170,7 @@ export const PromoteMessageModal: React.FC<PromoteMessageModalProps> = ({
           }}
         >
           <h2 style={{ margin: 0, fontSize: '1.15rem', color: 'var(--text-primary)' }}>
-            Promote Message #{message.message_id}
+            Override Message #{message.message_id}
           </h2>
           <button
             onClick={onClose}
@@ -107,7 +188,7 @@ export const PromoteMessageModal: React.FC<PromoteMessageModalProps> = ({
         </div>
 
         {/* Content */}
-        <div style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+        <div style={{ padding: '0.75rem 1.25rem 1.25rem 1.25rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           {error && (
             <div
               style={{
@@ -124,7 +205,7 @@ export const PromoteMessageModal: React.FC<PromoteMessageModalProps> = ({
           )}
 
           <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-            Promoting registers this message as a permanent <code>message_override</code> so scene indexing and attribution pipelines treat it as legitimate roleplay dialogue.
+            Edit the message's author or content to improve scene detection. This won't edit the original Discord message.
           </p>
 
           {/* 1-Click Character Suggestion Card */}
@@ -152,10 +233,7 @@ export const PromoteMessageModal: React.FC<PromoteMessageModalProps> = ({
               </div>
               <button
                 type="button"
-                onClick={() => {
-                  setAuthorId(String(suggested.char_id));
-                  setAuthorName(suggested.name);
-                }}
+                onClick={handleApplySuggestion}
                 style={{
                   padding: '0.35rem 0.75rem',
                   background: 'var(--success)',
@@ -173,52 +251,63 @@ export const PromoteMessageModal: React.FC<PromoteMessageModalProps> = ({
             </div>
           )}
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '0.75rem' }}>
+          {/* Informative Original Author Display */}
+          <div
+            style={{
+              background: 'var(--bg-tertiary)',
+              padding: '0.5rem 0.85rem',
+              borderRadius: '6px',
+              border: '1px solid var(--border-color)',
+              fontSize: '0.85rem',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: '0.5rem',
+            }}
+          >
             <div>
-              <label style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: 600, display: 'block', marginBottom: '0.35rem' }}>
-                Author ID
-              </label>
-              <input
-                type="text"
-                value={authorId}
-                onChange={e => setAuthorId(e.target.value)}
-                placeholder="e.g. 25"
-                style={{
-                  width: '100%',
-                  padding: '0.55rem 0.75rem',
-                  background: 'var(--bg-tertiary)',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: '6px',
-                  color: 'white',
-                  fontSize: '0.9rem',
-                }}
-              />
+              <span>Original Discord Author: </span>
+              <strong style={{ color: 'var(--text-primary)' }}>
+                {message.author?.nickname || message.author?.name || 'Unknown Author'}
+              </strong>
             </div>
-            <div>
-              <label style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: 600, display: 'block', marginBottom: '0.35rem' }}>
-                Author Name
-              </label>
-              <input
-                type="text"
-                value={authorName}
-                onChange={e => setAuthorName(e.target.value)}
-                placeholder="e.g. Character / Pen Name"
-                style={{
-                  width: '100%',
-                  padding: '0.55rem 0.75rem',
-                  background: 'var(--bg-tertiary)',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: '6px',
-                  color: 'white',
-                  fontSize: '0.9rem',
-                }}
-              />
-            </div>
+            {message.author?.id && (
+              <span style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', fontFamily: 'monospace' }}>
+                Discord User ID: {message.author.id}
+              </span>
+            )}
           </div>
 
+          {/* Known Characters Searchable Picker */}
           <div>
             <label style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: 600, display: 'block', marginBottom: '0.35rem' }}>
-              Dialogue Content
+              Assign to Character {loadingCharacters && <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>(loading...)</span>}
+            </label>
+            <CharacterSearchPicker
+              options={characterOptions}
+              selectedId={selectedCharacterId}
+              loading={loadingCharacters}
+              disabled={saving}
+              onSelect={opt => {
+                setSelectedCharacterId(opt.id);
+                const escapedName = opt.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const prefixRegex = new RegExp(`^\\s*${escapedName}\\s*:\\s*`, 'i');
+                const wordPrefixRegex = /^\s*[\w-]+:\s*/;
+                if (prefixRegex.test(content)) {
+                  setContent(prev => prev.replace(prefixRegex, ''));
+                } else if (wordPrefixRegex.test(content)) {
+                  setContent(prev => prev.replace(wordPrefixRegex, ''));
+                }
+              }}
+              onClear={() => setSelectedCharacterId('')}
+            />
+          </div>
+
+          {/* Message Content Textarea */}
+          <div>
+            <label style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: 600, display: 'block', marginBottom: '0.35rem' }}>
+              Message Content
             </label>
             <textarea
               rows={4}
@@ -268,7 +357,7 @@ export const PromoteMessageModal: React.FC<PromoteMessageModalProps> = ({
           </button>
           <button
             onClick={handlePromote}
-            disabled={saving}
+            disabled={saving || selectedCharacterId === ''}
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -279,12 +368,13 @@ export const PromoteMessageModal: React.FC<PromoteMessageModalProps> = ({
               color: '#fff',
               borderRadius: '6px',
               fontWeight: 600,
-              cursor: saving ? 'not-allowed' : 'pointer',
+              cursor: saving || selectedCharacterId === '' ? 'not-allowed' : 'pointer',
+              opacity: selectedCharacterId === '' ? 0.6 : 1,
               fontSize: '0.85rem',
             }}
           >
             {saving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
-            Confirm Promotion
+            Confirm Override
           </button>
         </div>
       </div>

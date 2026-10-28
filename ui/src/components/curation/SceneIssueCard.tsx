@@ -10,6 +10,21 @@ interface SceneIssueCardProps {
   onOppositeAction?: (action: 'merge' | 'split', issue: SceneIssue) => void;
 }
 
+const actionBtnStyle = (bg: string, color: string, border?: string): React.CSSProperties => ({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: '0.35rem',
+  padding: '0.35rem 0.85rem',
+  fontSize: '0.8rem',
+  background: bg,
+  color,
+  border: border || 'none',
+  borderRadius: '6px',
+  cursor: 'pointer',
+  fontWeight: 600,
+  transition: 'all var(--transition-fast)',
+});
+
 export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
   issue,
   isReopening,
@@ -40,18 +55,16 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
         return 'It found a start tag, but the participants remained the same';
       case 'roster_change':
         return 'Some participants changed, but not all of them';
+      case 'manual':
+        return 'Manually split by curator';
       default:
         return reason ? reason.replace(/_/g, ' ') : 'Boundary Anomaly';
     }
   };
 
   const formatParticipants = (names?: string[] | null, ids?: number[] | null) => {
-    if (names && names.length > 0) {
-      return names.join(', ');
-    }
-    if (ids && ids.length > 0) {
-      return ids.map(id => `#${id}`).join(', ');
-    }
+    if (names && names.length > 0) return names.join(', ');
+    if (ids && ids.length > 0) return ids.map(id => `#${id}`).join(', ');
     return 'none';
   };
 
@@ -80,7 +93,9 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
         gap: '0.75rem',
         borderLeft: isResolved
           ? '4px solid var(--success)'
-          : issue.kind === 'auto_split' ? '4px solid var(--warning)' : '4px solid var(--accent-secondary)',
+          : issue.kind === 'auto_split'
+          ? '4px solid var(--warning)'
+          : '4px solid var(--accent-secondary)',
       }}
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.75rem' }}>
@@ -99,34 +114,49 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
             >
               {issue.kind.replace(/_/g, ' ')}
             </span>
-            {isResolved && issue.resolution && (
+
+            {isResolved && (
               <span
                 style={{
-                  background:
-                    issue.resolution === 'merged'
-                      ? 'rgba(109, 40, 217, 0.25)'
-                      : issue.resolution === 'split'
-                      ? 'rgba(59, 130, 246, 0.25)'
-                      : 'rgba(16, 185, 129, 0.25)',
-                  border:
-                    issue.resolution === 'merged'
-                      ? '1px solid var(--accent-secondary)'
-                      : issue.resolution === 'split'
-                      ? '1px solid #3b82f6'
-                      : '1px solid var(--success)',
-                  color: '#fff',
+                  background: 'rgba(16, 185, 129, 0.2)',
+                  border: '1px solid var(--success)',
+                  color: 'var(--success)',
                   padding: '0.15rem 0.5rem',
                   borderRadius: '4px',
                   fontSize: '0.75rem',
                   fontWeight: 600,
-                  textTransform: 'capitalize',
                 }}
               >
-                {issue.resolution}
+                ✓ {issue.resolution === 'split' ? 'SPLIT' : issue.resolution === 'merged' ? 'MERGED' : 'RESOLVED'}
               </span>
             )}
-            <h4 style={{ margin: 0, color: 'var(--text-primary)', fontSize: '1.05rem', display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
-              Scene <code style={{ color: getKindBadgeColor(issue.kind) }}>{issue.scene_key}</code>
+
+            {issue.discord_link && (
+              <a
+                href={issue.discord_link}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="action-btn"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.3rem',
+                  padding: '0.15rem 0.5rem',
+                  fontSize: '0.75rem',
+                  background: 'var(--bg-tertiary)',
+                  color: 'var(--text-secondary)',
+                  borderRadius: '4px',
+                  textDecoration: 'none',
+                }}
+              >
+                <ExternalLink size={12} /> Discord
+              </a>
+            )}
+          </div>
+
+          <div style={{ marginTop: '0.35rem' }}>
+            <h4 style={{ margin: 0, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', fontSize: '1rem' }}>
+              <span>Scene <code style={{ color: getKindBadgeColor(issue.kind) }}>{issue.scene_key}</code></span>
               {issue.next_scene_key && (
                 <>
                   <ArrowRight size={14} style={{ color: 'var(--text-muted)' }} />
@@ -147,156 +177,41 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
             <button
               onClick={() => onReopen(issue.id)}
               disabled={isReopening}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '0.3rem',
-                padding: '0.35rem 0.75rem',
-                fontSize: '0.8rem',
-                background: 'var(--bg-tertiary)',
-                border: '1px solid var(--border-color)',
-                color: 'var(--text-secondary)',
-                borderRadius: '6px',
-                cursor: 'pointer',
-              }}
+              style={actionBtnStyle('var(--bg-tertiary)', 'var(--text-secondary)', '1px solid var(--border-color)')}
             >
-              {isReopening ? (
-                <Loader2 size={12} className="animate-spin" />
-              ) : (
-                <RotateCcw size={12} />
-              )}
+              {isReopening ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />}
               Reopen Issue
             </button>
           ) : issue.kind === 'auto_split' ? (
             <>
-              {/* Auto-Split Action 1: Opposite resolution (Merge) */}
               <button
                 onClick={() => handleOpposite('merge')}
                 title="Merge these two scenes back together"
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '0.35rem',
-                  padding: '0.35rem 0.85rem',
-                  fontSize: '0.8rem',
-                  background: 'var(--bg-tertiary)',
-                  border: '1px solid var(--border-color)',
-                  color: 'var(--text-primary)',
-                  borderRadius: '6px',
-                  cursor: 'pointer',
-                  fontWeight: 500,
-                  transition: 'all var(--transition-fast)',
-                }}
+                style={actionBtnStyle('var(--bg-tertiary)', 'var(--text-primary)', '1px solid var(--border-color)')}
               >
-                <GitMerge size={14} style={{ color: 'var(--accent-secondary)' }} />
-                Merge
+                <GitMerge size={14} style={{ color: 'var(--accent-secondary)' }} /> Merge
               </button>
-
-              {/* Auto-Split Action 2: Accept Socrates' proposed split */}
               <button
                 onClick={() => onResolve(issue)}
                 title="Accept Socrates' split into two scenes"
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '0.35rem',
-                  padding: '0.35rem 0.85rem',
-                  fontSize: '0.8rem',
-                  background: 'var(--success)',
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: '6px',
-                  cursor: 'pointer',
-                  fontWeight: 600,
-                  transition: 'all var(--transition-fast)',
-                }}
+                style={actionBtnStyle('var(--success)', '#fff')}
               >
                 <Check size={14} /> Accept Split
               </button>
             </>
-          ) : issue.kind === 'soft_boundary' ? (
+          ) : (
             <>
-              {/* Possible-Split Action 1: Accept Socrates' proposed resolution (Keep Merged) */}
               <button
                 onClick={() => onResolve(issue)}
                 title="Accept keeping this as a single continuous scene"
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '0.35rem',
-                  padding: '0.35rem 0.85rem',
-                  fontSize: '0.8rem',
-                  background: 'var(--success)',
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: '6px',
-                  cursor: 'pointer',
-                  fontWeight: 600,
-                  transition: 'all var(--transition-fast)',
-                }}
+                style={actionBtnStyle('var(--success)', '#fff')}
               >
                 <Check size={14} /> Accept Merge
               </button>
-
-              {/* Possible-Split Action 2: Opposite resolution (Split) */}
               <button
                 onClick={() => handleOpposite('split')}
                 title="Split this scene at the split point"
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '0.35rem',
-                  padding: '0.35rem 0.85rem',
-                  fontSize: '0.8rem',
-                  background: 'var(--bg-tertiary)',
-                  border: '1px solid var(--border-color)',
-                  color: 'var(--text-primary)',
-                  borderRadius: '6px',
-                  cursor: 'pointer',
-                  fontWeight: 500,
-                  transition: 'all var(--transition-fast)',
-                }}
-              >
-                <Split size={14} style={{ color: 'var(--accent-secondary)' }} />
-                Split
-              </button>
-            </>
-          ) : (
-            <>
-              {/* Fallback buttons */}
-              <button
-                onClick={() => handleOpposite('merge')}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '0.35rem',
-                  padding: '0.35rem 0.85rem',
-                  fontSize: '0.8rem',
-                  background: 'var(--bg-tertiary)',
-                  border: '1px solid var(--border-color)',
-                  color: 'var(--text-primary)',
-                  borderRadius: '6px',
-                  cursor: 'pointer',
-                  fontWeight: 500,
-                }}
-              >
-                <GitMerge size={14} /> Merge
-              </button>
-              <button
-                onClick={() => onResolve(issue)}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '0.35rem',
-                  padding: '0.35rem 0.85rem',
-                  fontSize: '0.8rem',
-                  background: 'var(--success)',
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: '6px',
-                  cursor: 'pointer',
-                  fontWeight: 600,
-                }}
+                style={actionBtnStyle('var(--bg-tertiary)', 'var(--text-primary)', '1px solid var(--border-color)')}
               >
                 <Split size={14} /> Split
               </button>
@@ -305,7 +220,7 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
         </div>
       </div>
 
-      {/* Issue Details / Actionable Views */}
+      {/* Details Box */}
       <div
         style={{
           background: 'var(--bg-tertiary)',
@@ -330,8 +245,7 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
 
         {hasCharacters && (
           <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-            <strong style={{ color: 'var(--text-secondary)' }}>Participants:</strong>{' '}
-            [{prevDisplay}] ➔ [{nextDisplay}]
+            <strong style={{ color: 'var(--text-secondary)' }}>Participants:</strong> [{prevDisplay}] ➔ [{nextDisplay}]
           </div>
         )}
 
@@ -386,7 +300,7 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
         )}
       </div>
 
-      {/* Resolved Note Banner */}
+      {/* Resolved Banner */}
       {isResolved && (
         <div
           style={{

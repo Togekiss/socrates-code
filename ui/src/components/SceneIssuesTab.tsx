@@ -8,6 +8,7 @@ import {
 import { api } from '../api';
 import { ResolveIssueModal } from './curation/ResolveIssueModal';
 import { ActionConfirmationModal } from './curation/ActionConfirmationModal';
+import { ManualSplitModal } from './curation/ManualSplitModal';
 import { SceneIssueCard } from './curation/SceneIssueCard';
 import { SceneIssuesFilters } from './curation/SceneIssuesFilters';
 import type { SceneIssue, SceneIssuesResponse } from '../types';
@@ -38,6 +39,7 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
   const [resolvingIssue, setResolvingIssue] = useState<SceneIssue | null>(null);
   const [oppositeAction, setOppositeAction] = useState<{ action: 'merge' | 'split'; issue: SceneIssue } | null>(null);
   const [reopeningId, setReopeningId] = useState<number | null>(null);
+  const [isManualSplitOpen, setIsManualSplitOpen] = useState(false);
   const [guideCollapsed, setGuideCollapsed] = useState(() => {
     return localStorage.getItem('socrates_scene_guide_collapsed') === 'true';
   });
@@ -131,6 +133,7 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
           setReasonFilter(r);
           setPage(1);
         }}
+        onOpenManualSplit={() => setIsManualSplitOpen(true)}
       />
 
       {/* Informational Guide (Muted appearance, styled like Scenes tab Filters box) */}
@@ -325,6 +328,15 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
           action={oppositeAction.action}
           onClose={handleCloseOppositeAction}
           onResolved={fetchIssues}
+        />
+      )}
+
+      {/* Manual Split Modal */}
+      {isManualSplitOpen && (
+        <ManualSplitModal
+          backupId={backupId}
+          onClose={() => setIsManualSplitOpen(false)}
+          onSuccess={fetchIssues}
         />
       )}
 

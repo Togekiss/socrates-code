@@ -253,8 +253,25 @@ export interface SuggestedCharacter {
 
 export type IssueKind = 'auto_split' | 'soft_boundary';
 export type IssueResolution = 'split' | 'merged';
-export type IssueReason = 'separate_roster' | 'start_tag_roster_change' | 'start_tag_same_roster' | 'roster_change';
+export type IssueReason = 'separate_roster' | 'start_tag_roster_change' | 'start_tag_same_roster' | 'roster_change' | 'manual';
 export type SceneStatus = 'open' | 'closed' | 'no_end_tag';
+
+export type FlaggedKind = 'failed_tupper' | 'ooc_boundary' | 'ooc_message' | 'manual';
+
+export interface ManualSplitResponse {
+  status: string;
+  action: string;
+  issue_id: number;
+  scene_pk: number;
+  scene_key: string;
+  next_scene_pk: number;
+  next_scene_key: string;
+  resolution: string;
+  resolved_at: string;
+  resolved_note: string | null;
+  action_performed: boolean;
+}
+export type FlaggedResolution = 'override' | 'ignored' | 'kept';
 
 export interface SceneIssue {
   id: number;
@@ -293,13 +310,18 @@ export interface DiscordAuthor {
 export interface FlaggedMessage {
   id: number;
   message_id: string;
-  kind: string;
+  kind: FlaggedKind;
   channel_name: string;
   channel_discord_id: string;
   content: string;
   author: DiscordAuthor;
   discord_link: string;
   flagged_at: string | null;
+  resolution?: FlaggedResolution | null;
+  override_content?: string | null;
+  override_author?: DiscordAuthor | null;
+  resolved_at?: string | null;
+  resolved_note?: string | null;
   suggested_character?: SuggestedCharacter | null;
 }
 
@@ -332,6 +354,11 @@ export interface SceneIssuesResponse extends PaginatedResponse {
 
 export interface FlaggedMessagesResponse extends PaginatedResponse {
   messages: FlaggedMessage[];
+  status_counts?: {
+    unresolved: number;
+    resolved: number;
+    all: number;
+  };
 }
 
 export interface MessageOverridesResponse extends PaginatedResponse {

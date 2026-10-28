@@ -1,4 +1,5 @@
-import { AlertTriangle } from 'lucide-react';
+import React from 'react';
+import { AlertTriangle, Plus } from 'lucide-react';
 
 const KIND_OPTIONS = [
   { value: '', label: 'All' },
@@ -12,11 +13,12 @@ const REASON_OPTIONS = [
   { value: 'start_tag_roster_change', label: 'Start Tag, Roster Change' },
   { value: 'start_tag_same_roster', label: 'Start Tag, Same Roster' },
   { value: 'roster_change', label: 'Roster Change' },
+  { value: 'manual', label: 'Manual Split' },
 ] as const;
 
 const KIND_TO_REASONS: Record<string, string[]> = {
   auto_split: ['separate_roster', 'start_tag_roster_change'],
-  soft_boundary: ['start_tag_same_roster', 'roster_change'],
+  soft_boundary: ['start_tag_same_roster', 'roster_change', 'manual'],
 };
 
 export interface SceneIssuesFiltersProps {
@@ -28,9 +30,10 @@ export interface SceneIssuesFiltersProps {
   onKindChange: (kind: string) => void;
   reasonFilter: string;
   onReasonChange: (reason: string) => void;
+  onOpenManualSplit?: () => void;
 }
 
-export const SceneIssuesFilters = ({
+export const SceneIssuesFilters: React.FC<SceneIssuesFiltersProps> = ({
   totalItems,
   statusFilter,
   onStatusChange,
@@ -39,7 +42,8 @@ export const SceneIssuesFilters = ({
   onKindChange,
   reasonFilter,
   onReasonChange,
-}: SceneIssuesFiltersProps) => {
+  onOpenManualSplit,
+}) => {
   const handleKindClick = (value: string) => {
     const nextKind = kindFilter === value ? '' : value;
     onKindChange(nextKind);
@@ -66,7 +70,7 @@ export const SceneIssuesFilters = ({
         gap: '1.15rem',
       }}
     >
-      {/* Top: Header Info & Status Filter */}
+      {/* Top: Header Info & Status Filter & Manual Split */}
       <div
         style={{
           display: 'flex',
@@ -101,9 +105,8 @@ export const SceneIssuesFilters = ({
           </div>
         </div>
 
-        {/* Status Buttons */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 500 }}>Status:</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+          {/* Status Buttons */}
           <div style={{ display: 'flex', gap: '0.35rem' }}>
             {(['unresolved', 'resolved', 'all'] as const).map(st => (
               <button
@@ -140,6 +143,28 @@ export const SceneIssuesFilters = ({
               </button>
             ))}
           </div>
+
+          {/* Manual Split Button */}
+          {onOpenManualSplit && (
+            <button
+              onClick={onOpenManualSplit}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.4rem',
+                padding: '0.35rem 0.85rem',
+                borderRadius: '6px',
+                fontSize: '0.85rem',
+                border: '1px solid var(--accent-secondary)',
+                background: 'var(--accent-secondary)',
+                color: '#fff',
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              <Plus size={15} /> Manual Split
+            </button>
+          )}
         </div>
       </div>
 

@@ -21,7 +21,7 @@ from db.models import (
     CharacterModel,
     FlaggedKind,
     FlaggedMessageModel,
-    MessageOverrideModel,
+    FlaggedResolution,
     SceneIssueModel,
     SceneModel,
     WriterModel,
@@ -434,7 +434,6 @@ class TestFlaggedMessagesAndOverrides(unittest.TestCase):
         with db_session(backup_id="1791895360", backup_path=backup_path) as session:
             # Clean if existed
             session.query(FlaggedMessageModel).filter_by(backup_id="1791895360", message_id=test_msg_id).delete()
-            session.query(MessageOverrideModel).filter_by(backup_id="1791895360", message_id=test_msg_id).delete()
 
             import datetime
             session.add(
@@ -442,7 +441,7 @@ class TestFlaggedMessagesAndOverrides(unittest.TestCase):
                     backup_id="1791895360",
                     message_id=test_msg_id,
                     channel_pk=None,
-                    kind=FlaggedKind.NON_TUPPER,
+                    kind=FlaggedKind.OOC_MESSAGE.value,
                     content="Hello from test flagged message",
                     author={"id": "999", "name": "TestBot"},
                     flagged_at=datetime.datetime.now(datetime.timezone.utc),
@@ -704,10 +703,11 @@ class TestNewSceneIndexingAndSuggestions(unittest.TestCase):
         test_msg_id = "777888999111"
 
         with db_session(backup_id="1791895360", backup_path=backup_path) as session:
+            session.query(FlaggedMessageModel).filter_by(backup_id="1791895360", message_id=test_msg_id).delete()
             session.add(FlaggedMessageModel(
                 backup_id="1791895360",
                 message_id=test_msg_id,
-                kind=FlaggedKind.NON_TUPPER.value,
+                kind=FlaggedKind.FAILED_TUPPER.value,
                 content="Bob: *drinks coffee*",
                 author={"id": "999888", "name": "DiscordUser", "discriminator": "0001"},
                 flagged_at=datetime.now(timezone.utc),
@@ -723,18 +723,282 @@ class TestNewSceneIndexingAndSuggestions(unittest.TestCase):
         self.assertEqual(res["status"], "success")
 
         with db_session(backup_id="1791895360", backup_path=backup_path) as session:
-            override = session.query(MessageOverrideModel).filter_by(
+            flagged = session.query(FlaggedMessageModel).filter_by(
                 backup_id="1791895360", message_id=test_msg_id
             ).first()
-            self.assertIsNotNone(override)
-            self.assertEqual(override.content, "*drinks coffee*")
-            self.assertEqual(override.author["id"], "25")
-            self.assertEqual(override.author["name"], "Bob")
-            self.assertTrue(override.author["isBot"])
+            self.assertIsNotNone(flagged)
+            self.assertEqual(flagged.resolution, FlaggedResolution.OVERRIDE.value)
+            self.assertEqual(flagged.override_content, "*drinks coffee*")
+            self.assertEqual(flagged.override_author["id"], "25")
+            self.assertEqual(flagged.override_author["name"], "Bob")
+            self.assertEqual(flagged.override_author["nickname"], "Bob")
+            self.assertTrue(flagged.override_author["isBot"])
 
             # Clean up
-            session.delete(override)
+            session.delete(flagged)
             session.commit()
+
+    def test_failed_tupper_word_pattern_detection(self):
+        """Tests that messages starting with a word (no spaces) followed by colon are classified as FAILED_TUPPER."""
+        from fix_bad_messages import is_failed_tupper, collect_channel_flagged_messages
+
+        # Test standalone is_failed_tupper predicate
+        self.assertTrue(is_failed_tupper("Alrick: this is a message with a tupper prefix that failed to trigger"))
+        self.assertTrue(is_failed_tupper("eris:this is a tupper prefix that uses the old name of a character"))
+        self.assertTrue(is_failed_tupper("AS: this is also a tupper that uses the initials"))
+        self.assertFalse(is_failed_tupper("and he said: this is not a tupper proxy"))
+        self.assertFalse(is_failed_tupper("https://discord.com/channels/123/456"))
+        self.assertFalse(is_failed_tupper("http://example.com"))
+
+        # Test collect_channel_flagged_messages classification without char_name_prefixes
+        raw_msgs = [
+            {"id": "m1", "type": "Default", "content": "Alrick: this is a message with a tupper prefix", "author": {"id": "999888777666"}},
+            {"id": "m2", "type": "Default", "content": "eris:this is a tupper prefix", "author": {"id": "999888777666"}},
+            {"id": "m3", "type": "Default", "content": "AS: this is also a tupper", "author": {"id": "999888777666"}},
+            {"id": "m4", "type": "Default", "content": "and he said: this is not a tupper proxy", "author": {"id": "999888777666"}},
+        ]
+        flagged = collect_channel_flagged_messages(
+            raw_messages=raw_msgs,
+            channel_id="chan1",
+            scenes=[],
+            preserved_msg_ids=set(),
+        )
+        kinds = {f["message_id"]: f["kind"] for f in flagged}
+        self.assertEqual(kinds["m1"], FlaggedKind.FAILED_TUPPER.value)
+        self.assertEqual(kinds["m2"], FlaggedKind.FAILED_TUPPER.value)
+        self.assertEqual(kinds["m3"], FlaggedKind.FAILED_TUPPER.value)
+        self.assertEqual(kinds["m4"], FlaggedKind.OOC_MESSAGE.value)
+
+    def test_resolve_flagged_message_lifecycle_and_reopen(self):
+        """Tests resolving a flagged message as ignored and kept, then reopening it."""
+        from datetime import datetime, timezone
+        backup_path = t.get_backup_path("1791895360")
+        test_mid = "999000111222"
+
+        with db_session(backup_id="1791895360", backup_path=backup_path) as session:
+            session.query(FlaggedMessageModel).filter_by(backup_id="1791895360", message_id=test_mid).delete()
+            session.add(FlaggedMessageModel(
+                backup_id="1791895360",
+                message_id=test_mid,
+                kind=FlaggedKind.OOC_MESSAGE.value,
+                content="OOC: brb dinner",
+                author={"id": "111", "name": "Player"},
+                flagged_at=datetime.now(timezone.utc),
+            ))
+            session.commit()
+
+        from db import curation_service
+
+        # 1. Resolve as ignored
+        res_ignored = curation_service.resolve_flagged_message(
+            "1791895360", backup_path, message_id=test_mid, resolution="ignored", note="OOC banter"
+        )
+        self.assertEqual(res_ignored["status"], "success")
+        self.assertEqual(res_ignored["resolution"], "ignored")
+
+        with db_session(backup_id="1791895360", backup_path=backup_path) as session:
+            flagged = session.query(FlaggedMessageModel).filter_by(backup_id="1791895360", message_id=test_mid).first()
+            self.assertEqual(flagged.resolution, "ignored")
+            self.assertIsNotNone(flagged.resolved_at)
+
+        # 2. Reopen
+        res_reopen = curation_service.reopen_flagged_message("1791895360", backup_path, message_id=test_mid)
+        self.assertEqual(res_reopen["status"], "success")
+
+        with db_session(backup_id="1791895360", backup_path=backup_path) as session:
+            flagged = session.query(FlaggedMessageModel).filter_by(backup_id="1791895360", message_id=test_mid).first()
+            self.assertIsNone(flagged.resolution)
+            self.assertIsNone(flagged.resolved_at)
+
+        # 3. Resolve as kept
+        res_kept = curation_service.resolve_flagged_message(
+            "1791895360", backup_path, message_id=test_mid, resolution="kept", note="Benign non-tupper"
+        )
+        self.assertEqual(res_kept["resolution"], "kept")
+
+        # Cleanup
+        with db_session(backup_id="1791895360", backup_path=backup_path) as session:
+            session.query(FlaggedMessageModel).filter_by(backup_id="1791895360", message_id=test_mid).delete()
+            session.commit()
+
+    def test_manual_flagged_message_and_reindexing_persistence(self):
+        """Tests that manually added flagged messages persist across save_flagged_messages even when unresolved."""
+        from datetime import datetime, timezone
+        backup_path = t.get_backup_path("1791895360")
+        test_manual_mid = "999111222333"
+
+        with db_session(backup_id="1791895360", backup_path=backup_path) as session:
+            session.query(FlaggedMessageModel).filter_by(backup_id="1791895360", message_id=test_manual_mid).delete()
+            session.add(FlaggedMessageModel(
+                backup_id="1791895360",
+                message_id=test_manual_mid,
+                kind=FlaggedKind.MANUAL.value,
+                content="Manual entry from user link",
+                author={"id": "222", "name": "ManualAuthor"},
+                flagged_at=datetime.now(timezone.utc),
+            ))
+            session.commit()
+
+        from db import curation_service
+
+        # Run save_flagged_messages with empty items (simulating a re-index scan)
+        curation_service.save_flagged_messages(
+            backup_id="1791895360",
+            base_path=backup_path,
+            flagged_items=[],
+        )
+
+        with db_session(backup_id="1791895360", backup_path=backup_path) as session:
+            flagged = session.query(FlaggedMessageModel).filter_by(backup_id="1791895360", message_id=test_manual_mid).first()
+            self.assertIsNotNone(flagged, "Unresolved manual flagged message must survive re-indexing!")
+            self.assertEqual(flagged.kind, FlaggedKind.MANUAL.value)
+
+            # Clean up
+            session.delete(flagged)
+            session.commit()
+
+
+    def test_manual_scene_split_and_flagged_message_link_validation(self):
+        """Tests link validation for manual split and manual flagged message endpoints."""
+        from server import create_manual_scene_split, add_manual_flagged_message, ManualSplitRequest, ManualFlaggedMessageRequest
+        from fastapi import HTTPException
+        from datetime import datetime, timezone
+        from db.models import BackupModel
+
+        backup_path = t.get_backup_path("1791895360")
+        with db_session(backup_id="1791895360", backup_path=backup_path) as session:
+            b = session.query(BackupModel).filter_by(backup_id="1791895360").first()
+            server_id = str(b.server_id)
+
+        # 1. Invalid link format
+        with self.assertRaises(HTTPException) as ctx:
+            create_manual_scene_split("1791895360", ManualSplitRequest(discord_link="https://not-discord.com/bad"))
+        self.assertEqual(ctx.exception.status_code, 400)
+
+        # 2. Mismatched server ID
+        with self.assertRaises(HTTPException) as ctx:
+            create_manual_scene_split("1791895360", ManualSplitRequest(discord_link="https://discord.com/channels/999999999999/1013915163423932496/1018678482202542151"))
+        self.assertEqual(ctx.exception.status_code, 400)
+
+        # 3. Message marked as ignored rejects split
+        test_mid = "1018678482202542151"
+        with db_session(backup_id="1791895360", backup_path=backup_path) as session:
+            session.query(FlaggedMessageModel).filter_by(backup_id="1791895360", message_id=test_mid).delete()
+            session.add(FlaggedMessageModel(
+                backup_id="1791895360",
+                message_id=test_mid,
+                kind=FlaggedKind.OOC_MESSAGE.value,
+                content="Ignored message",
+                author={"id": "111", "name": "IgnoredAuthor"},
+                flagged_at=datetime.now(timezone.utc),
+                resolution=FlaggedResolution.IGNORED.value,
+                resolved_at=datetime.now(timezone.utc),
+            ))
+            session.commit()
+
+        try:
+            with self.assertRaises(HTTPException) as ctx:
+                create_manual_scene_split(
+                    "1791895360",
+                    ManualSplitRequest(discord_link=f"https://discord.com/channels/{server_id}/1013915163423932496/{test_mid}")
+                )
+            self.assertEqual(ctx.exception.status_code, 400)
+            self.assertIn("Ignored (OOC)", str(ctx.exception.detail))
+        finally:
+            with db_session(backup_id="1791895360", backup_path=backup_path) as session:
+                session.query(FlaggedMessageModel).filter_by(backup_id="1791895360", message_id=test_mid).delete()
+                session.commit()
+
+    def test_ignored_boundary_shrinking_and_reopening_lifecycle(self):
+        """Tests live boundary shrinking and restoration when ignoring and reopening a scene boundary message."""
+        from datetime import datetime, timezone
+        from db import curation_service
+        from db.models import ChannelModel, IssueKind
+        backup_path = t.get_backup_path("1791895360")
+
+        # Find barside scenes
+        with db_session(backup_id="1791895360", backup_path=backup_path) as session:
+            scene2 = (
+                session.query(SceneModel)
+                .join(ChannelModel, SceneModel.channel_pk == ChannelModel.pk)
+                .filter(SceneModel.backup_id == "1791895360", ChannelModel.name == "barside")
+                .order_by(SceneModel.start_index)
+                .offset(1)
+                .first()
+            )
+            self.assertIsNotNone(scene2)
+            orig_s2_mid = str(scene2.start_message_id)
+            orig_s2_idx = scene2.start_index
+            orig_s2_author = str(scene2.start_author_id)
+            orig_s2_at = scene2.start_at
+            orig_s2_excerpt = scene2.start_excerpt
+            chan_pk = scene2.channel_pk
+            sc2_pk = scene2.pk
+
+            # Add flagged message for orig_s2_mid
+            session.query(FlaggedMessageModel).filter_by(backup_id="1791895360", message_id=orig_s2_mid).delete()
+            session.add(FlaggedMessageModel(
+                backup_id="1791895360",
+                message_id=orig_s2_mid,
+                channel_pk=chan_pk,
+                kind=FlaggedKind.OOC_BOUNDARY.value,
+                content="Boundary message",
+                author={"id": orig_s2_author, "name": "Author"},
+                flagged_at=datetime.now(timezone.utc),
+            ))
+
+            # Also create an issue anchoring on scene2 start
+            iss = SceneIssueModel(
+                backup_id="1791895360",
+                scene_pk=sc2_pk,
+                kind=IssueKind.AUTO_SPLIT.value,
+                reason="separate_roster",
+                candidate_message_id=orig_s2_mid,
+                candidate_index=orig_s2_idx,
+                candidate_excerpt="Original issue excerpt",
+                created_at=datetime.now(timezone.utc),
+            )
+            session.add(iss)
+            session.commit()
+            iss_pk = iss.pk
+
+        try:
+            # 1. Resolve as ignored
+            curation_service.resolve_flagged_message(
+                "1791895360", backup_path, message_id=orig_s2_mid, resolution="ignored"
+            )
+
+            with db_session(backup_id="1791895360", backup_path=backup_path) as session:
+                sc2_after = session.query(SceneModel).filter_by(backup_id="1791895360", pk=sc2_pk).first()
+                iss_after = session.query(SceneIssueModel).filter_by(pk=iss_pk).first()
+
+                # Boundary shrunk forward: start index must have increased by at least 1
+                self.assertGreater(sc2_after.start_index, orig_s2_idx)
+                self.assertNotEqual(sc2_after.start_message_id, orig_s2_mid)
+
+                # Issue anchor must have synchronized to new start without double-shift divergence
+                self.assertEqual(iss_after.candidate_message_id, sc2_after.start_message_id)
+                self.assertEqual(iss_after.candidate_index, sc2_after.start_index)
+
+            # 2. Reopen flagged message
+            curation_service.reopen_flagged_message("1791895360", backup_path, message_id=orig_s2_mid)
+
+            with db_session(backup_id="1791895360", backup_path=backup_path) as session:
+                sc2_restored = session.query(SceneModel).filter_by(backup_id="1791895360", pk=sc2_pk).first()
+                iss_restored = session.query(SceneIssueModel).filter_by(pk=iss_pk).first()
+
+                # Boundary and issue anchor restored!
+                self.assertEqual(sc2_restored.start_message_id, orig_s2_mid)
+                self.assertEqual(sc2_restored.start_index, orig_s2_idx)
+                self.assertEqual(sc2_restored.start_author_id, orig_s2_author)
+                self.assertEqual(iss_restored.candidate_message_id, orig_s2_mid)
+                self.assertEqual(iss_restored.candidate_index, orig_s2_idx)
+
+        finally:
+            with db_session(backup_id="1791895360", backup_path=backup_path) as session:
+                session.query(FlaggedMessageModel).filter_by(backup_id="1791895360", message_id=orig_s2_mid).delete()
+                session.query(SceneIssueModel).filter_by(pk=iss_pk).delete()
+                session.commit()
 
 
 if __name__ == "__main__":

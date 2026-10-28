@@ -44,12 +44,13 @@ from db.models import (
     SceneModel,
     SceneParticipantModel,
     SceneIssueModel,
-    MessageOverrideModel,
     FlaggedMessageModel,
     SchemaVersionModel,
     CURRENT_SCHEMA_VERSION,
     Scope,
     IssueKind,
+    FlaggedKind,
+    FlaggedResolution,
 )
 from db.session import get_engine, init_db, db_session
 from db.snapshots import export_backup_info_snapshot, export_character_list_snapshot
@@ -409,7 +410,7 @@ def migrate_single_backup(
         "tuppers_count": 0,
         "scenes_count": 0,
         "scene_issues_count": 0,
-        "message_overrides_count": 0,
+        
         "flagged_messages_count": 0,
         "nested_writer_mismatches": [],
     }
@@ -757,21 +758,29 @@ def migrate_single_backup(
                         ))
                         report_metrics["scene_issues_count"] += 1
 
-        # 6. Message Overrides & Flagged Messages
+        # 6. Unified Flagged Messages & Overrides
         now_utc = datetime.now(timezone.utc)
 
-        # fixed_messages.json
+        # fixed_messages.json -> FlaggedMessageModel with resolution="override"
         if isinstance(fixed_messages, dict):
             for msg_id, data in fixed_messages.items():
-                session.add(MessageOverrideModel(
+                content_val = data.get("content", "")
+                author_val = data.get("author", {})
+                session.add(FlaggedMessageModel(
                     backup_id=backup_model.backup_id,
                     message_id=str(msg_id),
                     channel_pk=None,
-                    content=data.get("content", ""),
-                    author=data.get("author", {}),
-                    created_at=now_utc,
+                    kind=FlaggedKind.FAILED_TUPPER.value,
+                    content=content_val,
+                    author=author_val,
+                    flagged_at=now_utc,
+                    resolution=FlaggedResolution.OVERRIDE.value,
+                    override_content=content_val,
+                    override_author=author_val,
+                    resolved_at=now_utc,
+                    resolved_note="Migrated from fixed_messages.json",
                 ))
-                report_metrics["message_overrides_count"] += 1
+                report_metrics["flagged_messages_count"] += 1
 
         # bad_messages.json
         if isinstance(bad_messages, dict):
@@ -780,7 +789,7 @@ def migrate_single_backup(
                     backup_id=backup_model.backup_id,
                     message_id=str(msg_id),
                     channel_pk=None,
-                    kind="non_tupper",
+                    kind=FlaggedKind.FAILED_TUPPER.value,
                     content=data.get("content", ""),
                     author=data.get("author", {}),
                     flagged_at=now_utc,
@@ -804,7 +813,7 @@ def migrate_single_backup(
                     backup_id=backup_model.backup_id,
                     message_id=str(msg_id),
                     channel_pk=resolved_chan_pk,
-                    kind="non_tupper_end_tag",
+                    kind=FlaggedKind.OOC_BOUNDARY.value,
                     content=data.get("content", ""),
                     author=data.get("author", {}),
                     flagged_at=now_utc,
@@ -842,7 +851,6 @@ def migrate_single_backup(
 | Nested Tuppers | {report_metrics['tuppers_count']} | Alter egos, NPCs, familiars |
 | Scenes | {report_metrics['scenes_count']} | Recomputed separator keys (`100% unique`) |
 | Scene Issues | {report_metrics['scene_issues_count']} | Auto-splits & possible splits |
-| Message Overrides | {report_metrics['message_overrides_count']} | Promoted message replacements |
 | Flagged Messages | {report_metrics['flagged_messages_count']} | Non-tupper messages & end tags |
 
 ## Informational Writer Mismatches (Nested Tuppers)

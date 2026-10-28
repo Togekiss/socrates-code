@@ -94,6 +94,23 @@ class PromoteFlaggedMessageRequest(BaseModel):
     author: Optional[Dict[str, Any]] = None
 
 
+class ManualSplitRequest(BaseModel):
+    discord_link: str
+    note: Optional[str] = None
+
+
+class ManualFlaggedMessageRequest(BaseModel):
+    discord_link: str
+    note: Optional[str] = None
+
+
+class ResolveFlaggedMessageRequest(BaseModel):
+    resolution: str
+    note: Optional[str] = None
+    override_content: Optional[str] = None
+    override_author: Optional[Dict[str, Any]] = None
+
+
 class AuthCallback(BaseModel):
     code: str
 
@@ -1063,10 +1080,37 @@ def reopen_scene_issue(backup_id: str, issue_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/backups/{backup_id}/scene-issues/manual-split")
+def create_manual_scene_split(backup_id: str, req: ManualSplitRequest):
+    api_log(backup_id, "info", f"Creating manual scene split at {req.discord_link}...")
+    base_path = get_backup_path(backup_id)
+    try:
+        check_not_indexing(backup_id, base_path)
+        res = curation_service.create_manual_scene_split(
+            backup_id, base_path, discord_link=req.discord_link, note=req.note
+        )
+        api_log(backup_id, "base", "Manual scene split created.")
+        return res
+    except exc.ConflictError as e:
+        api_log(backup_id, "error", f"Manual scene split conflict: {e}")
+        raise HTTPException(status_code=409, detail=str(e))
+    except exc.NotFoundError as e:
+        api_log(backup_id, "error", f"Manual scene split not found: {e}")
+        raise HTTPException(status_code=404, detail=str(e))
+    except (exc.ValidationError, ValueError) as e:
+        api_log(backup_id, "error", f"Manual scene split validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        api_log(backup_id, "error", f"Manual scene split failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/backups/{backup_id}/flagged-messages")
 def get_flagged_messages(
     backup_id: str,
+    status: Optional[str] = Query("unresolved"),
     kind: Optional[str] = Query(None),
+    resolution: Optional[str] = Query(None),
     channel_id: Optional[str] = Query(None),
     page: int = Query(1),
     per_page: int = Query(50)
@@ -1076,12 +1120,93 @@ def get_flagged_messages(
         return curation_service.get_flagged_messages(
             backup_id,
             base_path,
+            status=status,
             kind=kind,
+            resolution=resolution,
             channel_id=channel_id,
             page=page,
             per_page=per_page
         )
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/backups/{backup_id}/flagged-messages/manual")
+def add_manual_flagged_message(backup_id: str, req: ManualFlaggedMessageRequest):
+    api_log(backup_id, "info", f"Adding manual flagged message from {req.discord_link}...")
+    base_path = get_backup_path(backup_id)
+    try:
+        check_not_indexing(backup_id, base_path)
+        res = curation_service.add_manual_flagged_message(
+            backup_id, base_path, discord_link=req.discord_link, note=req.note
+        )
+        api_log(backup_id, "base", "Manual flagged message added.")
+        return res
+    except exc.ConflictError as e:
+        api_log(backup_id, "error", f"Add manual flagged message conflict: {e}")
+        raise HTTPException(status_code=409, detail=str(e))
+    except exc.NotFoundError as e:
+        api_log(backup_id, "error", f"Add manual flagged message not found: {e}")
+        raise HTTPException(status_code=404, detail=str(e))
+    except (exc.ValidationError, ValueError) as e:
+        api_log(backup_id, "error", f"Add manual flagged message validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        api_log(backup_id, "error", f"Add manual flagged message failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/backups/{backup_id}/flagged-messages/{message_id}/resolve")
+def resolve_flagged_message(backup_id: str, message_id: str, req: ResolveFlaggedMessageRequest):
+    api_log(backup_id, "info", f"Resolving flagged message #{message_id} with resolution '{req.resolution}'...")
+    base_path = get_backup_path(backup_id)
+    try:
+        check_not_indexing(backup_id, base_path)
+        res = curation_service.resolve_flagged_message(
+            backup_id,
+            base_path,
+            message_id=message_id,
+            resolution=req.resolution,
+            note=req.note,
+            override_content=req.override_content,
+            override_author=req.override_author,
+        )
+        api_log(backup_id, "base", "Flagged message resolved.")
+        return res
+    except exc.ConflictError as e:
+        api_log(backup_id, "error", f"Resolving flagged message conflict: {e}")
+        raise HTTPException(status_code=409, detail=str(e))
+    except exc.NotFoundError as e:
+        api_log(backup_id, "error", f"Flagged message not found: {e}")
+        raise HTTPException(status_code=404, detail=str(e))
+    except (exc.ValidationError, ValueError) as e:
+        api_log(backup_id, "error", f"Resolving flagged message validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        api_log(backup_id, "error", f"Resolving flagged message failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/backups/{backup_id}/flagged-messages/{message_id}/reopen")
+def reopen_flagged_message(backup_id: str, message_id: str):
+    api_log(backup_id, "info", f"Reopening flagged message #{message_id}...")
+    base_path = get_backup_path(backup_id)
+    try:
+        check_not_indexing(backup_id, base_path)
+        res = curation_service.reopen_flagged_message(backup_id, base_path, message_id=message_id)
+        api_log(backup_id, "base", "Flagged message reopened.")
+        return res
+    except exc.ConflictError as e:
+        api_log(backup_id, "error", f"Reopening flagged message conflict: {e}")
+        raise HTTPException(status_code=409, detail=str(e))
+    except exc.NotFoundError as e:
+        api_log(backup_id, "error", f"Flagged message not found: {e}")
+        raise HTTPException(status_code=404, detail=str(e))
+    except (exc.ValidationError, ValueError) as e:
+        api_log(backup_id, "error", f"Reopening flagged message validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        api_log(backup_id, "error", f"Reopening flagged message failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

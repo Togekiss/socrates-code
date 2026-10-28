@@ -30,7 +30,7 @@ from db.models import (
     SceneModel,
     SceneParticipantModel,
     SceneIssueModel,
-    MessageOverrideModel,
+    FlaggedResolution,
     FlaggedMessageModel,
     SchemaVersionModel,
     CURRENT_SCHEMA_VERSION,
@@ -82,7 +82,6 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
             "scenes",
             "scene_participants",
             "scene_issues",
-            "message_overrides",
             "flagged_messages",
             "schema_version",
         }
@@ -219,7 +218,7 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
                 backup_id=backup.backup_id,
                 channel_pk=channel.pk,
                 message_id="555666777888",
-                kind=FlaggedKind.NON_TUPPER,
+                kind=FlaggedKind.OOC_MESSAGE.value,
                 content="Hello from non-tupper bot",
                 author={"id": "555", "name": "BadBot"},
                 flagged_at=now,
@@ -234,7 +233,7 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
 
             loaded_flag = session.query(FlaggedMessageModel).filter_by(message_id="555666777888").first()
             self.assertIsNotNone(loaded_flag)
-            self.assertEqual(loaded_flag.kind, FlaggedKind.NON_TUPPER)
+            self.assertEqual(loaded_flag.kind, FlaggedKind.OOC_MESSAGE.value)
             self.assertEqual(loaded_flag.author["name"], "BadBot")
 
     def test_issue_kind_and_scene_status_enums(self):
@@ -247,7 +246,7 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
         actual_statuses = {s.value for s in SceneStatus}
         self.assertEqual(actual_statuses, expected_statuses)
 
-        expected_reasons = {"separate_roster", "start_tag_roster_change", "start_tag_same_roster", "roster_change"}
+        expected_reasons = {"separate_roster", "start_tag_roster_change", "start_tag_same_roster", "roster_change", "manual"}
         actual_reasons = {r.value for r in IssueReason}
         self.assertEqual(actual_reasons, expected_reasons)
 

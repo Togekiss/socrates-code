@@ -14,9 +14,12 @@ import type {
   CharacterGroup,
   CurationSummary,
   DiscordAuthor,
+  FlaggedMessage,
   FlaggedMessagesResponse,
+  FlaggedResolution,
   GlobalConfig,
   IssueResolution,
+  ManualSplitResponse,
   MeResponse,
   MessageOverridesResponse,
   MyWriter,
@@ -294,9 +297,53 @@ export const api = {
       method: 'PUT',
     }).then(res => res.json()),
 
+  createManualSceneSplit: (
+    backupId: string,
+    data: { discord_link: string; note?: string }
+  ): Promise<ManualSplitResponse> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/scene-issues/manual-split`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }).then(res => res.json()),
+
   // --- Flagged Messages & Overrides ---
   getFlaggedMessages: (backupId: string, params: URLSearchParams = new URLSearchParams()): Promise<FlaggedMessagesResponse> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/flagged-messages?${params.toString()}`).then(res => res.json()),
+
+  addManualFlaggedMessage: (
+    backupId: string,
+    data: { discord_link: string; note?: string }
+  ): Promise<FlaggedMessage> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/flagged-messages/manual`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }).then(res => res.json()),
+
+  resolveFlaggedMessage: (
+    backupId: string,
+    messageId: string,
+    data: {
+      resolution: FlaggedResolution;
+      note?: string;
+      override_content?: string;
+      override_author?: DiscordAuthor;
+    }
+  ): Promise<{ status: string; message_id: string; resolution: string; resolved_at: string }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/flagged-messages/${messageId}/resolve`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }).then(res => res.json()),
+
+  reopenFlaggedMessage: (
+    backupId: string,
+    messageId: string
+  ): Promise<{ status: string; message_id: string; reopened: boolean }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/flagged-messages/${messageId}/reopen`, {
+      method: 'PUT',
+    }).then(res => res.json()),
 
   promoteFlaggedMessage: (
     backupId: string,

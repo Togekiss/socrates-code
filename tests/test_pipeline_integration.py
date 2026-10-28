@@ -87,7 +87,7 @@ class TestPipelineIntegration(unittest.TestCase):
                 "backups", "exports", "backup_steps", "channels", "writers",
                 "writer_aliases", "character_groups", "group_names", "characters",
                 "character_names", "scenes", "scene_participants", "scene_issues",
-                "message_overrides", "flagged_messages"
+                "flagged_messages"
             }
             self.assertTrue(expected_tables.issubset(tables), f"Missing tables: {expected_tables - tables}")
 

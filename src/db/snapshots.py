@@ -20,9 +20,9 @@ from .models import (
     Scope,
     Step,
     Status,
-    MessageOverrideModel,
     FlaggedMessageModel,
     FlaggedKind,
+    FlaggedResolution,
 )
 
 
@@ -309,13 +309,14 @@ def export_curation_snapshots(
     server_id = backup.server_id if backup and backup.server_id else ""
 
     # 1. Message overrides -> fixed_messages.json
-    overrides = session.query(MessageOverrideModel).filter(
-        MessageOverrideModel.backup_id == str(backup_id)
+    overrides = session.query(FlaggedMessageModel).filter(
+        FlaggedMessageModel.backup_id == str(backup_id),
+        FlaggedMessageModel.resolution == FlaggedResolution.OVERRIDE.value,
     ).all()
     fixed_messages_data = {
         str(o.message_id): {
-            "content": o.content,
-            "author": o.author,
+            "content": o.override_content or o.content,
+            "author": o.override_author or o.author,
         }
         for o in overrides
     }
@@ -323,7 +324,8 @@ def export_curation_snapshots(
 
     # 2. Flagged messages -> bad_messages.json & bad_end_messages.json
     flagged = session.query(FlaggedMessageModel).filter(
-        FlaggedMessageModel.backup_id == str(backup_id)
+        FlaggedMessageModel.backup_id == str(backup_id),
+        FlaggedMessageModel.resolved_at.is_(None),
     ).all()
 
     bad_messages_data = {}
@@ -341,7 +343,7 @@ def export_curation_snapshots(
             "author": f.author,
             "link": link,
         }
-        if f.kind == FlaggedKind.NON_TUPPER_END_TAG.value:
+        if f.kind in (FlaggedKind.OOC_BOUNDARY.value, "non_tupper_end_tag"):
             bad_end_messages_data[str(f.message_id)] = entry
         else:
             bad_messages_data[str(f.message_id)] = entry

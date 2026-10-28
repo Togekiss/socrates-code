@@ -1,35 +1,16 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import {
-  MessageSquareCode,
-  ExternalLink,
-  Check,
-  CheckCircle,
-  Loader2,
-} from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { CheckCircle, Loader2 } from 'lucide-react';
 import { api } from '../api';
 import { PromoteMessageModal } from './curation/PromoteMessageModal';
-import { MessageOverrideCard } from './curation/MessageOverrideCard';
-import type {
-  FlaggedMessage,
-  FlaggedMessagesResponse,
-  MessageOverridesResponse,
-} from '../types';
+import { AddFlaggedMessageModal } from './curation/AddFlaggedMessageModal';
+import { FlaggedMessageCard } from './curation/FlaggedMessageCard';
+import { FlaggedMessagesFilters } from './curation/FlaggedMessagesFilters';
+import type { FlaggedMessage, FlaggedMessagesResponse, FlaggedResolution } from '../types';
 
 interface FlaggedMessagesTabProps {
   backupId: string;
   onRefreshSummary?: () => void;
 }
-
-const subTabBtn = (active: boolean): React.CSSProperties => ({
-  padding: '0.45rem 1rem',
-  borderRadius: '6px',
-  border: active ? '1px solid var(--accent-secondary)' : '1px solid var(--border-color)',
-  background: active ? 'rgba(109, 40, 217, 0.25)' : 'var(--bg-tertiary)',
-  color: active ? '#fff' : 'var(--text-secondary)',
-  fontWeight: active ? 600 : 400,
-  cursor: 'pointer',
-  fontSize: '0.85rem',
-});
 
 const pageBtn = (disabled: boolean): React.CSSProperties => ({
   padding: '0.4rem 0.85rem',
@@ -43,281 +24,201 @@ const pageBtn = (disabled: boolean): React.CSSProperties => ({
 });
 
 export const FlaggedMessagesTab = ({ backupId, onRefreshSummary }: FlaggedMessagesTabProps) => {
-  const [subTab, setSubTab] = useState<'flagged' | 'overrides'>('flagged');
-  const [flaggedData, setFlaggedData] = useState<FlaggedMessagesResponse>({
+  const [data, setData] = useState<FlaggedMessagesResponse>({
     total_items: 0,
     messages: [],
     current_page: 1,
     per_page: 50,
     total_pages: 1,
   });
-  const [overridesData, setOverridesData] = useState<MessageOverridesResponse>({
-    total_items: 0,
-    overrides: [],
-    current_page: 1,
-    per_page: 50,
-    total_pages: 1,
+  const [statusCounts, setStatusCounts] = useState<{ unresolved: number; resolved: number; all: number }>({
+    unresolved: 0,
+    resolved: 0,
+    all: 0,
   });
 
+  const [statusFilter, setStatusFilter] = useState<'unresolved' | 'resolved' | 'all'>('unresolved');
+  const [kindFilter, setKindFilter] = useState<string>('');
+  const [resolutionFilter, setResolutionFilter] = useState<string>('');
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
-  const [promotingMsg, setPromotingMsg] = useState<FlaggedMessage | null>(null);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  const fetchData = useCallback(() => {
+  const [promotingMsg, setPromotingMsg] = useState<FlaggedMessage | null>(null);
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [resolvingId, setResolvingId] = useState<string | null>(null);
+  const [reopeningId, setReopeningId] = useState<string | null>(null);
+
+  const fetchMessages = useCallback(() => {
     if (!backupId) return;
     setLoading(true);
 
-    const activeParams = new URLSearchParams();
-    activeParams.append('page', page.toString());
-    activeParams.append('per_page', '50');
+    const params = new URLSearchParams();
+    params.append('page', page.toString());
+    params.append('per_page', '50');
+    if (statusFilter !== 'all') params.append('status', statusFilter);
+    if (kindFilter) params.append('kind', kindFilter);
+    if (resolutionFilter && statusFilter !== 'unresolved') params.append('resolution', resolutionFilter);
 
-    const countParams = new URLSearchParams();
-    countParams.append('page', '1');
-    countParams.append('per_page', '1');
-
-    if (subTab === 'flagged') {
-      Promise.all([
-        api.getFlaggedMessages(backupId, activeParams),
-        api.getMessageOverrides(backupId, countParams).catch(() => null),
-      ])
-        .then(([flaggedRes, overridesCountRes]) => {
-          setFlaggedData(flaggedRes);
-          if (overridesCountRes) {
-            setOverridesData(prev => ({
-              ...prev,
-              total_items: overridesCountRes.total_items,
-            }));
-          }
-        })
-        .catch(console.error)
-        .finally(() => {
-          setLoading(false);
-          if (onRefreshSummary) onRefreshSummary();
-        });
-    } else {
-      Promise.all([
-        api.getMessageOverrides(backupId, activeParams),
-        api.getFlaggedMessages(backupId, countParams).catch(() => null),
-      ])
-        .then(([overridesRes, flaggedCountRes]) => {
-          setOverridesData(overridesRes);
-          if (flaggedCountRes) {
-            setFlaggedData(prev => ({
-              ...prev,
-              total_items: flaggedCountRes.total_items,
-            }));
-          }
-        })
-        .catch(console.error)
-        .finally(() => {
-          setLoading(false);
-          if (onRefreshSummary) onRefreshSummary();
-        });
-    }
-  }, [backupId, subTab, page, onRefreshSummary]);
+    api
+      .getFlaggedMessages(backupId, params)
+      .then(res => {
+        setData(res);
+        if (res.status_counts) {
+          setStatusCounts(res.status_counts);
+        }
+      })
+      .catch(console.error)
+      .finally(() => {
+        setLoading(false);
+        if (onRefreshSummary) onRefreshSummary();
+      });
+  }, [backupId, statusFilter, kindFilter, resolutionFilter, page, onRefreshSummary]);
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    fetchMessages();
+  }, [fetchMessages]);
 
-  const handleDeleteOverride = async (messageId: string) => {
-    if (!window.confirm(`Delete override for message #${messageId}?`)) return;
-    setDeletingId(messageId);
+  const handleResolve = async (msg: FlaggedMessage, resolution: FlaggedResolution) => {
+    setResolvingId(msg.message_id);
     try {
-      await api.deleteMessageOverride(backupId, messageId);
-      fetchData();
+      await api.resolveFlaggedMessage(backupId, msg.message_id, { resolution });
+      fetchMessages();
     } catch (err) {
-      console.error('Failed to delete override:', err);
+      console.error(`Failed to resolve message as ${resolution}:`, err);
     } finally {
-      setDeletingId(null);
+      setResolvingId(null);
     }
   };
 
-  const activeTotalPages = subTab === 'flagged' ? flaggedData.total_pages : overridesData.total_pages;
-  const activeTotalItems = subTab === 'flagged' ? flaggedData.total_items : overridesData.total_items;
+  const handleReopen = async (messageId: string) => {
+    setReopeningId(messageId);
+    try {
+      await api.reopenFlaggedMessage(backupId, messageId);
+      fetchMessages();
+    } catch (err) {
+      console.error('Failed to reopen flagged message:', err);
+    } finally {
+      setReopeningId(null);
+    }
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-      {/* Header & Sub-Navigation */}
-      <div className="glass-panel" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <div style={{ width: '40px', height: '40px', borderRadius: '8px', background: 'rgba(139, 92, 246, 0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent-secondary)' }}>
-            <MessageSquareCode size={22} />
-          </div>
-          <div>
-            <h2 style={{ margin: 0, fontSize: '1.25rem', color: 'var(--text-primary)' }}>Flagged Messages & Overrides</h2>
-            <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-muted)' }}>Non-tupper dialogue promoting and manual override management</p>
-          </div>
-        </div>
+      {/* Header & Filter Controls */}
+      <FlaggedMessagesFilters
+        totalItems={data.total_items}
+        statusFilter={statusFilter}
+        onStatusChange={st => {
+          setStatusFilter(st);
+          setPage(1);
+        }}
+        statusCounts={statusCounts}
+        kindFilter={kindFilter}
+        onKindChange={k => {
+          setKindFilter(k);
+          setPage(1);
+        }}
+        resolutionFilter={resolutionFilter}
+        onResolutionChange={r => {
+          setResolutionFilter(r);
+          setPage(1);
+        }}
+        onOpenAddModal={() => setIsAddModalOpen(true)}
+      />
 
-        {/* Sub-Tabs */}
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <button onClick={() => { setSubTab('flagged'); setPage(1); }} style={subTabBtn(subTab === 'flagged')}>
-            Flagged Queue ({flaggedData.total_items})
-          </button>
-          <button onClick={() => { setSubTab('overrides'); setPage(1); }} style={subTabBtn(subTab === 'overrides')}>
-            Active Overrides ({overridesData.total_items})
-          </button>
-        </div>
-      </div>
-
-      {/* Main List */}
+      {/* Main Content Area */}
       {loading ? (
-        <div className="glass-panel" style={{ textAlign: 'center', padding: '3rem' }}>
-          <Loader2 size={32} className="animate-spin" style={{ color: 'var(--accent-secondary)', margin: '0 auto 1rem auto' }} />
-          <p style={{ color: 'var(--text-secondary)' }}>Loading messages...</p>
+        <div style={{ display: 'flex', justifyContent: 'center', padding: '4rem', color: 'var(--text-muted)' }}>
+          <Loader2 className="spin" size={32} />
         </div>
-      ) : subTab === 'flagged' ? (
-        flaggedData.messages.length === 0 ? (
-          <div className="glass-panel" style={{ textAlign: 'center', padding: '3rem' }}>
-            <CheckCircle size={36} style={{ color: 'var(--success)', marginBottom: '0.5rem' }} />
-            <h3 style={{ margin: '0 0 0.5rem 0', color: 'var(--text-primary)' }}>No flagged messages</h3>
-            <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '0.9rem' }}>The flagged non-tupper dialogue review queue is clear!</p>
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            {flaggedData.messages.map(msg => (
-              <div key={msg.id} className="glass-panel" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.5rem' }}>
-                  <div>
-                    <strong style={{ fontSize: '1rem', color: 'var(--text-primary)' }}>
-                      {msg.author?.name || msg.author?.nickname || 'Unknown Author'}
-                    </strong>
-                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
-                      Channel: #{msg.channel_name} • Kind: <code>{msg.kind}</code> • {msg.flagged_at ? new Date(msg.flagged_at).toLocaleString() : ''}
-                    </div>
-                    {msg.suggested_character && (
-                      <div
-                        style={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: '0.4rem',
-                          background: 'rgba(16, 185, 129, 0.15)',
-                          border: '1px solid rgba(16, 185, 129, 0.4)',
-                          color: 'var(--success)',
-                          padding: '0.2rem 0.6rem',
-                          borderRadius: '6px',
-                          fontSize: '0.8rem',
-                          fontWeight: 600,
-                          marginTop: '0.35rem',
-                        }}
-                      >
-                        <span>Suggested: <strong>{msg.suggested_character.name}</strong> (#{msg.suggested_character.char_id})</span>
-                        {msg.suggested_character.writer_name && (
-                          <span style={{ opacity: 0.85, fontWeight: 400 }}>• Writer: {msg.suggested_character.writer_name}</span>
-                        )}
-                        <span style={{ opacity: 0.75, fontSize: '0.75rem' }}>[{msg.suggested_character.reason}]</span>
-                      </div>
-                    )}
-                  </div>
-
-                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                    {msg.discord_link && (
-                      <a
-                        href={msg.discord_link}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        style={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: '0.3rem',
-                          padding: '0.35rem 0.75rem',
-                          fontSize: '0.8rem',
-                          background: 'var(--bg-tertiary)',
-                          border: '1px solid var(--border-color)',
-                          color: 'var(--text-primary)',
-                          borderRadius: '6px',
-                          textDecoration: 'none',
-                        }}
-                      >
-                        <ExternalLink size={12} /> View in Discord
-                      </a>
-                    )}
-
-                    <button
-                      onClick={() => setPromotingMsg(msg)}
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '0.3rem',
-                        padding: '0.35rem 0.85rem',
-                        fontSize: '0.8rem',
-                        background: 'var(--accent-primary)',
-                        color: '#fff',
-                        border: 'none',
-                        borderRadius: '6px',
-                        cursor: 'pointer',
-                        fontWeight: 600,
-                      }}
-                    >
-                      <Check size={14} /> Promote to Override
-                    </button>
-                  </div>
-                </div>
-
-                <div
-                  style={{
-                    background: 'var(--bg-tertiary)',
-                    padding: '0.85rem 1rem',
-                    borderRadius: '6px',
-                    fontSize: '0.9rem',
-                    color: 'var(--text-primary)',
-                    whiteSpace: 'pre-wrap',
-                    lineHeight: 1.5,
-                    border: '1px solid var(--border-color)',
-                  }}
-                >
-                  {msg.content}
-                </div>
-              </div>
-            ))}
-          </div>
-        )
+      ) : data.messages.length === 0 ? (
+        <div
+          className="glass-panel"
+          style={{
+            padding: '3rem 2rem',
+            textAlign: 'center',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: '0.75rem',
+          }}
+        >
+          <CheckCircle size={36} color="var(--success)" />
+          <h3 style={{ margin: 0, color: 'var(--text-primary)' }}>No flagged messages found</h3>
+          <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.9rem', maxWidth: '420px' }}>
+            {statusFilter === 'unresolved'
+              ? 'All flagged messages in this backup have been resolved or dismissed.'
+              : 'No messages match the current status and filter criteria.'}
+          </p>
+        </div>
       ) : (
-        /* Overrides List */
-        overridesData.overrides.length === 0 ? (
-          <div className="glass-panel" style={{ textAlign: 'center', padding: '3rem' }}>
-            <MessageSquareCode size={36} style={{ color: 'var(--text-muted)', marginBottom: '0.5rem', opacity: 0.5 }} />
-            <h3 style={{ margin: '0 0 0.5rem 0', color: 'var(--text-primary)' }}>No active message overrides</h3>
-            <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Promoting a message from the flagged queue registers it here.</p>
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            {overridesData.overrides.map(ov => (
-              <MessageOverrideCard
-                key={ov.id}
-                override={ov}
-                isDeleting={deletingId === ov.message_id}
-                onDelete={handleDeleteOverride}
-              />
-            ))}
-          </div>
-        )
-      )}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+          {data.messages.map(msg => (
+            <FlaggedMessageCard
+              key={msg.id}
+              message={msg}
+              isResolving={resolvingId === msg.message_id}
+              isReopening={reopeningId === msg.message_id}
+              onPromote={m => setPromotingMsg(m)}
+              onResolve={handleResolve}
+              onReopen={handleReopen}
+            />
+          ))}
 
-      {/* Pagination Controls */}
-      {activeTotalPages > 1 && (
-        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '0.75rem', marginTop: '0.5rem' }}>
-          <button disabled={page <= 1} onClick={() => setPage(p => Math.max(1, p - 1))} style={pageBtn(page <= 1)}>
-            Previous
-          </button>
-          <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-            Page {page} of {activeTotalPages} ({activeTotalItems} items)
-          </span>
-          <button disabled={page >= activeTotalPages} onClick={() => setPage(p => p + 1)} style={pageBtn(page >= activeTotalPages)}>
-            Next
-          </button>
+          {/* Pagination Controls */}
+          {data.total_pages > 1 && (
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                padding: '0.75rem 0',
+                marginTop: '0.5rem',
+              }}
+            >
+              <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                Showing page {data.current_page} of {data.total_pages} ({data.total_items} items)
+              </span>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button
+                  style={pageBtn(data.current_page <= 1)}
+                  disabled={data.current_page <= 1}
+                  onClick={() => setPage(p => Math.max(1, p - 1))}
+                >
+                  Previous
+                </button>
+                <button
+                  style={pageBtn(data.current_page >= data.total_pages)}
+                  disabled={data.current_page >= data.total_pages}
+                  onClick={() => setPage(p => Math.min(data.total_pages, p + 1))}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      {/* Promote Modal */}
+      {/* Modals */}
       {promotingMsg && (
         <PromoteMessageModal
           backupId={backupId}
           message={promotingMsg}
           onClose={() => setPromotingMsg(null)}
-          onPromoted={fetchData}
+          onPromoted={fetchMessages}
+        />
+      )}
+
+      {isAddModalOpen && (
+        <AddFlaggedMessageModal
+          backupId={backupId}
+          onClose={() => setIsAddModalOpen(false)}
+          onSuccess={newMsg => {
+            fetchMessages();
+            // Automatically open promote modal if user wants to attribute immediately
+            setPromotingMsg(newMsg);
+          }}
         />
       )}
     </div>

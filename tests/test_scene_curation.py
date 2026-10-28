@@ -888,7 +888,7 @@ class TestSceneCurationOperations(unittest.TestCase):
         }
 
         metrics = populate_schema(mem_engine, extracted_v1, "test_v1", 1, target_schema_version=CURRENT_SCHEMA_VERSION)
-        self.assertEqual(get_db_schema_version(mem_engine), 2)
+        self.assertEqual(get_db_schema_version(mem_engine), CURRENT_SCHEMA_VERSION)
         self.assertEqual(metrics["scene_issues"], 2)
 
         # Check on mem_engine

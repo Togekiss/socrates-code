@@ -14,7 +14,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 
-CURRENT_SCHEMA_VERSION = 2  # See docs/database_design.md for full schema changelog
+CURRENT_SCHEMA_VERSION = 3  # See docs/database_design.md for full schema changelog
 
 
 class Scope(StrEnum):
@@ -59,6 +59,7 @@ class IssueReason(StrEnum):
     START_TAG_ROSTER_CHANGE = "start_tag_roster_change"
     START_TAG_SAME_ROSTER = "start_tag_same_roster"
     ROSTER_CHANGE = "roster_change"
+    MANUAL = "manual"
 
 
 class IssueResolution(StrEnum):
@@ -83,8 +84,17 @@ def is_action_performed(kind: str | IssueKind, resolution: Optional[str | IssueR
 
 
 class FlaggedKind(StrEnum):
-    NON_TUPPER = "non_tupper"
-    NON_TUPPER_END_TAG = "non_tupper_end_tag"
+    FAILED_TUPPER = "failed_tupper"
+    OOC_BOUNDARY = "ooc_boundary"
+    OOC_MESSAGE = "ooc_message"
+    MANUAL = "manual"
+
+
+class FlaggedResolution(StrEnum):
+    OVERRIDE = "override"
+    IGNORED = "ignored"
+    KEPT = "kept"
+
 
 
 class VersionType(StrEnum):
@@ -122,7 +132,6 @@ class BackupModel(Base):
     character_groups = relationship("CharacterGroupModel", back_populates="backup", cascade="all, delete-orphan")
     characters = relationship("CharacterModel", back_populates="backup", cascade="all, delete-orphan")
     scenes = relationship("SceneModel", back_populates="backup", cascade="all, delete-orphan")
-    message_overrides = relationship("MessageOverrideModel", back_populates="backup", cascade="all, delete-orphan")
     flagged_messages = relationship("FlaggedMessageModel", back_populates="backup", cascade="all, delete-orphan")
 
 
@@ -332,35 +341,25 @@ class SceneIssueModel(Base):
     next_scene = relationship("SceneModel", foreign_keys=[next_scene_pk])
 
 
-class MessageOverrideModel(Base):
-    __tablename__ = "message_overrides"
+class FlaggedMessageModel(Base):
+    __tablename__ = "flagged_messages"
     __table_args__ = (
-        UniqueConstraint("backup_id", "message_id", name="uq_backup_override_msg"),
+        UniqueConstraint("backup_id", "message_id", name="uq_backup_flagged_msg"),
     )
 
     pk = Column(Integer, primary_key=True, autoincrement=True)
     backup_id = Column(String(64), ForeignKey("backups.backup_id", ondelete="CASCADE"), nullable=False, index=True)
     message_id = Column(String(20), nullable=False)
     channel_pk = Column(Integer, ForeignKey("channels.pk", ondelete="SET NULL"), nullable=True, index=True)
-    content = Column(Text, nullable=False)
-    author = Column(JSON, nullable=False)
-    created_at = Column(DateTime(timezone=True), nullable=False)
-
-    backup = relationship("BackupModel", back_populates="message_overrides")
-    channel = relationship("ChannelModel")
-
-
-class FlaggedMessageModel(Base):
-    __tablename__ = "flagged_messages"
-
-    pk = Column(Integer, primary_key=True, autoincrement=True)
-    backup_id = Column(String(64), ForeignKey("backups.backup_id", ondelete="CASCADE"), nullable=False, index=True)
-    message_id = Column(String(20), nullable=False)
-    channel_pk = Column(Integer, ForeignKey("channels.pk", ondelete="SET NULL"), nullable=True, index=True)
-    kind = Column(String(32), nullable=False)  # "non_tupper", "non_tupper_end_tag"
+    kind = Column(String(32), nullable=False)
     content = Column(Text, nullable=False)
     author = Column(JSON, nullable=False)
     flagged_at = Column(DateTime(timezone=True), nullable=False)
+    resolution = Column(String(32), nullable=True, index=True)
+    override_content = Column(Text, nullable=True)
+    override_author = Column(JSON, nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    resolved_note = Column(Text, nullable=True)
 
     backup = relationship("BackupModel", back_populates="flagged_messages")
     channel = relationship("ChannelModel")

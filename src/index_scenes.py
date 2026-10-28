@@ -4,6 +4,7 @@ import time
 from typing import Dict, List, Optional, Tuple, Any, Set
 import utils.tricks as t
 import utils.exceptions as exc
+from fix_bad_messages import prepare_channel_messages, collect_channel_flagged_messages
 from find_character_scenes import (
     has_end_tag,
     has_start_tag,
@@ -451,8 +452,9 @@ def find_all_scenes_in_channel(
     # If it's a thread, it only has one scene.
     if ctype != "GuildTextChat":
 
-        # Get all text messages (no Discord status messages like pins, invites, etc.)
-        default_msgs = [(i, m) for i, m in enumerate(messages) if m.get("type") == "Default"]
+        # Get all text messages (no Discord status messages like only mentions, pins, invites, etc.)
+        # Might not be needed if fix_bad_messages already filtered messages like these out
+        default_msgs = [(i, m) for i, m in enumerate(messages) if m.get("type") == "Default" and not MENTION_ONLY_PAT.match(str(m.get("content", "") or "").strip())]
         if not default_msgs:
             return []
 
@@ -487,6 +489,8 @@ def find_all_scenes_in_channel(
 
     # Phase 1: Split channel into blocks based on explicit start/end tags
     raw_blocks = _segment_explicit_boundaries(messages, resolved_decisions=resolved_decisions)
+
+
     # Phase 2: Verify that each block only contains one scene, and split them if they don't
     total_scenes = []
 
@@ -500,6 +504,7 @@ def find_all_scenes_in_channel(
 
         # Save each valid sub-block as a scene
         for sub_idx, (sblk, s_status, split_info, sub_resolved_inside) in enumerate(sub_blocks):
+            
             # Find all the participants of the scene
             tupper_chars = set()
             non_tupper_chars = set()
@@ -578,15 +583,32 @@ def process_channel(
     channel: Channel | Thread,
     id_builder: str,
     resolved_decisions: Optional[dict] = None,
-) -> List[Dict[str, Any]]:
+    resolved_flags_map: Optional[dict] = None,
+    preserved_flagged_mids: Optional[set] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     file_path = (Path(c.DATA_FOLDER) / channel.path).as_posix()
     t.log("log", f"  Analysing {channel.name}...")
 
     # Load JSON channel from file
     json_data = t.load_from_json(file_path)
+    raw_messages = json_data.get("messages", [])
+
+    # Prepare messages in-memory with resolved overrides and exclusions
+    prepared_messages = prepare_channel_messages(raw_messages, resolved_flags_map or {})
+    channel_for_scenes = dict(json_data)
+    channel_for_scenes["messages"] = prepared_messages
 
     # Find scene starts and ends for all characters
-    scenes = find_all_scenes_in_channel(json_data, id_builder, resolved_decisions=resolved_decisions)
+    scenes = find_all_scenes_in_channel(channel_for_scenes, id_builder, resolved_decisions=resolved_decisions)
+
+    # Collect flagged messages for review
+    chan_discord_id = getattr(channel, "id", None) or json_data.get("channel", {}).get("id") or ""
+    flagged_items = collect_channel_flagged_messages(
+        raw_messages=raw_messages,
+        channel_id=str(chan_discord_id),
+        scenes=scenes,
+        preserved_msg_ids=preserved_flagged_mids or set(),
+    )
 
     if c.DEBUG_FILES:
         scenes_file = file_path.replace(".json", "_scenes.json")
@@ -598,28 +620,44 @@ def process_channel(
     # Update the model with the scene count
     channel.scenes = len(scenes)
 
-    return scenes
+    return scenes, flagged_items
 
 
 def find_scenes_in_category(
     category: Category,
     resolved_decisions: Optional[dict] = None,
-) -> List[Dict[str, Any]]:
+    resolved_flags_map: Optional[dict] = None,
+    preserved_flagged_mids: Optional[set] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     start_time = time.time()
 
-    # Create an empty list to store scene starts and ends
     all_scenes = []
+    all_flagged = []
 
     t.log("info", f"\n    ## Finding scenes in {category.name}... ##")
 
     for channel in category.channels:
-        scenes = process_channel(channel, f"{category.position}{channel.position}", resolved_decisions=resolved_decisions)
+        scenes, flagged = process_channel(
+            channel,
+            f"{category.position}{channel.position}",
+            resolved_decisions=resolved_decisions,
+            resolved_flags_map=resolved_flags_map,
+            preserved_flagged_mids=preserved_flagged_mids,
+        )
         all_scenes.extend(scenes)
+        all_flagged.extend(flagged)
         t.log("info", f"\t  Found {len(scenes)} scenes in '{scenes[0]['channel'] if len(scenes) > 0 else 'this channel'}', adding up to {len(all_scenes)} total scenes\n")
 
         for thread in channel.threads:
-            scenes = process_channel(thread, f"{category.position}{channel.position}{thread.position}", resolved_decisions=resolved_decisions)
+            scenes, flagged = process_channel(
+                thread,
+                f"{category.position}{channel.position}{thread.position}",
+                resolved_decisions=resolved_decisions,
+                resolved_flags_map=resolved_flags_map,
+                preserved_flagged_mids=preserved_flagged_mids,
+            )
             all_scenes.extend(scenes)
+            all_flagged.extend(flagged)
             t.log("info", f"\t  Found {len(scenes)} scenes in '{scenes[0]['channel'] if len(scenes) > 0 else 'this thread'}', adding up to {len(all_scenes)} total scenes\n")
 
     # sort the scenes by start time
@@ -638,7 +676,7 @@ def find_scenes_in_category(
 
     t.log("info", f"\n    ## Finished finding scenes in {category.name} --- {time.time() - start_time:.2f} seconds --- ##\n")
 
-    return all_scenes
+    return all_scenes, all_flagged
 
 ################ Main function #################
 
@@ -651,15 +689,26 @@ def index_scenes(backup_id: Optional[str] = None, backup_path: Optional[str] = N
     try:
         t.log("base", f"\n# Indexing all the scenes in {c.BACKUP_NAME}... #\n")
 
-        # Load existing resolved boundary decisions from SQLite so curation persists
+        # Load existing resolved boundary decisions and flags from SQLite so curation persists
         resolved_decisions = {}
+        resolved_flags_map = {}
+        preserved_flagged_mids = set()
+
         if has_sqlite_db(b_path):
-            from db.curation_service import get_resolved_boundary_decisions
+            from db.curation_service import (
+                get_resolved_boundary_decisions,
+                get_resolved_flags_map,
+                get_preserved_flagged_message_ids,
+                save_flagged_messages,
+            )
             resolved_decisions = get_resolved_boundary_decisions(b_id, b_path)
             if resolved_decisions:
                 t.log("info", f"  Loaded {len(resolved_decisions)} resolved curation decisions.\n")
+            resolved_flags_map = get_resolved_flags_map(b_id, b_path)
+            preserved_flagged_mids = get_preserved_flagged_message_ids(b_id, b_path)
 
         full_scenes = []
+        full_flagged = []
 
         for category in backup.categories:
             if c.DEBUG_FILES:
@@ -667,8 +716,14 @@ def index_scenes(backup_id: Optional[str] = None, backup_path: Optional[str] = N
                 if not scenes_dir.exists():
                     scenes_dir.mkdir(parents=True, exist_ok=True)
 
-            scenes = find_scenes_in_category(category, resolved_decisions=resolved_decisions)
+            scenes, flagged = find_scenes_in_category(
+                category,
+                resolved_decisions=resolved_decisions,
+                resolved_flags_map=resolved_flags_map,
+                preserved_flagged_mids=preserved_flagged_mids,
+            )
             full_scenes.extend(scenes)
+            full_flagged.extend(flagged)
             t.log("info", f"  Found {len(scenes)} scenes in {category.path}, adding up to {len(full_scenes)} total scenes\n")
 
         # sort the scenes by start time
@@ -685,6 +740,14 @@ def index_scenes(backup_id: Optional[str] = None, backup_path: Optional[str] = N
             scenes=full_scenes,
             debug_files=c.DEBUG_FILES,
         )
+
+        if has_sqlite_db(b_path):
+            save_flagged_messages(
+                backup_id=b_id,
+                base_path=b_path,
+                flagged_items=full_flagged,
+                debug_files=c.DEBUG_FILES,
+            )
 
         # Update the overall backup model and save to the status file
         backup.save()
