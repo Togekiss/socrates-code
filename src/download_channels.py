@@ -125,7 +125,7 @@ def download_full_category(cat_name, cat_id, date):
     try:
         folder = c.DATA_FOLDER if date is None else c.UPDATE_FOLDER
         date = "" if date is None else "--after " + date
-        group_size = 3 if cat_name in c.DM_CATEGORIES else 5
+        group_size = 4 # tested to be the best number to not run into rate limits. previously was (3 if cat_name in c.DM_CATEGORIES else 5)
 
         output_paths = f"-o \"{folder}/%P# %T/%p# %C.json\" --threads-output \"{folder}/%N# %M/Threads/%P-%p# %C.json\""
         
