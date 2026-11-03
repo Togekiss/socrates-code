@@ -38,6 +38,7 @@ from db.models import (
     Step,
     Status,
     SceneStatus,
+    SceneKind,
     IssueKind,
     IssueReason,
     FlaggedKind,
@@ -252,13 +253,28 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
 
     def test_schema_version_tracking(self):
         """Verifies that schema_version table correctly tracks CURRENT_SCHEMA_VERSION."""
+        self.assertEqual(CURRENT_SCHEMA_VERSION, 4)
         current_ver = get_db_schema_version(self.engine)
-        self.assertEqual(current_ver, CURRENT_SCHEMA_VERSION)
+        self.assertEqual(current_ver, 4)
 
         with self.Session() as session:
             record = session.query(SchemaVersionModel).filter_by(version=CURRENT_SCHEMA_VERSION).first()
             self.assertIsNotNone(record)
             self.assertIsNotNone(record.applied_at)
+
+    def test_scene_kind_and_participant_details_schema(self):
+        """Verifies SceneKind enum and columns on SceneModel and SceneParticipantModel."""
+        expected_kinds = {"scene", "session"}
+        actual_kinds = {k.value for k in SceneKind}
+        self.assertEqual(actual_kinds, expected_kinds)
+
+        inspector = inspect(self.engine)
+        scene_cols = {c["name"]: c for c in inspector.get_columns("scenes")}
+        self.assertIn("kind", scene_cols)
+
+        part_cols = {c["name"]: c for c in inspector.get_columns("scene_participants")}
+        for col_name in ("position", "first_message_id", "first_at", "last_message_id", "last_at"):
+            self.assertIn(col_name, part_cols)
 
     def test_schema_version_mismatch_raises_error(self):
         """Verifies that init_db raises DatabaseSchemaMismatchError when DB version < CURRENT_SCHEMA_VERSION."""

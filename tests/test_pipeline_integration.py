@@ -26,6 +26,9 @@ from db.models import (
     CharacterModel,
     SceneModel,
     SceneParticipantModel,
+    SceneIssueModel,
+    FlaggedMessageModel,
+    SceneKind,
     Step,
     Status,
 )
@@ -144,6 +147,16 @@ class TestPipelineIntegration(unittest.TestCase):
             backup = ServerBackup.load(scope="base")
             self.assertEqual(backup.steps[Step.FIX_MESSAGES], Status.SUCCESS)
 
+            # Chatroom channels in c.CHATROOM_CATEGORIES must be skipped by fix_bad_messages
+            with db_session(backup_id=self.backup_id, backup_path=self.backup_path) as session:
+                chatroom_chan = session.query(ChannelModel).filter(ChannelModel.discord_id == "858215486272962581").first()
+                if chatroom_chan:
+                    flagged_count = session.query(FlaggedMessageModel).filter(
+                        FlaggedMessageModel.backup_id == str(self.backup_id),
+                        FlaggedMessageModel.channel_pk == chatroom_chan.pk
+                    ).count()
+                    self.assertEqual(flagged_count, 0, "Chatroom channels must have 0 flagged messages")
+
         t.log("console", "fix_bad_messages executed successfully and updated SQLite step status.")
 
     def test_04_index_scenes_execution(self):
@@ -166,6 +179,43 @@ class TestPipelineIntegration(unittest.TestCase):
             with db_session(backup_id=self.backup_id, backup_path=self.backup_path) as session:
                 scenes_count = session.query(SceneModel).filter(SceneModel.backup_id == self.backup_id).count()
                 self.assertGreater(scenes_count, 0, "Indexed scenes must be stored in SQLite scenes table")
+
+                # Verify RP scenes and chatroom sessions
+                rp_scenes_count = session.query(SceneModel).filter(
+                    SceneModel.backup_id == self.backup_id,
+                    SceneModel.kind == SceneKind.SCENE.value
+                ).count()
+                self.assertEqual(rp_scenes_count, 13, "Should have 13 RP scenes")
+
+                session_scenes_count = session.query(SceneModel).filter(
+                    SceneModel.backup_id == self.backup_id,
+                    SceneModel.kind == SceneKind.SESSION.value
+                ).count()
+                self.assertEqual(session_scenes_count, 121, "Should have 121 chatroom sessions")
+
+                # Verify participant details on session scenes
+                session_participants = (
+                    session.query(SceneParticipantModel)
+                    .join(SceneModel, SceneParticipantModel.scene_pk == SceneModel.pk)
+                    .filter(SceneModel.backup_id == self.backup_id, SceneModel.kind == SceneKind.SESSION.value)
+                    .all()
+                )
+                self.assertGreater(len(session_participants), 0, "Chat sessions must have participants")
+                for p in session_participants[:20]:
+                    self.assertIsNotNone(p.first_message_id)
+                    self.assertIsNotNone(p.first_at)
+                    self.assertIsNotNone(p.last_message_id)
+                    self.assertIsNotNone(p.last_at)
+                    self.assertGreaterEqual(p.position, 0)
+
+                # Verify zero auto-detected issues for session scenes
+                session_issues = (
+                    session.query(SceneIssueModel)
+                    .join(SceneModel, SceneIssueModel.scene_pk == SceneModel.pk)
+                    .filter(SceneModel.backup_id == self.backup_id, SceneModel.kind == SceneKind.SESSION.value)
+                    .count()
+                )
+                self.assertEqual(session_issues, 0, "Chat sessions should not produce auto-detected scene issues")
 
                 participants_count = session.query(SceneParticipantModel).count()
                 self.assertGreater(participants_count, 0, "Scene participants must be stored in SQLite")
@@ -212,6 +262,8 @@ class TestPipelineIntegration(unittest.TestCase):
         def fake_run_command(command: str, show_lines: int = None):
             if "channels" in command:
                 mock_channels_output = (
+                    "1106268351220678767 \\ 7# Group Chats\n"
+                    "858215486272962581 | 1# GuildTextChat / chatroom\n"
                     "1019770957172326470 \\ 14# The Twisted Viper Bar\n"
                     "1013915163423932496 | 1# GuildTextChat / barside\n"
                     "1019771259896205382 | 2# GuildTextChat / back-of-bar\n"
@@ -274,9 +326,18 @@ class TestPipelineIntegration(unittest.TestCase):
             self.assertEqual(full_moon_thread.name, "Full Moon")
             self.assertEqual(full_moon_thread.type, "GuildPublicThread")
 
-            # Scenes must be indexed in SQLite
-            scene_count = session.query(SceneModel).filter(SceneModel.backup_id == str(self.backup_id)).count()
-            self.assertGreater(scene_count, 0, "Scenes must be indexed in SQLite")
+            # Scenes must be indexed in SQLite: 17 RP scenes (including Full Moon) and 54 chat sessions
+            rp_count = session.query(SceneModel).filter(
+                SceneModel.backup_id == str(self.backup_id),
+                SceneModel.kind == SceneKind.SCENE.value
+            ).count()
+            self.assertEqual(rp_count, 17, "RP scenes count must be 17 after Full Moon thread is added")
+
+            sessions_count = session.query(SceneModel).filter(
+                SceneModel.backup_id == str(self.backup_id),
+                SceneModel.kind == SceneKind.SESSION.value
+            ).count()
+            self.assertEqual(sessions_count, 121, "Chat sessions count must remain 121 after update")
 
         # 3. Verify Filesystem state
         data_dir = Path(ctx.data_folder)

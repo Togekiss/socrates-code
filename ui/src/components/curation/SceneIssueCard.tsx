@@ -156,11 +156,11 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
 
           <div style={{ marginTop: '0.35rem' }}>
             <h4 style={{ margin: 0, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', fontSize: '1rem' }}>
-              <span>Scene <code style={{ color: getKindBadgeColor(issue.kind) }}>{issue.scene_key}</code></span>
+              <span>{issue.scene_kind === 'session' ? 'Session' : 'Scene'} <code style={{ color: getKindBadgeColor(issue.kind) }}>{issue.scene_key}</code></span>
               {issue.next_scene_key && (
                 <>
                   <ArrowRight size={14} style={{ color: 'var(--text-muted)' }} />
-                  <span>Split into Scene <code style={{ color: getKindBadgeColor(issue.kind) }}>{issue.next_scene_key}</code></span>
+                  <span>Split into {issue.scene_kind === 'session' ? 'Session' : 'Scene'} <code style={{ color: getKindBadgeColor(issue.kind) }}>{issue.next_scene_key}</code></span>
                 </>
               )}
               <span style={{ color: 'var(--text-secondary)' }}>in #{issue.channel_name}</span>

@@ -1,5 +1,7 @@
 import re
 import unicodedata
+from typing import Any, Dict, List, Optional, Tuple
+import utils.tricks as t
 
 ################ File summary #################
 
@@ -142,3 +144,65 @@ def scene_info(start_message, end_message, scene_id, scene_index, channel, statu
         "start": start_message,
         "end": end_message,
     }
+
+
+def extract_participants_from_messages(
+    messages: List[Dict[str, Any]],
+    include_non_tuppers: bool = True
+) -> Tuple[List[int], List[Dict[str, Any]]]:
+    """
+    Extracts ordered characters and participant details from a chronological sequence of messages.
+    Returns:
+        (characters, participant_details)
+        characters: List[int] (tupper IDs in order of first appearance, followed by non-tupper IDs if include_non_tuppers)
+        participant_details: List[Dict[str, Any]] in apparition order:
+            [{
+                "char_id": int,
+                "position": int,  # 0-indexed apparition position
+                "first_message_id": str,
+                "first_at": str,
+                "last_message_id": str,
+                "last_at": str,
+            }]
+    """
+    tupper_order: List[int] = []
+    tupper_details: Dict[int, Dict[str, Any]] = {}
+    non_tupper_order: List[int] = []
+
+    for msg in messages:
+        aid = t.get_author_id(msg)
+        if aid is None:
+            continue
+        try:
+            aid_int = int(aid)
+        except (ValueError, TypeError):
+            continue
+
+        msg_id = str(msg.get("id", ""))
+        ts = msg.get("timestamp")
+
+        if t.is_tupper(aid_int):
+            if aid_int not in tupper_details:
+                pos = len(tupper_order)
+                tupper_order.append(aid_int)
+                tupper_details[aid_int] = {
+                    "char_id": aid_int,
+                    "position": pos,
+                    "first_message_id": msg_id,
+                    "first_at": ts,
+                    "last_message_id": msg_id,
+                    "last_at": ts,
+                }
+            else:
+                tupper_details[aid_int]["last_message_id"] = msg_id
+                tupper_details[aid_int]["last_at"] = ts
+        else:
+            if aid_int not in non_tupper_order:
+                non_tupper_order.append(aid_int)
+
+    characters = list(tupper_order)
+    if include_non_tuppers:
+        characters.extend(non_tupper_order)
+
+    participant_details = [tupper_details[cid] for cid in tupper_order]
+    return characters, participant_details

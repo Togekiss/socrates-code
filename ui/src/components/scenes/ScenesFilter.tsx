@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Filter, X } from 'lucide-react';
+import type { Character } from '../../types';
 
 /**
  * ScenesFilter.tsx
@@ -42,8 +43,8 @@ interface ScenesFilterProps {
   setAfter: (v: string) => void;
   byMe: boolean;
   setByMe: (v: boolean) => void;
-  
-  allCharacters: any[];
+  mode?: 'scenes' | 'sessions';
+  allCharacters: Character[];
 }
 
 export const ScenesFilter: React.FC<ScenesFilterProps> = ({
@@ -58,7 +59,8 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
   before, setBefore,
   after, setAfter,
   byMe, setByMe,
-  allCharacters
+  mode = 'scenes',
+  allCharacters,
 }) => {
   const [collapsed, setCollapsed] = useState(false);
   const [writerInput, setWriterInput] = useState('');
@@ -95,11 +97,11 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
 
   const getCharName = (id: number) => {
     const main = allCharacters.find(c => c.id === id);
-    if (main) return main.names?.[0];
+    if (main) return main.names?.[0] || main.name;
     for (const c of allCharacters) {
-      if (c.other_versions) {
-        const nested = c.other_versions.find((v: any) => v.id === id);
-        if (nested) return nested.names?.[0];
+      if (c.versions) {
+        const nested = c.versions.find(v => v.id === id);
+        if (nested) return nested.name;
       }
     }
     return `Unknown (${id})`;
@@ -146,9 +148,9 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
             >
               <option value="" disabled>Select character...</option>
               {allCharacters.flatMap(c => [
-                <option key={c.id} value={c.id}>{c.names?.[0]}</option>,
-                ...(c.other_versions || []).map((v: any) => (
-                  <option key={v.id} value={v.id}>  └ {v.names?.[0]} (Alt)</option>
+                <option key={c.id} value={c.id}>{c.names?.[0] || c.name}</option>,
+                ...(c.versions || []).map(v => (
+                  <option key={v.id} value={v.id}>  └ {v.name} ({v.version_type || 'Alt'})</option>
                 ))
               ])}
             </select>
@@ -259,11 +261,19 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
             )}
           </div>
 
-          {/* Categories */}
+          {/* Categories / Channels */}
           <div style={{ flex: '1 1 200px' }}>
-            <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Category (OR)</label>
+            <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>
+              {mode === 'sessions' ? 'Channel (OR)' : 'Category (OR)'}
+            </label>
             <form onSubmit={addCategoryFilter} style={{ display: 'flex', gap: '0.5rem' }}>
-              <input type="text" value={categoryInput} onChange={e => setCategoryInput(e.target.value)} placeholder="Add category..." style={{ flex: 1, background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'white', padding: '0.5rem', borderRadius: '4px' }} />
+              <input
+                type="text"
+                value={categoryInput}
+                onChange={e => setCategoryInput(e.target.value)}
+                placeholder={mode === 'sessions' ? 'Add channel...' : 'Add category...'}
+                style={{ flex: 1, background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'white', padding: '0.5rem', borderRadius: '4px' }}
+              />
             </form>
             {categoriesFilter.length > 0 && (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.5rem' }}>
@@ -285,12 +295,16 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
               ))}
             </div>
             
-            <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '1rem', marginBottom: '0.25rem' }}>Type (OR)</label>
-            <div style={{ display: 'flex', gap: '0.5rem' }}>
-              {['channel', 'thread', 'DM'].map(t => (
-                <button key={t} onClick={() => toggleArrayItem(typesFilter, setTypesFilter, t)} style={{ padding: '0.2rem 0.5rem', borderRadius: '4px', border: '1px solid var(--border-color)', background: typesFilter.includes(t) ? 'var(--accent-primary)' : 'var(--bg-tertiary)', color: typesFilter.includes(t) ? '#000' : 'white' }}>{t}</button>
-              ))}
-            </div>
+            {mode !== 'sessions' && (
+              <>
+                <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '1rem', marginBottom: '0.25rem' }}>Type (OR)</label>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  {['channel', 'thread', 'DM'].map(t => (
+                    <button key={t} onClick={() => toggleArrayItem(typesFilter, setTypesFilter, t)} style={{ padding: '0.2rem 0.5rem', borderRadius: '4px', border: '1px solid var(--border-color)', background: typesFilter.includes(t) ? 'var(--accent-primary)' : 'var(--bg-tertiary)', color: typesFilter.includes(t) ? '#000' : 'white' }}>{t}</button>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
 
           {/* Dates */}

@@ -10,13 +10,14 @@ from find_character_scenes import (
     has_start_tag,
     message_info,
     scene_info,
+    extract_participants_from_messages,
     MENTION_ONLY_PAT,
     END_TAG_SHORT_MSG_MAX_LEN,
     AUTO_SPLIT_MIN_TUPPERS,
     ROSTER_CHANGE_MIN_TUPPERS,
 )
 from models import ServerBackup, Category, Channel, Thread, SceneManager, Step
-from db.models import SceneStatus, IssueKind
+from db.models import SceneStatus, IssueKind, SceneKind
 from db.session import has_sqlite_db
 t.set_path()
 from res import constants as c
@@ -412,6 +413,8 @@ def _build_scene(
     issues: List[Dict[str, Any]],
     resolved_start: Optional[str] = None,
     resolved_inside: Optional[List[str]] = None,
+    participant_details: Optional[List[Dict[str, Any]]] = None,
+    kind: str = SceneKind.SCENE.value,
 ) -> Dict[str, Any]:
     start_idx = sblk[0]["index"]
     end_idx = sblk[-1]["index"]
@@ -427,6 +430,8 @@ def _build_scene(
         status=s_status,
         characters=characters,
     )
+    scene["kind"] = kind
+    scene["participant_details"] = participant_details or []
     scene["issues"] = issues
     scene["id_builder"] = id_builder
     if resolved_start:
@@ -459,21 +464,13 @@ def find_all_scenes_in_channel(
             return []
 
         # Find all the participants of the thread
-        tupper_ids = set()
-        non_tupper_ids = set()
-        for _, m in default_msgs:
-            aid = t.get_author_id(m)
-            if aid is not None:
-                if t.is_tupper(aid):
-                    tupper_ids.add(aid)
-                else:
-                    non_tupper_ids.add(aid)
+        thread_msgs = [m for _, m in default_msgs]
+        characters, participant_details = extract_participants_from_messages(thread_msgs, include_non_tuppers=True)
 
         # If there are no tuppers, it isn't a scene
-        if not tupper_ids:
+        if not participant_details:
             return []
 
-        characters = sorted(tupper_ids) + sorted(non_tupper_ids)
         first_idx, first_msg = default_msgs[0]
         last_idx, last_msg = default_msgs[-1]
         status = SceneStatus.CLOSED.value if has_end_tag(last_msg) else SceneStatus.OPEN.value
@@ -481,6 +478,8 @@ def find_all_scenes_in_channel(
         start_msg = message_info(first_msg, channel, first_idx)
         end_msg = message_info(last_msg, channel, last_idx)
         scene = scene_info(start_msg, end_msg, f"{id_builder}1", 1, channel, status, characters)
+        scene["kind"] = SceneKind.SCENE.value
+        scene["participant_details"] = participant_details
         scene["issues"] = []
         scene["id_builder"] = id_builder
         return [scene]
@@ -506,21 +505,13 @@ def find_all_scenes_in_channel(
         for sub_idx, (sblk, s_status, split_info, sub_resolved_inside) in enumerate(sub_blocks):
             
             # Find all the participants of the scene
-            tupper_chars = set()
-            non_tupper_chars = set()
-            for m in sblk:
-                aid = m["author_id"]
-                if t.is_tupper(aid):
-                    tupper_chars.add(aid)
-                elif aid is not None:
-                    non_tupper_chars.add(aid)
+            sblk_msgs = [messages[m_dict["index"]] for m_dict in sblk]
+            characters, participant_details = extract_participants_from_messages(sblk_msgs, include_non_tuppers=True)
 
             # If a block has no tuppers, ignore it
             # Should already be false since we filtered it before, but doesn't hurt
-            if not tupper_chars:
+            if not participant_details:
                 continue
-
-            characters = sorted(tupper_chars) + sorted(non_tupper_chars)
 
             # Check if a scene didn't close cleanly and save details of the problem
             issues = []
@@ -564,6 +555,8 @@ def find_all_scenes_in_channel(
                 issues=issues,
                 resolved_start=resolved_start,
                 resolved_inside=resolved_inside,
+                participant_details=participant_details,
+                kind=SceneKind.SCENE.value,
             )
             total_scenes.append(scene)
 
@@ -708,9 +701,21 @@ def index_scenes(backup_id: Optional[str] = None, backup_path: Optional[str] = N
             preserved_flagged_mids = get_preserved_flagged_message_ids(b_id, b_path)
 
         full_scenes = []
+        full_sessions = []
         full_flagged = []
 
         for category in backup.categories:
+            if category.name in c.CHATROOM_CATEGORIES:
+                from index_sessions import find_sessions_in_category
+                sessions = find_sessions_in_category(
+                    category=category,
+                    resolved_decisions=resolved_decisions,
+                    resolved_flags_map=resolved_flags_map,
+                )
+                full_sessions.extend(sessions)
+                t.log("info", f"  Found {len(sessions)} chat sessions in chatroom category {category.name}\n")
+                continue
+
             if c.DEBUG_FILES:
                 scenes_dir = Path(c.DATA_FOLDER) / category.path / "Scenes"
                 if not scenes_dir.exists():
@@ -737,7 +742,7 @@ def index_scenes(backup_id: Optional[str] = None, backup_path: Optional[str] = N
 
         # Delegate saving to SQLite via SceneManager
         SceneManager.get_instance(backup_id=b_id, base_path=b_path).save_scenes(
-            scenes=full_scenes,
+            scenes=full_scenes + full_sessions,
             debug_files=c.DEBUG_FILES,
         )
 

@@ -487,6 +487,7 @@ def get_scene_issues(
                 "reason": iss.reason,
                 "scene_pk": scene.pk if scene else None,
                 "scene_key": scene.scene_key if scene else "",
+                "scene_kind": scene.kind if scene else "scene",
                 "channel_name": chan_name,
                 "channel_discord_id": chan_id,
                 "next_scene_pk": iss.next_scene_pk,
@@ -524,13 +525,24 @@ def _extract_scene_participants(
     end_index: int,
     char_id_to_pk: Dict[int, int],
     resolved_flags_map: Optional[Dict[str, Any]] = None,
-) -> Set[int]:
+) -> List[Dict[str, Any]]:
     """
     Extracts Tupperbox character bot IDs from messages in range [start_index, end_index],
     filtering out non-tuppers, mention-only posts, and ignored messages.
-    Applies character overrides if present. Returns set of character primary keys.
+    Applies character overrides if present.
+    Returns ordered list of dicts:
+        [{
+            "character_pk": int,
+            "position": int,
+            "first_message_id": str,
+            "first_at": Optional[datetime],
+            "last_message_id": str,
+            "last_at": Optional[datetime],
+        }]
     """
-    char_pks = set()
+    ordered_cpks: List[int] = []
+    details_by_cpk: Dict[int, Dict[str, Any]] = {}
+
     for i in range(start_index, end_index + 1):
         if i < len(messages):
             m = messages[i]
@@ -541,6 +553,9 @@ def _extract_scene_participants(
                 continue
 
             mid = str(m.get("id", ""))
+            ts = t.parse_datetime(m.get("timestamp"))
+
+            target_cpk = None
             if resolved_flags_map and mid in resolved_flags_map:
                 flag = resolved_flags_map[mid]
                 res = flag.get("resolution") if isinstance(flag, dict) else getattr(flag, "resolution", None)
@@ -551,13 +566,30 @@ def _extract_scene_participants(
                     if isinstance(o_author, dict) and o_author.get("id"):
                         o_aid = str(o_author["id"]).strip()
                         if o_aid.isdigit() and t.is_tupper(int(o_aid)) and int(o_aid) in char_id_to_pk:
-                            char_pks.add(char_id_to_pk[int(o_aid)])
-                    continue
+                            target_cpk = char_id_to_pk[int(o_aid)]
 
-            aid = t.get_author_id(m)
-            if t.is_tupper(aid) and aid in char_id_to_pk:
-                char_pks.add(char_id_to_pk[aid])
-    return char_pks
+            if target_cpk is None:
+                aid = t.get_author_id(m)
+                if t.is_tupper(aid) and aid in char_id_to_pk:
+                    target_cpk = char_id_to_pk[aid]
+
+            if target_cpk is not None:
+                if target_cpk not in details_by_cpk:
+                    pos = len(ordered_cpks)
+                    ordered_cpks.append(target_cpk)
+                    details_by_cpk[target_cpk] = {
+                        "character_pk": target_cpk,
+                        "position": pos,
+                        "first_message_id": mid,
+                        "first_at": ts,
+                        "last_message_id": mid,
+                        "last_at": ts,
+                    }
+                else:
+                    details_by_cpk[target_cpk]["last_message_id"] = mid
+                    details_by_cpk[target_cpk]["last_at"] = ts
+
+    return [details_by_cpk[cpk] for cpk in ordered_cpks]
 
 
 def _merge_scenes(
@@ -609,11 +641,33 @@ def _merge_scenes(
     s1.status = s2.status
 
     # Combine participants
-    s1_char_pks = {p.character_pk for p in s1.participants}
+    s1_parts = {p.character_pk: p for p in s1.participants}
     for p2 in s2.participants:
-        if p2.character_pk not in s1_char_pks:
-            session.add(SceneParticipantModel(scene_pk=s1.pk, character_pk=p2.character_pk))
-            s1_char_pks.add(p2.character_pk)
+        if p2.character_pk in s1_parts:
+            p1 = s1_parts[p2.character_pk]
+            if p2.last_at or p2.last_message_id:
+                p1.last_message_id = p2.last_message_id
+                p1.last_at = p2.last_at
+        else:
+            new_p = SceneParticipantModel(
+                scene_pk=s1.pk,
+                character_pk=p2.character_pk,
+                position=len(s1_parts),
+                first_message_id=p2.first_message_id,
+                first_at=p2.first_at,
+                last_message_id=p2.last_message_id,
+                last_at=p2.last_at,
+            )
+            session.add(new_p)
+            s1_parts[p2.character_pk] = new_p
+
+    session.flush()
+
+    # Re-normalize positions ordered by first_at (or existing position if first_at is None)
+    all_merged_parts = session.query(SceneParticipantModel).filter_by(scene_pk=s1.pk).all()
+    all_merged_parts.sort(key=lambda p: (p.first_at or datetime.min.replace(tzinfo=timezone.utc), p.position or 0, p.character_pk))
+    for pos, p in enumerate(all_merged_parts):
+        p.position = pos
 
     # Re-link any other issues that were associated with s2 to s1
     session.query(SceneIssueModel).filter(
@@ -760,6 +814,7 @@ def _split_scene_at(
         scene_key="tmp-split-new",
         channel_pk=scene.channel_pk,
         category_pk=scene.category_pk,
+        kind=scene.kind,
         status=orig_status,
         start_message_id=str(cand_msg.get("id", "")),
         end_message_id=orig_end_msg_id,
@@ -779,17 +834,33 @@ def _split_scene_at(
     chars = session.query(CharacterModel).filter_by(backup_id=str(backup_id)).all()
     char_id_to_pk = {c.char_id: c.pk for c in chars}
 
-    part1_pks = _extract_scene_participants(messages, scene.start_index, prev_idx, char_id_to_pk, resolved_flags_map=resolved_flags)
-    part2_pks = _extract_scene_participants(messages, cand_idx, orig_end_index, char_id_to_pk, resolved_flags_map=resolved_flags)
+    part1_details = _extract_scene_participants(messages, scene.start_index, prev_idx, char_id_to_pk, resolved_flags_map=resolved_flags)
+    part2_details = _extract_scene_participants(messages, cand_idx, orig_end_index, char_id_to_pk, resolved_flags_map=resolved_flags)
 
     session.query(SceneParticipantModel).filter_by(scene_pk=scene.pk).delete()
     session.flush()
 
-    for cpk in part1_pks:
-        session.add(SceneParticipantModel(scene_pk=scene.pk, character_pk=cpk))
+    for p_info in part1_details:
+        session.add(SceneParticipantModel(
+            scene_pk=scene.pk,
+            character_pk=p_info["character_pk"],
+            position=p_info["position"],
+            first_message_id=p_info["first_message_id"],
+            first_at=p_info["first_at"],
+            last_message_id=p_info["last_message_id"],
+            last_at=p_info["last_at"],
+        ))
 
-    for cpk in part2_pks:
-        session.add(SceneParticipantModel(scene_pk=scene2.pk, character_pk=cpk))
+    for p_info in part2_details:
+        session.add(SceneParticipantModel(
+            scene_pk=scene2.pk,
+            character_pk=p_info["character_pk"],
+            position=p_info["position"],
+            first_message_id=p_info["first_message_id"],
+            first_at=p_info["first_at"],
+            last_message_id=p_info["last_message_id"],
+            last_at=p_info["last_at"],
+        ))
 
     # Renumber scenes in channel
     channel_scenes = (
@@ -1227,10 +1298,18 @@ def _recompute_scene_participants(session, backup_id: str, base_path: str, scene
     chars = session.query(CharacterModel).filter_by(backup_id=str(backup_id)).all()
     char_id_to_pk = {c.char_id: c.pk for c in chars}
 
-    part_pks = _extract_scene_participants(raw_messages, scene.start_index, scene.end_index, char_id_to_pk, resolved_flags_map=resolved_flags)
+    part_details = _extract_scene_participants(raw_messages, scene.start_index, scene.end_index, char_id_to_pk, resolved_flags_map=resolved_flags)
     session.query(SceneParticipantModel).filter_by(scene_pk=scene.pk).delete()
-    for cpk in part_pks:
-        session.add(SceneParticipantModel(scene_pk=scene.pk, character_pk=cpk))
+    for p_info in part_details:
+        session.add(SceneParticipantModel(
+            scene_pk=scene.pk,
+            character_pk=p_info["character_pk"],
+            position=p_info["position"],
+            first_message_id=p_info["first_message_id"],
+            first_at=p_info["first_at"],
+            last_message_id=p_info["last_message_id"],
+            last_at=p_info["last_at"],
+        ))
     session.flush()
 
 
@@ -1298,22 +1377,24 @@ def _sync_scene_after_message_resolution(
         for sc in start_scenes:
             sc.start_author_id = o_author_id
             sc.start_excerpt = start_excerpt
-            if o_author_id.isdigit() and t.is_tupper(int(o_author_id)):
-                char = session.query(CharacterModel).filter_by(backup_id=str(backup_id), char_id=int(o_author_id)).first()
-                if char:
-                    has_part = session.query(SceneParticipantModel).filter_by(scene_pk=sc.pk, character_pk=char.pk).first()
-                    if not has_part:
-                        session.add(SceneParticipantModel(scene_pk=sc.pk, character_pk=char.pk))
+            _recompute_scene_participants(session, backup_id, base_path, sc)
 
         for sc in end_scenes:
             sc.end_author_id = o_author_id
             sc.end_excerpt = end_excerpt
-            if o_author_id.isdigit() and t.is_tupper(int(o_author_id)):
-                char = session.query(CharacterModel).filter_by(backup_id=str(backup_id), char_id=int(o_author_id)).first()
-                if char:
-                    has_part = session.query(SceneParticipantModel).filter_by(scene_pk=sc.pk, character_pk=char.pk).first()
-                    if not has_part:
-                        session.add(SceneParticipantModel(scene_pk=sc.pk, character_pk=char.pk))
+            _recompute_scene_participants(session, backup_id, base_path, sc)
+
+        if not start_scenes and not end_scenes and flagged.channel_pk and raw_msgs:
+            msg_idx = next((i for i, m in enumerate(raw_msgs) if str(m.get("id")) == msg_id), None)
+            if msg_idx is not None:
+                mid_scenes = session.query(SceneModel).filter(
+                    SceneModel.backup_id == str(backup_id),
+                    SceneModel.channel_pk == flagged.channel_pk,
+                    SceneModel.start_index <= msg_idx,
+                    SceneModel.end_index >= msg_idx,
+                ).all()
+                for sc in mid_scenes:
+                    _recompute_scene_participants(session, backup_id, base_path, sc)
 
         for iss in candidate_issues:
             iss.candidate_excerpt = o_content[:250]
@@ -2193,55 +2274,69 @@ def get_my_writer(
     if not discord_user_id:
         return None
     require_sqlite_db(base_path)
-    init_db(engine_or_backup_id=backup_id, backup_path=base_path)
+    init_db(engine_or_backup_id=backup_id, backup_path=base_path, check_version=False)
 
-    with db_session(backup_id=backup_id, backup_path=base_path) as session:
-        writer = (
-            session.query(WriterModel)
-            .filter(
-                WriterModel.backup_id == str(backup_id),
-                WriterModel.discord_user_id == str(discord_user_id),
+    try:
+        with db_session(backup_id=backup_id, backup_path=base_path) as session:
+            writer = (
+                session.query(WriterModel)
+                .filter(
+                    WriterModel.backup_id == str(backup_id),
+                    WriterModel.discord_user_id == str(discord_user_id),
+                )
+                .first()
             )
-            .first()
-        )
-        if not writer:
-            return None
+            if not writer:
+                return None
 
-        char_ids = [c.char_id for c in writer.characters]
-        aliases = [a.alias for a in writer.aliases]
-        return {
-            "id": writer.pk,
-            "display_name": writer.display_name,
-            "discord_user_id": writer.discord_user_id,
-            "aliases": aliases,
-            "character_ids": char_ids,
-        }
+            char_ids = [c.char_id for c in writer.characters]
+            aliases = [a.alias for a in writer.aliases]
+            return {
+                "id": writer.pk,
+                "display_name": writer.display_name,
+                "discord_user_id": writer.discord_user_id,
+                "aliases": aliases,
+                "character_ids": char_ids,
+            }
+    except Exception as e:
+        t.log("debug", f"Failed to resolve current user writer: {e}")
+        return None
 
 
 def get_curation_summary(backup_id: str, base_path: str) -> Dict[str, int]:
     """Returns real-time badge counts for curation review queues and unassigned data."""
     require_sqlite_db(base_path)
-    init_db(engine_or_backup_id=backup_id, backup_path=base_path)
+    init_db(engine_or_backup_id=backup_id, backup_path=base_path, check_version=False)
     suggestions = get_writer_link_suggestions(backup_id, base_path)
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
-        return {
-            "unresolved_issues": session.query(func.count(SceneIssueModel.pk)).filter(
-                SceneIssueModel.backup_id == str(backup_id),
-                SceneIssueModel.resolved_at.is_(None)
-            ).scalar() or 0,
-            "unassigned_characters": session.query(func.count(CharacterModel.pk)).filter(
-                CharacterModel.backup_id == str(backup_id),
-                CharacterModel.writer_pk.is_(None)
-            ).scalar() or 0,
-            "flagged_messages": session.query(func.count(FlaggedMessageModel.pk)).filter(
-                FlaggedMessageModel.backup_id == str(backup_id),
-                FlaggedMessageModel.resolved_at.is_(None)
-            ).scalar() or 0,
-            "unlinked_writers": session.query(func.count(WriterModel.pk)).filter(
-                WriterModel.backup_id == str(backup_id),
-                WriterModel.discord_user_id.is_(None)
-            ).scalar() or 0,
-            "link_suggestions": len(suggestions),
-        }
+        try:
+            return {
+                "unresolved_issues": session.query(func.count(SceneIssueModel.pk)).filter(
+                    SceneIssueModel.backup_id == str(backup_id),
+                    SceneIssueModel.resolved_at.is_(None)
+                ).scalar() or 0,
+                "unassigned_characters": session.query(func.count(CharacterModel.pk)).filter(
+                    CharacterModel.backup_id == str(backup_id),
+                    CharacterModel.writer_pk.is_(None)
+                ).scalar() or 0,
+                "flagged_messages": session.query(func.count(FlaggedMessageModel.pk)).filter(
+                    FlaggedMessageModel.backup_id == str(backup_id),
+                    FlaggedMessageModel.resolved_at.is_(None)
+                ).scalar() or 0,
+                "unlinked_writers": session.query(func.count(WriterModel.pk)).filter(
+                    WriterModel.backup_id == str(backup_id),
+                    WriterModel.discord_user_id.is_(None)
+                ).scalar() or 0,
+                "link_suggestions": len(suggestions),
+            }
+        except Exception as e:
+            t.log("debug", f"Failed to compute curation summary for {backup_id}: {e}")
+            return {
+                "unresolved_issues": 0,
+                "unassigned_characters": 0,
+                "flagged_messages": 0,
+                "unlinked_writers": 0,
+                "link_suggestions": len(suggestions),
+            }
 
 

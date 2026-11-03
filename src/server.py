@@ -22,7 +22,7 @@ Main functionality:
 ###############################################
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Depends, Cookie, Response, Request, Body
-from fastapi.responses import StreamingResponse, FileResponse, RedirectResponse
+from fastapi.responses import StreamingResponse, FileResponse, RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, Any, List, Optional
@@ -137,6 +137,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(exc.DatabaseSchemaMismatchError)
+async def schema_mismatch_exception_handler(request: Request, e: exc.DatabaseSchemaMismatchError):
+    return JSONResponse(
+        status_code=400,
+        content={"detail": str(e), "error": "schema_mismatch"}
+    )
 
 
 def get_project_root():
@@ -398,34 +406,53 @@ def get_all_backup_paths(user = Depends(get_current_user)):
 @app.get("/api/backups/{backup_id}")
 def get_backup_info(backup_id: str):
     base_path = get_backup_path(backup_id)
+
+    from db.session import get_engine, get_db_schema_version, has_sqlite_db
+    from db.models import CURRENT_SCHEMA_VERSION
+
+    current_schema_version = CURRENT_SCHEMA_VERSION
+    schema_version = None
+    is_schema_outdated = False
+
+    if has_sqlite_db(base_path):
+        try:
+            engine = get_engine(backup_id=backup_id, backup_path=base_path)
+            schema_version = get_db_schema_version(engine)
+            is_schema_outdated = bool(schema_version < current_schema_version) if schema_version is not None else False
+        except Exception as e:
+            t.global_log("debug", f"API: Failed to check schema version for {backup_id}: {e}")
+
     try:
         data = status_service.load_backup_state(backup_id, base_path)
     except Exception as e:
-        raise HTTPException(status_code=404, detail=f"Failed to load backup state: {e}")
+        if is_schema_outdated:
+            t.global_log("debug", f"API: Failed to load backup state on outdated schema ({e}), using fallback info")
+            index = t.get_backups_index()
+            backup_meta = next((b for b in index if str(b.get("backup_id")) == str(backup_id)), {})
+            data = {
+                "id": backup_meta.get("server_id", backup_id),
+                "name": backup_meta.get("backup_name", backup_meta.get("server_name", f"Backup {backup_id}")),
+                "server_name": backup_meta.get("server_name", ""),
+                "status": "pending",
+                "steps": {},
+                "number_of_categories": 0,
+                "number_of_channels": 0,
+                "number_of_threads": 0,
+                "number_of_scenes": 0,
+                "number_of_sessions": 0,
+                "categories": [],
+            }
+        else:
+            raise HTTPException(status_code=404, detail=f"Failed to load backup state: {e}")
 
     try:
         data["number_of_characters"] = character_service.get_character_count(backup_id, base_path)
     except Exception:
         data["number_of_characters"] = 0
 
-    try:
-        from db.session import get_engine, get_db_schema_version, has_sqlite_db
-        from db.models import CURRENT_SCHEMA_VERSION
-
-        data["current_schema_version"] = CURRENT_SCHEMA_VERSION
-        if has_sqlite_db(base_path):
-            engine = get_engine(backup_id=backup_id, backup_path=base_path)
-            schema_ver = get_db_schema_version(engine)
-            data["schema_version"] = schema_ver
-            data["is_schema_outdated"] = bool(schema_ver < CURRENT_SCHEMA_VERSION) if schema_ver is not None else False
-        else:
-            data["schema_version"] = None
-            data["is_schema_outdated"] = False
-    except Exception as e:
-        t.global_log("debug", f"API: Failed to check schema version for {backup_id}: {e}")
-        data["schema_version"] = None
-        data.setdefault("current_schema_version", 2)
-        data["is_schema_outdated"] = False
+    data["current_schema_version"] = current_schema_version
+    data["schema_version"] = schema_version
+    data["is_schema_outdated"] = is_schema_outdated
 
     return data
 
@@ -744,6 +771,7 @@ def get_scenes(
     backup_id: str,
     page: int = Query(1),
     per_page: int = Query(50),
+    channels: Optional[List[str]] = Query(None),
     categories: Optional[List[str]] = Query(None),
     statuses: Optional[List[str]] = Query(None),
     types: Optional[List[str]] = Query(None),
@@ -751,6 +779,9 @@ def get_scenes(
     character_logic: str = Query('OR'),
     writers: Optional[List[str]] = Query(None),
     writer_logic: str = Query('OR'),
+    include_alter_egos: bool = Query(True),
+    include_familiars: bool = Query(True),
+    include_npcs: bool = Query(True),
     before: Optional[str] = Query(None),
     after: Optional[str] = Query(None),
     by_me: bool = Query(False),
@@ -759,6 +790,7 @@ def get_scenes(
     base_path = get_backup_path(backup_id)
     if not isinstance(page, int): page = 1
     if not isinstance(per_page, int): per_page = 50
+    if not isinstance(channels, (list, tuple, set)): channels = None
     if not isinstance(categories, (list, tuple, set)): categories = None
     if not isinstance(statuses, (list, tuple, set)): statuses = None
     if not isinstance(types, (list, tuple, set)): types = None
@@ -766,6 +798,9 @@ def get_scenes(
     if not isinstance(character_logic, str): character_logic = 'OR'
     if not isinstance(writers, (list, tuple, set)): writers = None
     if not isinstance(writer_logic, str): writer_logic = 'OR'
+    if not isinstance(include_alter_egos, bool): include_alter_egos = True
+    if not isinstance(include_familiars, bool): include_familiars = True
+    if not isinstance(include_npcs, bool): include_npcs = True
     if not isinstance(before, str): before = None
     if not isinstance(after, str): after = None
 
@@ -797,6 +832,8 @@ def get_scenes(
     return manager.get_paginated_scenes(
         page=page,
         per_page=per_page,
+        kind="scene",
+        channels=channels,
         categories=categories,
         statuses=statuses,
         types=types,
@@ -804,6 +841,88 @@ def get_scenes(
         character_logic=character_logic,
         writer_names=writers,
         writer_logic=writer_logic,
+        include_alter_egos=include_alter_egos,
+        include_familiars=include_familiars,
+        include_npcs=include_npcs,
+        before=before,
+        after=after
+    )
+
+
+@app.get("/api/backups/{backup_id}/sessions")
+def get_sessions(
+    backup_id: str,
+    page: int = Query(1),
+    per_page: int = Query(50),
+    channels: Optional[List[str]] = Query(None),
+    statuses: Optional[List[str]] = Query(None),
+    characters: Optional[List[int]] = Query(None),
+    character_logic: str = Query('OR'),
+    writers: Optional[List[str]] = Query(None),
+    writer_logic: str = Query('OR'),
+    include_alter_egos: bool = Query(True),
+    include_familiars: bool = Query(True),
+    include_npcs: bool = Query(True),
+    before: Optional[str] = Query(None),
+    after: Optional[str] = Query(None),
+    by_me: bool = Query(False),
+    request: Request = None
+):
+    base_path = get_backup_path(backup_id)
+    if not isinstance(page, int): page = 1
+    if not isinstance(per_page, int): per_page = 50
+    if not isinstance(channels, (list, tuple, set)): channels = None
+    if not isinstance(statuses, (list, tuple, set)): statuses = None
+    if not isinstance(characters, (list, tuple, set)): characters = None
+    if not isinstance(character_logic, str): character_logic = 'OR'
+    if not isinstance(writers, (list, tuple, set)): writers = None
+    if not isinstance(writer_logic, str): writer_logic = 'OR'
+    if not isinstance(include_alter_egos, bool): include_alter_egos = True
+    if not isinstance(include_familiars, bool): include_familiars = True
+    if not isinstance(include_npcs, bool): include_npcs = True
+    if not isinstance(before, str): before = None
+    if not isinstance(after, str): after = None
+
+    if by_me and request:
+        user = get_optional_user(request)
+        if user and user.get("sub"):
+            writer_info = curation_service.get_my_writer(backup_id, base_path, str(user["sub"]))
+            if writer_info:
+                writers = [writer_info["display_name"]]
+            else:
+                return {
+                    "total_items": 0,
+                    "current_page": 1,
+                    "per_page": per_page,
+                    "total_pages": 0,
+                    "sessions": [],
+                    "scenes": []
+                }
+        else:
+            return {
+                "total_items": 0,
+                "current_page": 1,
+                "per_page": per_page,
+                "total_pages": 0,
+                "sessions": [],
+                "scenes": []
+            }
+
+    from models import SceneManager
+    manager = SceneManager.get_instance(backup_id, base_path)
+    return manager.get_paginated_scenes(
+        page=page,
+        per_page=per_page,
+        kind="session",
+        channels=channels,
+        statuses=statuses,
+        character_ids=characters,
+        character_logic=character_logic,
+        writer_names=writers,
+        writer_logic=writer_logic,
+        include_alter_egos=include_alter_egos,
+        include_familiars=include_familiars,
+        include_npcs=include_npcs,
         before=before,
         after=after
     )

@@ -5,6 +5,7 @@ import {
   UserCheck,
   Users,
   Film,
+  MessageSquare,
   AlertTriangle,
   MessageSquareCode,
   Settings,
@@ -22,6 +23,7 @@ export type TabType =
   | 'writers'
   | 'characters'
   | 'scenes'
+  | 'chat_sessions'
   | 'scene_issues'
   | 'flagged_messages'
   | 'admin'
@@ -97,6 +99,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       title: 'Scenes & Messages',
       items: [
         { id: 'scenes', label: 'Scenes', icon: Film },
+        { id: 'chat_sessions', label: 'Chat Sessions', icon: MessageSquare },
         {
           id: 'scene_issues',
           label: 'Scene Issues',

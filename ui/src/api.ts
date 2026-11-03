@@ -25,6 +25,7 @@ import type {
   MyWriter,
   SceneIssuesResponse,
   ScenesResponse,
+  SessionsResponse,
   UnassignedCharacter,
   Writer,
   WriterDetailed,
@@ -213,6 +214,10 @@ export const api = {
   // --- Scenes ---
   getScenes: (backupId: string, queryParams: URLSearchParams = new URLSearchParams()): Promise<ScenesResponse> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/scenes?${queryParams.toString()}`).then(res => res.json()),
+
+  // --- Chat Sessions ---
+  getSessions: (backupId: string, queryParams: URLSearchParams = new URLSearchParams()): Promise<SessionsResponse> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/sessions?${queryParams.toString()}`).then(res => res.json()),
 
   // --- Writers & User Linking ---
   getWriters: (backupId: string): Promise<Writer[]> =>

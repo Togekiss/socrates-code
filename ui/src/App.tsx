@@ -8,6 +8,7 @@ import { RunTab } from './components/RunTab';
 import { WritersTab } from './components/WritersTab';
 import { CharactersTab } from './components/CharactersTab';
 import { ScenesTab } from './components/ScenesTab';
+import { ChatSessionsTab } from './components/ChatSessionsTab';
 import { SceneIssuesTab } from './components/SceneIssuesTab';
 import { FlaggedMessagesTab } from './components/FlaggedMessagesTab';
 import { AdminTab } from './components/AdminTab';
@@ -361,7 +362,7 @@ function Dashboard() {
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', color: 'var(--text-primary)' }}>
               <AlertTriangle size={24} style={{ color: 'var(--danger)', flexShrink: 0 }} />
               <div>
-                <strong>Database schema is outdated:</strong> Backup database is schema v{backupInfo.schema_version ?? 0}, but the application requires v{backupInfo.current_schema_version ?? 2}. Please upgrade the database.
+                <strong>Database schema is outdated:</strong> Backup database is schema v{backupInfo.schema_version ?? 0}, but the application requires v{backupInfo.current_schema_version ?? 4}. Please upgrade the database.
               </div>
             </div>
             <button
@@ -410,6 +411,9 @@ function Dashboard() {
               backupId={selectedBackupId}
               setTab={t => setActiveTab(t)}
               curationSummary={curationSummary}
+              backupInfo={backupInfo}
+              onUpgrade={handleUpgradeDatabase}
+              isUpgrading={isUpgrading}
             />
           )}
 
@@ -429,6 +433,14 @@ function Dashboard() {
 
           {activeTab === 'scenes' && selectedBackupId && (
             <ScenesTab
+              backupId={selectedBackupId}
+              myWriter={myWriter}
+              onNavigateToWriters={() => setActiveTab('writers')}
+            />
+          )}
+
+          {activeTab === 'chat_sessions' && selectedBackupId && (
+            <ChatSessionsTab
               backupId={selectedBackupId}
               myWriter={myWriter}
               onNavigateToWriters={() => setActiveTab('writers')}

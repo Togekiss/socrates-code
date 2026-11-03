@@ -89,7 +89,7 @@ export const AiDisclosure = () => {
           <div>
             The core logic of this tool like scene detection and fix suggestions are clever{' '}
             <span style={{ color: 'var(--text-primary)' }}>pattern recognition formulas</span>.{' '}
-            Cold hard math I wrote by hand back when LLMs were dumber than my cat (he's very dumb)
+            Cold hard math I wrote by hand back when LLMs were dumber than my cat (and he's very dumb)
           </div>
         </div>
       )}

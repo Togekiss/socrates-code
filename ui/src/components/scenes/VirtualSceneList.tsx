@@ -1,26 +1,29 @@
 import React, { useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { SceneCard } from './SceneCard';
+import { SessionCard } from './SessionCard';
+import type { Character, ChatSession, Scene } from '../../types';
 
 interface VirtualSceneListProps {
-  scenes: any[];
-  allCharacters: any[];
+  scenes: (Scene | ChatSession)[];
+  allCharacters: Character[];
   charactersFilter: number[];
   setCharactersFilter: (filter: number[]) => void;
   loadMore: () => void;
   hasMore: boolean;
   loading: boolean;
+  mode?: 'scenes' | 'sessions';
 }
 
 export const VirtualSceneList: React.FC<VirtualSceneListProps> = ({ 
-  scenes, allCharacters, charactersFilter, setCharactersFilter, loadMore, hasMore, loading 
+  scenes, allCharacters, charactersFilter, setCharactersFilter, loadMore, hasMore, loading, mode = 'scenes'
 }) => {
   const parentRef = useRef<HTMLDivElement>(null);
 
   const virtualizer = useVirtualizer({
     count: hasMore ? scenes.length + 1 : scenes.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 120, // Estimated height of a SceneCard
+    estimateSize: () => (mode === 'sessions' ? 140 : 120),
     overscan: 10,
   });
 
@@ -37,7 +40,7 @@ export const VirtualSceneList: React.FC<VirtualSceneListProps> = ({
   if (scenes.length === 0 && !loading) {
     return (
       <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-secondary)' }}>
-        No scenes match the current filters.
+        {mode === 'sessions' ? 'No chat sessions match the current filters.' : 'No scenes match the current filters.'}
       </div>
     );
   }
@@ -62,7 +65,7 @@ export const VirtualSceneList: React.FC<VirtualSceneListProps> = ({
       >
         {virtualizer.getVirtualItems().map((virtualRow) => {
           const isLoaderRow = virtualRow.index > scenes.length - 1;
-          const scene = scenes[virtualRow.index];
+          const item = scenes[virtualRow.index];
 
           return (
             <div
@@ -80,11 +83,18 @@ export const VirtualSceneList: React.FC<VirtualSceneListProps> = ({
             >
               {isLoaderRow ? (
                 <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
-                  Loading more scenes...
+                  {mode === 'sessions' ? 'Loading more chat sessions...' : 'Loading more scenes...'}
                 </div>
+              ) : mode === 'sessions' ? (
+                <SessionCard
+                  session={item as ChatSession}
+                  allCharacters={allCharacters}
+                  charactersFilter={charactersFilter}
+                  setCharactersFilter={setCharactersFilter}
+                />
               ) : (
                 <SceneCard 
-                  scene={scene} 
+                  scene={item} 
                   allCharacters={allCharacters}
                   charactersFilter={charactersFilter}
                   setCharactersFilter={setCharactersFilter}

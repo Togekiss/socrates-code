@@ -5,6 +5,9 @@
         "dmCategories": [
             "Text and Calls"
         ],
+        "chatroomCategories": [
+            "Group Chats"
+        ],
         "categoriesToIgnore": [
             "Staff Only",
             "Welcome!",
@@ -12,7 +15,6 @@
             "RP Information",
             "RP Section",
             "EVENT",
-            "Group Chats",
             "Social Media",
             "NSFW Room",
             "NSFW Events",
@@ -20,7 +22,8 @@
             "->WAITING ROOM<-"
         ],
         "categoriesToKeep": [
-            "The Twisted Viper Bar"
+            "The Twisted Viper Bar",
+            "Group Chats"
         ],
         "keepMode": true,
         "verbosity": {

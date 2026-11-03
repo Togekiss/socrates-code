@@ -63,7 +63,17 @@ def reset_test_backup() -> bool:
         dest_root = target / rel_root
         dest_root.mkdir(parents=True, exist_ok=True)
         for f in files:
-            shutil.copy2(Path(root) / f, dest_root / f)
+            src_f = Path(root) / f
+            dst_f = dest_root / f
+            try:
+                shutil.copy2(src_f, dst_f)
+            except OSError:
+                import time
+                time.sleep(0.05)
+                try:
+                    shutil.copy2(src_f, dst_f)
+                except OSError:
+                    pass
 
     # 3. Remove Update/ folder
     update_dir = target / "Update"

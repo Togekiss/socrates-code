@@ -1000,6 +1000,109 @@ class TestNewSceneIndexingAndSuggestions(unittest.TestCase):
                 session.query(SceneIssueModel).filter_by(pk=iss_pk).delete()
                 session.commit()
 
+    def test_manual_session_split_and_reopen_lifecycle(self):
+        """Tests splitting a chat session manually via Discord link, verifying participant recomputation, and reopening."""
+        from server import create_manual_scene_split, reopen_scene_issue, ManualSplitRequest
+        from assign_ids import assign_ids
+        from index_scenes import index_scenes
+        from models.backup_context import BackupContext
+        from db.models import BackupModel, ChannelModel, SceneModel, SceneParticipantModel, SceneIssueModel, SceneKind
+
+        backup_path = t.get_backup_path("1791895360")
+        ctx = BackupContext.create(backup_id="1791895360", backup_path=backup_path)
+        with BackupContext.activate(context=ctx):
+            assign_ids()
+            index_scenes()
+        SceneManager.clear_cache("1791895360")
+        close_all_engines()
+
+        with db_session(backup_id="1791895360", backup_path=backup_path) as session:
+            b = session.query(BackupModel).filter_by(backup_id="1791895360").first()
+            server_id = str(b.server_id)
+            chatroom_chan = session.query(ChannelModel).filter(ChannelModel.discord_id == "858215486272962581").first()
+            self.assertIsNotNone(chatroom_chan)
+
+            # Find a session with more than 10 messages
+            session_to_split = (
+                session.query(SceneModel)
+                .filter(
+                    SceneModel.backup_id == "1791895360",
+                    SceneModel.channel_pk == chatroom_chan.pk,
+                    SceneModel.kind == SceneKind.SESSION.value,
+                    (SceneModel.end_index - SceneModel.start_index) > 10,
+                )
+                .first()
+            )
+            self.assertIsNotNone(session_to_split)
+            target_scene_pk = session_to_split.pk
+            orig_start_idx = session_to_split.start_index
+            orig_end_idx = session_to_split.end_index
+            orig_start_mid = session_to_split.start_message_id
+            orig_end_mid = session_to_split.end_message_id
+
+        # Read chatroom data to get a message ID in the middle
+        chatroom_file = Path(backup_path) / "Data" / "7# Group Chats" / "1# chatroom.json"
+        chatroom_data = t.load_from_json(chatroom_file.as_posix())
+        raw_msgs = chatroom_data.get("messages", [])
+        mid_idx = (orig_start_idx + orig_end_idx) // 2
+        split_msg = raw_msgs[mid_idx]
+        split_mid = str(split_msg["id"])
+
+        link = f"https://discord.com/channels/{server_id}/858215486272962581/{split_mid}"
+
+        try:
+            # 1. Create manual split
+            res_split = create_manual_scene_split("1791895360", ManualSplitRequest(discord_link=link, note="Manual chat session split"))
+            self.assertEqual(res_split["action"], "split")
+            self.assertEqual(res_split["status"], "success")
+            issue_id = res_split["issue_id"]
+
+            with db_session(backup_id="1791895360", backup_path=backup_path) as session:
+                s1 = session.query(SceneModel).filter_by(pk=res_split["scene_pk"]).first()
+                s2 = session.query(SceneModel).filter_by(pk=res_split["next_scene_pk"]).first()
+
+                self.assertIsNotNone(s1)
+                self.assertIsNotNone(s2)
+                # Verify kind propagated
+                self.assertEqual(s1.kind, SceneKind.SESSION.value)
+                self.assertEqual(s2.kind, SceneKind.SESSION.value)
+                self.assertEqual(s1.start_index, orig_start_idx)
+                self.assertEqual(s1.end_index, mid_idx - 1)
+                self.assertEqual(s2.start_index, mid_idx)
+                self.assertEqual(s2.end_index, orig_end_idx)
+                self.assertEqual(s2.start_message_id, split_mid)
+
+                # Verify participants recomputed for both sessions
+                p1 = session.query(SceneParticipantModel).filter_by(scene_pk=s1.pk).all()
+                p2 = session.query(SceneParticipantModel).filter_by(scene_pk=s2.pk).all()
+                self.assertGreater(len(p1), 0)
+                self.assertGreater(len(p2), 0)
+                for p in p1 + p2:
+                    self.assertIsNotNone(p.first_message_id)
+                    self.assertIsNotNone(p.first_at)
+                    self.assertIsNotNone(p.last_message_id)
+                    self.assertIsNotNone(p.last_at)
+
+            # 2. Reopen the issue (undo split)
+            res_reopen = reopen_scene_issue("1791895360", issue_id)
+            self.assertEqual(res_reopen["status"], "success")
+
+            with db_session(backup_id="1791895360", backup_path=backup_path) as session:
+                restored = session.query(SceneModel).filter_by(pk=target_scene_pk).first()
+                self.assertIsNotNone(restored)
+                self.assertEqual(restored.kind, SceneKind.SESSION.value)
+                self.assertEqual(restored.start_index, orig_start_idx)
+                self.assertEqual(restored.end_index, orig_end_idx)
+                self.assertEqual(restored.start_message_id, orig_start_mid)
+                self.assertEqual(restored.end_message_id, orig_end_mid)
+
+        finally:
+            # Clean up test DB
+            SceneManager.clear_cache("1791895360")
+            close_all_engines()
+            reset_test_backup()
+            migrate_for_tests("1791895360")
+
 
 if __name__ == "__main__":
     unittest.main()

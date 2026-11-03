@@ -105,6 +105,16 @@ class Category:
             self.build_indexes()
         return self._channel_by_thread.get(thread_id) if self.has_thread(thread_id) else None
 
+    def get_all_paths(self) -> list[str]:
+        paths = []
+        for channel in self.channels:
+            if channel.path:
+                paths.append(channel.path)
+            for thread in channel.threads:
+                if thread.path:
+                    paths.append(thread.path)
+        return paths
+
     def get_thread_and_parent_channel(self, thread_id: str) -> tuple[Thread | None, Channel | None]:
         thread = self.get_thread_by_id(thread_id)
         channel = self.get_channel_of_thread(thread_id)

@@ -57,6 +57,8 @@ class SceneManager:
 
     def filter_scenes(
         self,
+        kind: str = "scene",
+        channels: Optional[List[str]] = None,
         categories: Optional[List[str]] = None,
         statuses: Optional[List[str]] = None,
         status: str = "all",
@@ -78,6 +80,8 @@ class SceneManager:
         return scene_service.query_scenes(
             backup_id=self.backup_id,
             base_path=self.base_path,
+            kind=kind,
+            channels=channels,
             categories=categories,
             statuses=statuses,
             status=status,
@@ -100,6 +104,8 @@ class SceneManager:
         self,
         page: int = 1,
         per_page: int = 50,
+        kind: str = "scene",
+        channels: Optional[List[str]] = None,
         **kwargs
     ) -> Dict[str, Any]:
         """Delegates paginated scene queries directly to SQLite via scene_service."""
@@ -109,5 +115,7 @@ class SceneManager:
             base_path=self.base_path,
             page=page,
             per_page=per_page,
+            kind=kind,
+            channels=channels,
             **kwargs
         )

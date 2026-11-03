@@ -18,6 +18,7 @@ from db.models import (
     ExportModel,
     Scope,
     SceneStatus,
+    SceneKind,
     IssueKind,
 )
 from find_character_scenes import EXCERPT_MAX_LEN
@@ -40,12 +41,20 @@ def save_indexed_scenes(
     require_sqlite_db(base_path)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path)
 
+    target_kinds = {s.get("kind", SceneKind.SCENE.value) for s in scenes} or {SceneKind.SCENE.value}
+
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
         # 1. Delete unresolved issues and capture surviving resolved issues across re-indexing runs
+        target_scene_pks_subquery = session.query(SceneModel.pk).filter(
+            SceneModel.backup_id == str(backup_id),
+            SceneModel.kind.in_(target_kinds)
+        )
+
         session.query(SceneIssueModel).filter(
             SceneIssueModel.backup_id == str(backup_id),
             SceneIssueModel.resolved_at.is_(None),
-        ).delete()
+            SceneIssueModel.scene_pk.in_(target_scene_pks_subquery),
+        ).delete(synchronize_session=False)
         session.flush()
 
         existing_resolved = (
@@ -65,17 +74,20 @@ def save_indexed_scenes(
         session.query(SceneIssueModel).filter(
             SceneIssueModel.backup_id == str(backup_id),
             SceneIssueModel.resolved_at.isnot(None),
+            SceneIssueModel.scene_pk.in_(target_scene_pks_subquery),
         ).update({"scene_pk": None, "next_scene_pk": None}, synchronize_session="fetch")
         session.flush()
 
-        # 2. Delete existing scene participants for this backup explicitly
-        old_scene_pks = session.query(SceneModel.pk).filter(SceneModel.backup_id == str(backup_id))
+        # 2. Delete existing scene participants for target_kinds explicitly
         session.query(SceneParticipantModel).filter(
-            SceneParticipantModel.scene_pk.in_(old_scene_pks)
+            SceneParticipantModel.scene_pk.in_(target_scene_pks_subquery)
         ).delete(synchronize_session=False)
 
-        # Delete existing scenes for this backup
-        session.query(SceneModel).filter(SceneModel.backup_id == str(backup_id)).delete()
+        # Delete existing scenes for target_kinds
+        session.query(SceneModel).filter(
+            SceneModel.backup_id == str(backup_id),
+            SceneModel.kind.in_(target_kinds)
+        ).delete(synchronize_session=False)
         session.flush()
 
         # 3. Cache channels and characters for fast lookups
@@ -152,6 +164,7 @@ def save_indexed_scenes(
                     scene_key=scene_key,
                     channel_pk=chan_model.pk,
                     category_pk=category_pk,
+                    kind=s.get("kind", SceneKind.SCENE.value),
                     status=lifecycle_status,
                     start_message_id=start_msg_id,
                     end_message_id=end_msg_id,
@@ -174,20 +187,39 @@ def save_indexed_scenes(
             for idx, (scene_model, s) in enumerate(created_scenes):
                 # Add participants (deduplicating to prevent unique constraint collisions)
                 seen_char_pks = set()
-                for participant_id in s.get("characters", []):
-                    try:
-                        p_int = int(participant_id)
-                    except (ValueError, TypeError):
-                        continue
+                p_details = s.get("participant_details")
+                if p_details:
+                    for p_info in p_details:
+                        cid = p_info.get("char_id")
+                        if cid in char_id_to_pk:
+                            char_pk = char_id_to_pk[cid]
+                            if char_pk not in seen_char_pks:
+                                seen_char_pks.add(char_pk)
+                                session.add(SceneParticipantModel(
+                                    scene_pk=scene_model.pk,
+                                    character_pk=char_pk,
+                                    position=int(p_info.get("position", 0)),
+                                    first_message_id=str(p_info.get("first_message_id")) if p_info.get("first_message_id") else None,
+                                    first_at=_parse_dt(p_info.get("first_at")),
+                                    last_message_id=str(p_info.get("last_message_id")) if p_info.get("last_message_id") else None,
+                                    last_at=_parse_dt(p_info.get("last_at")),
+                                ))
+                else:
+                    for pos, participant_id in enumerate(s.get("characters", [])):
+                        try:
+                            p_int = int(participant_id)
+                        except (ValueError, TypeError):
+                            continue
 
-                    if p_int in char_id_to_pk:
-                        char_pk = char_id_to_pk[p_int]
-                        if char_pk not in seen_char_pks:
-                            seen_char_pks.add(char_pk)
-                            session.add(SceneParticipantModel(
-                                scene_pk=scene_model.pk,
-                                character_pk=char_pk
-                            ))
+                        if p_int in char_id_to_pk:
+                            char_pk = char_id_to_pk[p_int]
+                            if char_pk not in seen_char_pks:
+                                seen_char_pks.add(char_pk)
+                                session.add(SceneParticipantModel(
+                                    scene_pk=scene_model.pk,
+                                    character_pk=char_pk,
+                                    position=pos,
+                                ))
 
                 # Identify next scene in channel if this scene was auto-split
                 next_scene_model = created_scenes[idx + 1][0] if idx + 1 < len(created_scenes) else None
@@ -272,6 +304,8 @@ def save_indexed_scenes(
 def query_scenes(
     backup_id: str,
     base_path: str,
+    kind: str = "scene",
+    channels: Optional[List[str]] = None,
     categories: Optional[List[str]] = None,
     statuses: Optional[List[str]] = None,
     status: str = "all",
@@ -291,7 +325,7 @@ def query_scenes(
     **kwargs
 ) -> Any:
     """
-    Queries scenes from SQLite.
+    Queries scenes or sessions from SQLite.
     Supports both unpaginated filtering (when page is None) and paginated responses (when page is int).
     """
     require_sqlite_db(base_path)
@@ -301,6 +335,15 @@ def query_scenes(
         server_id = backup.server_id if backup and backup.server_id else ""
 
         query = session.query(SceneModel).filter(SceneModel.backup_id == str(backup_id))
+
+        # Filter by kind (unless 'all')
+        if kind and kind != "all":
+            query = query.filter(SceneModel.kind == kind)
+
+        # Filter by channels
+        if channels and isinstance(channels, (list, tuple, set)):
+            chan_subquery = session.query(ChannelModel.pk).filter(ChannelModel.name.in_(channels))
+            query = query.filter(SceneModel.channel_pk.in_(chan_subquery))
 
         # Filter by status
         if statuses and isinstance(statuses, (list, tuple, set)):
@@ -452,19 +495,40 @@ def query_scenes(
             start_link = f"https://discord.com/channels/{server_id}/{chan_discord_id}/{s.start_message_id}" if server_id and chan_discord_id and s.start_message_id else ""
             end_link = f"https://discord.com/channels/{server_id}/{chan_discord_id}/{s.end_message_id}" if server_id and chan_discord_id and s.end_message_id else ""
 
-            participants = [p.character.char_id for p in s.participants if p.character]
+            sorted_participants = sorted(
+                s.participants,
+                key=lambda p: (p.position if p.position is not None else 0, p.character_pk)
+            )
+            characters = [p.character.char_id for p in sorted_participants if p.character]
+            participant_details = [
+                {
+                    "char_id": p.character.char_id,
+                    "name": p.character.names[0].name if p.character.names else f"Character #{p.character.char_id}",
+                    "position": p.position if p.position is not None else 0,
+                    "first_message_id": p.first_message_id,
+                    "first_timestamp": p.first_at.isoformat() if p.first_at else None,
+                    "first_link": f"https://discord.com/channels/{server_id}/{chan_discord_id}/{p.first_message_id}" if server_id and chan_discord_id and p.first_message_id else "",
+                    "last_message_id": p.last_message_id,
+                    "last_timestamp": p.last_at.isoformat() if p.last_at else None,
+                    "last_link": f"https://discord.com/channels/{server_id}/{chan_discord_id}/{p.last_message_id}" if server_id and chan_discord_id and p.last_message_id else "",
+                }
+                for p in sorted_participants
+                if p.character
+            ]
 
             formatted_scenes.append({
                 "id": s.scene_key,
                 "index": (offset + idx + 1) if page is not None else (idx + 1),
                 "scene_key": s.scene_key,
+                "kind": s.kind,
                 "channelId": chan_discord_id,
                 "channel": chan_name,
                 "category": cat_name,
                 "type": chan_type,
                 "thread_name": thread_name,
                 "status": s.status,
-                "characters": participants,
+                "characters": characters,
+                "participants": participant_details,
                 "issues": [
                     {
                         "id": iss.pk,
@@ -498,12 +562,15 @@ def query_scenes(
             })
 
         if page is not None:
-            return {
+            res_dict = {
                 "total_items": total_items,
                 "current_page": page,
                 "per_page": per_page,
                 "total_pages": total_pages,
                 "scenes": formatted_scenes,
             }
+            if kind == "session":
+                res_dict["sessions"] = formatted_scenes
+            return res_dict
 
         return formatted_scenes

@@ -27,9 +27,12 @@ from models import SceneManager
 # pyrefly: ignore [missing-import]
 from server import (
     get_backup_info,
+    get_curation_summary,
+    get_my_writer,
     rerun_backup_step,
     get_characters,
     get_scenes,
+    get_sessions,
     get_writers,
     get_groups,
     create_group,
@@ -233,6 +236,83 @@ class TestScenesEndpoint(unittest.TestCase):
         self.assertIsInstance(filtered, dict)
         self.assertGreater(filtered["total_items"], 0)
         self.assertLessEqual(filtered["total_items"], 12)
+
+
+class TestSessionsEndpoint(unittest.TestCase):
+    """Tests chat session querying, filtering, and pagination from SQLite."""
+
+    @classmethod
+    def setUpClass(cls):
+        reset_test_backup()
+        migrate_for_tests("1791895360")
+        SceneManager.clear_cache()
+        close_all_engines()
+
+        # Ensure chat sessions are indexed in Elysium-sql-tests
+        from assign_ids import assign_ids
+        from index_scenes import index_scenes
+        from models.backup_context import BackupContext
+        ctx = BackupContext.create(backup_id="1791895360")
+        with BackupContext.activate(context=ctx):
+            assign_ids()
+            index_scenes()
+        SceneManager.clear_cache()
+        close_all_engines()
+
+    @classmethod
+    def tearDownClass(cls):
+        SceneManager.clear_cache()
+        close_all_engines()
+        reset_test_backup()
+
+    def test_get_sessions_pagination_and_structure(self):
+        sessions_res = get_sessions("1791895360", page=1, per_page=10)
+        self.assertIsInstance(sessions_res, dict)
+        self.assertEqual(sessions_res["total_items"], 121)
+        self.assertEqual(sessions_res["current_page"], 1)
+        self.assertEqual(sessions_res["per_page"], 10)
+        self.assertEqual(sessions_res["total_pages"], 13)
+        self.assertEqual(len(sessions_res["sessions"]), 10)
+
+        first_session = sessions_res["sessions"][0]
+        for key in ("category", "channel", "status", "start", "end", "characters", "participants"):
+            self.assertIn(key, first_session)
+        self.assertEqual(first_session["channel"], "chatroom")
+
+        participants = first_session["participants"]
+        self.assertGreater(len(participants), 0)
+        p0 = participants[0]
+        self.assertEqual(p0["position"], 0)
+        self.assertIn("name", p0)
+        self.assertIn("first_message_id", p0)
+        self.assertIn("first_timestamp", p0)
+        self.assertIn("first_link", p0)
+        self.assertIn("last_message_id", p0)
+        self.assertIn("last_timestamp", p0)
+        self.assertIn("last_link", p0)
+
+    def test_get_sessions_channel_filter(self):
+        res = get_sessions("1791895360", channels=["chatroom"])
+        self.assertEqual(res["total_items"], 121)
+
+        res_empty = get_sessions("1791895360", channels=["nonexistent"])
+        self.assertEqual(res_empty["total_items"], 0)
+        self.assertEqual(len(res_empty["sessions"]), 0)
+
+    def test_get_sessions_character_filter(self):
+        res = get_sessions("1791895360", per_page=5)
+        self.assertGreater(len(res["sessions"]), 0)
+        char_id = res["sessions"][0]["characters"][0]
+
+        filtered = get_sessions("1791895360", characters=[char_id])
+        self.assertGreater(filtered["total_items"], 0)
+        self.assertLessEqual(filtered["total_items"], 121)
+        for s in filtered["sessions"]:
+            self.assertIn(char_id, s["characters"])
+
+    def test_backup_info_number_of_sessions(self):
+        info = get_backup_info("1791895360")
+        self.assertEqual(info.get("number_of_sessions"), 121)
 
 
 class TestCharacterAndGroupMutations(unittest.TestCase):
@@ -460,3 +540,26 @@ class TestBackupConfigEndpoints(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestOutdatedSchemaEndpoint(unittest.TestCase):
+    """Tests loading backup info and curation summary on a database with an outdated schema."""
+
+    def test_outdated_schema_v3_loads_successfully(self):
+        info = get_backup_info("1")
+        self.assertIsInstance(info, dict)
+        self.assertTrue(info.get("is_schema_outdated"))
+        self.assertEqual(info.get("schema_version"), 3)
+        self.assertEqual(info.get("current_schema_version"), 4)
+        self.assertGreater(info.get("number_of_scenes", 0), 0)
+
+    def test_outdated_schema_curation_summary_does_not_fail(self):
+        summary = get_curation_summary("1")
+        self.assertIsInstance(summary, dict)
+        self.assertIn("unresolved_issues", summary)
+        self.assertIn("unassigned_characters", summary)
+        self.assertIn("flagged_messages", summary)
+        self.assertIn("unlinked_writers", summary)
+
+    def test_outdated_schema_my_writer_does_not_fail(self):
+        writer = get_my_writer("1", user={"sub": "nonexistent_discord_id"})
+        self.assertIsNone(writer)

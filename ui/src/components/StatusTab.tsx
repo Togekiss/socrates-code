@@ -13,6 +13,7 @@ import {
   UserCheck,
   MessageSquareCode,
   ExternalLink,
+  Loader2,
 } from 'lucide-react';
 import type { BackupInfo, CurationSummary } from '../types';
 import type { TabType } from './Sidebar';
@@ -22,23 +23,41 @@ interface StatusTabProps {
   backupId: string | null;
   setTab: (tab: TabType) => void;
   curationSummary?: CurationSummary | null;
+  backupInfo?: BackupInfo | null;
+  onUpgrade?: () => void;
+  isUpgrading?: boolean;
 }
 
-export const StatusTab = ({ backupId, setTab, curationSummary: parentSummary }: StatusTabProps) => {
-  const [info, setInfo] = useState<BackupInfo | null>(null);
+export const StatusTab = ({
+  backupId,
+  setTab,
+  curationSummary: parentSummary,
+  backupInfo: parentInfo,
+  onUpgrade,
+  isUpgrading,
+}: StatusTabProps) => {
+  const [info, setInfo] = useState<BackupInfo | null>(parentInfo || null);
   const [summary, setSummary] = useState<CurationSummary | null>(parentSummary || null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!backupId) return;
     setError(null);
-    setInfo(null);
+    if (!parentInfo) {
+      setInfo(null);
+    }
 
     Promise.all([
       api.getBackupInfo(backupId).then(setInfo),
       api.getCurationSummary(backupId).then(setSummary).catch(() => null),
     ]).catch(err => setError(err.message));
   }, [backupId]);
+
+  useEffect(() => {
+    if (parentInfo) {
+      setInfo(parentInfo);
+    }
+  }, [parentInfo]);
 
   useEffect(() => {
     if (parentSummary) {
@@ -147,6 +166,30 @@ export const StatusTab = ({ backupId, setTab, curationSummary: parentSummary }: 
                     : `Schema v${info.schema_version}`}
                 </span>
               </div>
+            )}
+            {info.is_schema_outdated && onUpgrade && (
+              <button
+                onClick={onUpgrade}
+                disabled={isUpgrading}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.4rem',
+                  background: 'var(--danger)',
+                  color: '#fff',
+                  border: 'none',
+                  padding: '0.4rem 0.8rem',
+                  borderRadius: '20px',
+                  fontWeight: 600,
+                  fontSize: '0.85rem',
+                  cursor: isUpgrading ? 'not-allowed' : 'pointer',
+                  opacity: isUpgrading ? 0.7 : 1,
+                  transition: 'opacity 0.2s ease',
+                }}
+              >
+                {isUpgrading && <Loader2 size={14} className="animate-spin" />}
+                {isUpgrading ? 'Upgrading...' : 'Upgrade Database'}
+              </button>
             )}
             <div
               style={{

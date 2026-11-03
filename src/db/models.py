@@ -14,7 +14,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 
-CURRENT_SCHEMA_VERSION = 3  # See docs/database_design.md for full schema changelog
+CURRENT_SCHEMA_VERSION = 4  # See docs/database_design.md for full schema changelog
 
 
 class Scope(StrEnum):
@@ -47,6 +47,11 @@ class SceneStatus(StrEnum):
     OPEN = "open"
     CLOSED = "closed"
     NO_END_TAG = "no_end_tag"
+
+
+class SceneKind(StrEnum):
+    SCENE = "scene"
+    SESSION = "session"
 
 
 class IssueKind(StrEnum):
@@ -289,6 +294,7 @@ class SceneModel(Base):
     scene_key = Column(String(32), nullable=False)
     channel_pk = Column(Integer, ForeignKey("channels.pk", ondelete="CASCADE"), nullable=False, index=True)
     category_pk = Column(Integer, ForeignKey("channels.pk", ondelete="CASCADE"), nullable=False, index=True)
+    kind = Column(String(16), nullable=False, default=SceneKind.SCENE.value, index=True)
     status = Column(String(32), nullable=False, index=True)  # "open", "closed", "no_end_tag"
     start_message_id = Column(String(20), nullable=False)
     end_message_id = Column(String(20), nullable=False)
@@ -313,6 +319,11 @@ class SceneParticipantModel(Base):
 
     scene_pk = Column(Integer, ForeignKey("scenes.pk", ondelete="CASCADE"), primary_key=True)
     character_pk = Column(Integer, ForeignKey("characters.pk", ondelete="CASCADE"), primary_key=True, index=True)
+    position = Column(Integer, default=0, nullable=False)
+    first_message_id = Column(String(20), nullable=True)
+    first_at = Column(DateTime(timezone=True), nullable=True)
+    last_message_id = Column(String(20), nullable=True)
+    last_at = Column(DateTime(timezone=True), nullable=True)
 
     scene = relationship("SceneModel", back_populates="participants")
     character = relationship("CharacterModel", back_populates="scene_participations")

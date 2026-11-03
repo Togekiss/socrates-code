@@ -347,6 +347,7 @@ def populate_schema(
                 scene_key=str(s["scene_key"]),
                 channel_pk=new_chan_pk,
                 category_pk=new_cat_pk,
+                kind=str(s.get("kind") or "scene"),
                 status=str(s["status"]),
                 start_message_id=str(s["start_message_id"]),
                 end_message_id=str(s["end_message_id"]),
@@ -374,6 +375,11 @@ def populate_schema(
                 session.add(SceneParticipantModel(
                     scene_pk=new_s_pk,
                     character_pk=new_c_pk,
+                    position=int(p.get("position", 0)),
+                    first_message_id=str(p["first_message_id"]) if p.get("first_message_id") else None,
+                    first_at=parse_datetime(p.get("first_at")),
+                    last_message_id=str(p["last_message_id"]) if p.get("last_message_id") else None,
+                    last_at=parse_datetime(p.get("last_at")),
                 ))
                 metrics["scene_participants"] += 1
         session.flush()

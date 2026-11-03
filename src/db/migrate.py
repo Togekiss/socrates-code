@@ -48,6 +48,7 @@ from db.models import (
     SchemaVersionModel,
     CURRENT_SCHEMA_VERSION,
     Scope,
+    SceneKind,
     IssueKind,
     FlaggedKind,
     FlaggedResolution,
@@ -387,6 +388,13 @@ def migrate_single_backup(
     scenes_file = resolve_source_file("_scenes.json", Path(backup_path) / "Data")
     scenes_data = t.load_from_json(scenes_file.as_posix()) if scenes_file.exists() else []
 
+    # Load sessions if present
+    sessions_file = resolve_source_file("_sessions.json", Path(backup_path) / "Data")
+    if sessions_file.exists():
+        for sess in t.load_from_json(sessions_file.as_posix()):
+            sess.setdefault("kind", SceneKind.SESSION.value)
+            scenes_data.append(sess)
+
     # Load overrides and bad messages
     fixed_msg_file = resolve_source_file("fixed_messages.json", info_dir)
     fixed_messages = t.load_from_json(fixed_msg_file.as_posix()) if fixed_msg_file.exists() else {}
@@ -708,6 +716,7 @@ def migrate_single_backup(
                     scene_key=scene_key,
                     channel_pk=chan_model.pk,
                     category_pk=category_pk,
+                    kind=s.get("kind", SceneKind.SCENE.value),
                     status=lifecycle_status,
                     start_message_id=str(s["start"].get("id", "")),
                     end_message_id=str(s["end"].get("id", "")),
@@ -725,7 +734,7 @@ def migrate_single_backup(
                 report_metrics["scenes_count"] += 1
 
                 # Participants
-                for participant_id in s.get("characters", []):
+                for pos, participant_id in enumerate(s.get("characters", [])):
                     try:
                         p_int = int(participant_id)
                     except (ValueError, TypeError):
@@ -734,6 +743,7 @@ def migrate_single_backup(
                         session.add(SceneParticipantModel(
                             scene_pk=scene_model.pk,
                             character_pk=char_id_to_pk[p_int],
+                            position=pos,
                         ))
 
                 # Issues

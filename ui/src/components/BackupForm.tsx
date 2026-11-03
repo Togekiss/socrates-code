@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { api } from '../api';
-import { ChevronDown, ChevronRight, X, Loader2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react';
+import { BackupCategorySelector } from './BackupCategorySelector';
+import { BackupFormModal } from './BackupFormModal';
 import type { BackupConfig, GlobalConfig } from '../types';
 
 export const BackupForm = ({ 
@@ -135,6 +137,7 @@ export const BackupForm = ({
 
   const isKeepMode = admin.keepMode || false;
   const categoriesList = isKeepMode ? (admin.categoriesToKeep || []) : (admin.categoriesToIgnore || []);
+  const chatroomCategoriesList = admin.chatroomCategories || [];
 
   const addCategory = (value: string) => {
     if (value.trim()) {
@@ -157,6 +160,38 @@ export const BackupForm = ({
       admin: {
         ...admin,
         [isKeepMode ? 'categoriesToKeep' : 'categoriesToIgnore']: list
+      }
+    });
+  };
+
+  const addChatroomCategory = (value: string) => {
+    const val = value.trim();
+    if (val) {
+      if (chatroomCategoriesList.includes(val)) return;
+      const newChatList = [...chatroomCategoriesList, val];
+      const newIgnore = (admin.categoriesToIgnore || []).filter((c: string) => c !== val);
+      const newKeep = isKeepMode && !(admin.categoriesToKeep || []).includes(val)
+        ? [...(admin.categoriesToKeep || []), val]
+        : (admin.categoriesToKeep || []);
+      setConfig({
+        ...config,
+        admin: {
+          ...admin,
+          chatroomCategories: newChatList,
+          categoriesToIgnore: newIgnore,
+          categoriesToKeep: newKeep,
+        }
+      });
+    }
+  };
+
+  const removeChatroomCategory = (cat: string) => {
+    const newChatList = chatroomCategoriesList.filter((c: string) => c !== cat);
+    setConfig({
+      ...config,
+      admin: {
+        ...admin,
+        chatroomCategories: newChatList
       }
     });
   };
@@ -234,68 +269,20 @@ export const BackupForm = ({
         )}
       </div>
 
-      <div>
-        <label style={{ display: 'block', marginBottom: '0.5rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Categories Filter Mode</label>
-        <div style={{ display: 'flex', gap: '1rem', marginBottom: '0.5rem' }}>
-          <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-            <input 
-              type="radio" 
-              name={`catMode_${backupId}`}
-              checked={!isKeepMode} 
-              onChange={() => toggleKeepMode(false)}
-            />
-            Ignore categories
-          </label>
-          <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-            <input 
-              type="radio" 
-              name={`catMode_${backupId}`}
-              checked={isKeepMode} 
-              onChange={() => toggleKeepMode(true)}
-            />
-            Keep only categories
-          </label>
-        </div>
-
-        <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
-          {loadingCategories ? (
-            <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Loading categories...</div>
-          ) : categoriesError ? (
-            <div style={{ color: 'var(--danger)', fontSize: '0.85rem' }}>{categoriesError}</div>
-          ) : serverCategories && serverCategories.length > 0 ? (
-            <select 
-              onChange={e => {
-                if (e.target.value) {
-                  addCategory(e.target.value);
-                  e.target.value = '';
-                }
-              }}
-              defaultValue=""
-              style={{ flex: 1, padding: '0.5rem', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'white', borderRadius: '4px' }}
-            >
-              <option value="" disabled>-- Select a category to add --</option>
-              {serverCategories.map(cat => (
-                <option key={cat.id} value={cat.name} disabled={categoriesList.includes(cat.name)}>
-                  {cat.name} {categoriesList.includes(cat.name) ? '(Added)' : ''}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>No categories found</div>
-          )}
-        </div>
-
-        {categoriesList.length > 0 && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.5rem' }}>
-            {categoriesList.map((cat: string) => (
-              <span key={cat} style={{ background: 'var(--bg-tertiary)', padding: '0.25rem 0.5rem', borderRadius: '4px', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.4rem', border: '1px solid var(--border-color)' }}>
-                {cat}
-                <X size={14} style={{ cursor: 'pointer' }} onClick={() => removeCategory(cat)} />
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
+      <BackupCategorySelector
+        backupId={backupId}
+        isKeepMode={isKeepMode}
+        toggleKeepMode={toggleKeepMode}
+        categoriesList={categoriesList}
+        addCategory={addCategory}
+        removeCategory={removeCategory}
+        chatroomCategoriesList={chatroomCategoriesList}
+        addChatroomCategory={addChatroomCategory}
+        removeChatroomCategory={removeChatroomCategory}
+        serverCategories={serverCategories}
+        loadingCategories={loadingCategories}
+        categoriesError={categoriesError}
+      />
 
       <div>
         <button 
@@ -355,128 +342,17 @@ export const BackupForm = ({
 
   if (isModal) {
     return (
-      <div 
-        style={{ 
-          position: 'fixed', 
-          top: 0, 
-          left: 0, 
-          right: 0, 
-          bottom: 0, 
-          background: 'rgba(0, 0, 0, 0.75)', 
-          zIndex: 1000, 
-          display: 'flex', 
-          alignItems: 'center', 
-          justifyContent: 'center',
-          padding: '1rem',
-          backdropFilter: 'blur(4px)',
-        }}
-        onClick={(e) => {
-          if (e.target === e.currentTarget && !isSaving) {
-            onCancel();
-          }
-        }}
+      <BackupFormModal
+        backupId={backupId}
+        admin={admin}
+        isSaving={isSaving}
+        saveError={saveError}
+        onCancel={onCancel}
+        handleSaveOnly={handleSaveOnly}
+        handleSaveAndRun={handleSaveAndRun}
       >
-        <div style={{ 
-          background: 'var(--bg-primary)', 
-          width: '720px', 
-          maxWidth: '95vw', 
-          maxHeight: '90vh', 
-          borderRadius: '12px', 
-          border: '1px solid var(--border-color)', 
-          display: 'flex', 
-          flexDirection: 'column',
-          boxShadow: '0 8px 32px rgba(0, 0, 0, 0.6)'
-        }}>
-          {/* Modal Header */}
-          <div style={{ 
-            padding: '1rem 1.5rem', 
-            borderBottom: '1px solid var(--border-color)', 
-            display: 'flex', 
-            justifyContent: 'space-between', 
-            alignItems: 'center',
-            background: 'var(--bg-secondary)',
-            borderRadius: '12px 12px 0 0'
-          }}>
-            <h3 style={{ margin: 0, fontSize: '1.15rem', color: 'var(--text-primary)' }}>
-              Configure Backup: {admin.backupName || admin.serverName || backupId} <span style={{ fontSize: '0.8em', color: 'var(--text-secondary)', fontWeight: 'normal' }}>({admin.serverId})</span>
-            </h3>
-            <button 
-              onClick={onCancel} 
-              disabled={isSaving}
-              style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', padding: 0 }}
-            >
-              <X size={20} />
-            </button>
-          </div>
-
-          {/* Modal Body */}
-          <div style={{ padding: '1.5rem', overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-            {saveError && (
-              <div style={{ background: 'rgba(239, 68, 68, 0.15)', border: '1px solid var(--danger)', color: 'var(--danger)', padding: '0.75rem', borderRadius: '4px', fontSize: '0.85rem' }}>
-                {saveError}
-              </div>
-            )}
-            {formFields}
-          </div>
-
-          {/* Modal Footer */}
-          <div style={{ 
-            padding: '1rem 1.5rem', 
-            borderTop: '1px solid var(--border-color)', 
-            display: 'flex', 
-            justifyContent: 'flex-end', 
-            gap: '0.75rem',
-            background: 'var(--bg-secondary)',
-            borderRadius: '0 0 12px 12px'
-          }}>
-            <button 
-              onClick={onCancel}
-              disabled={isSaving}
-              style={{ padding: '0.5rem 1rem', background: 'transparent', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: '6px', cursor: 'pointer' }}
-            >
-              Cancel
-            </button>
-            <button 
-              onClick={handleSaveOnly}
-              disabled={isSaving}
-              style={{ 
-                padding: '0.5rem 1.25rem', 
-                background: 'var(--bg-tertiary)', 
-                color: 'white', 
-                border: '1px solid var(--border-color)', 
-                borderRadius: '6px', 
-                fontWeight: 600, 
-                cursor: isSaving ? 'not-allowed' : 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.5rem'
-              }}
-            >
-              {isSaving && <Loader2 size={14} className="animate-spin" />}
-              Save configuration
-            </button>
-            <button 
-              onClick={handleSaveAndRun}
-              disabled={isSaving}
-              style={{ 
-                padding: '0.5rem 1.25rem', 
-                background: 'var(--accent-primary)', 
-                color: '#fff', 
-                border: 'none', 
-                borderRadius: '6px', 
-                fontWeight: 600, 
-                cursor: isSaving ? 'not-allowed' : 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.5rem'
-              }}
-            >
-              {isSaving && <Loader2 size={14} className="animate-spin" />}
-              Save & Update now
-            </button>
-          </div>
-        </div>
-      </div>
+        {formFields}
+      </BackupFormModal>
     );
   }
 

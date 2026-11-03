@@ -4,8 +4,9 @@ import os
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, inspect
 
+import utils.tricks as t
 from utils.tricks import save_json_atomic, get_backup_path, is_debug_files_enabled
 from utils import exceptions as exc
 from .models import (
@@ -17,6 +18,7 @@ from .models import (
     CharacterGroupModel,
     CharacterModel,
     SceneModel,
+    SceneKind,
     Scope,
     Step,
     Status,
@@ -67,21 +69,61 @@ def export_backup_info_snapshot(
         overall_status = Status.PENDING.value
 
     # Scene counts indexed by channel_pk and category_pk
-    scene_counts_by_channel = dict(
-        session.query(SceneModel.channel_pk, func.count(SceneModel.pk))
-        .filter(SceneModel.backup_id == str(backup_id))
-        .group_by(SceneModel.channel_pk)
-        .all()
-    )
-    scene_counts_by_category = dict(
-        session.query(SceneModel.category_pk, func.count(SceneModel.pk))
-        .filter(SceneModel.backup_id == str(backup_id))
-        .group_by(SceneModel.category_pk)
-        .all()
-    )
-    total_scenes = session.query(func.count(SceneModel.pk)).filter(
-        SceneModel.backup_id == str(backup_id)
-    ).scalar() or 0
+    scene_counts_by_channel: Dict[int, int] = {}
+    scene_counts_by_category: Dict[int, int] = {}
+    total_scenes = 0
+    total_sessions = 0
+
+    try:
+        inspector = inspect(session.bind)
+        existing_tables = set(inspector.get_table_names())
+        has_scenes = "scenes" in existing_tables
+        has_kind_col = False
+        if has_scenes:
+            cols = {c["name"] for c in inspector.get_columns("scenes")}
+            has_kind_col = "kind" in cols
+
+        if has_scenes:
+            if has_kind_col:
+                scene_counts_by_channel = dict(
+                    session.query(SceneModel.channel_pk, func.count(SceneModel.pk))
+                    .filter(SceneModel.backup_id == str(backup_id), SceneModel.kind == SceneKind.SCENE.value)
+                    .group_by(SceneModel.channel_pk)
+                    .all()
+                )
+                scene_counts_by_category = dict(
+                    session.query(SceneModel.category_pk, func.count(SceneModel.pk))
+                    .filter(SceneModel.backup_id == str(backup_id), SceneModel.kind == SceneKind.SCENE.value)
+                    .group_by(SceneModel.category_pk)
+                    .all()
+                )
+                total_scenes = session.query(func.count(SceneModel.pk)).filter(
+                    SceneModel.backup_id == str(backup_id),
+                    SceneModel.kind == SceneKind.SCENE.value,
+                ).scalar() or 0
+                total_sessions = session.query(func.count(SceneModel.pk)).filter(
+                    SceneModel.backup_id == str(backup_id),
+                    SceneModel.kind == SceneKind.SESSION.value,
+                ).scalar() or 0
+            else:
+                scene_counts_by_channel = dict(
+                    session.query(SceneModel.channel_pk, func.count(SceneModel.pk))
+                    .filter(SceneModel.backup_id == str(backup_id))
+                    .group_by(SceneModel.channel_pk)
+                    .all()
+                )
+                scene_counts_by_category = dict(
+                    session.query(SceneModel.category_pk, func.count(SceneModel.pk))
+                    .filter(SceneModel.backup_id == str(backup_id))
+                    .group_by(SceneModel.category_pk)
+                    .all()
+                )
+                total_scenes = session.query(func.count(SceneModel.pk)).filter(
+                    SceneModel.backup_id == str(backup_id),
+                ).scalar() or 0
+                total_sessions = 0
+    except Exception as e:
+        t.log("debug", f"Failed to calculate scene counts for backup {backup_id}: {e}")
 
     # Query all channels belonging to this export
     all_channels = session.query(ChannelModel).filter(
@@ -177,6 +219,7 @@ def export_backup_info_snapshot(
         "number_of_channels": total_channel_count,
         "number_of_threads": total_thread_count,
         "number_of_scenes": total_scenes,
+        "number_of_sessions": total_sessions,
         "categories": categories_json,
     }
 

@@ -55,6 +55,7 @@ export interface BackupInfo {
   backup_id?: string;
   backup_name?: string;
   number_of_scenes?: number;
+  number_of_sessions?: number;
   number_of_characters?: number;
   number_of_categories?: number;
   number_of_channels?: number;
@@ -193,6 +194,17 @@ export interface SceneParticipant {
   message_count: number;
 }
 
+export interface SceneParticipantDetail {
+  char_id: number;
+  position: number;
+  first_message_id?: string | null;
+  first_timestamp?: string | null;
+  first_link?: string;
+  last_message_id?: string | null;
+  last_timestamp?: string | null;
+  last_link?: string;
+}
+
 export interface SceneIssueRef {
   id: number;
   kind: IssueKind | string;
@@ -206,20 +218,22 @@ export interface SceneIssueRef {
 }
 
 export interface Scene {
-  id: number;
+  id: number | string;
   scene_key: string;
+  kind?: 'scene' | 'session';
   category_name?: string;
   channel_name?: string;
-  start_time: string;
-  end_time: string;
+  start_time?: string;
+  end_time?: string;
   start_message_id?: string;
   end_message_id?: string;
-  message_count: number;
-  participants: SceneParticipant[];
+  message_count?: number;
+  participants?: SceneParticipant[] | SceneParticipantDetail[];
   status?: string;
   discord_url?: string;
   category?: string;
   channel?: string;
+  channelId?: string;
   type?: string;
   thread_name?: string | null;
   characters?: number[];
@@ -241,6 +255,38 @@ export interface Scene {
     content?: string;
     excerpt?: string;
     link?: string;
+  };
+}
+
+export interface ChatSession {
+  id: string | number;
+  index?: number;
+  scene_key: string;
+  kind: 'session';
+  category: string;
+  channel: string;
+  channelId?: string;
+  type?: string;
+  thread_name?: string | null;
+  status: string;
+  characters: number[];
+  participants: SceneParticipantDetail[];
+  issues?: SceneIssueRef[];
+  start: {
+    id: string;
+    timestamp: string;
+    index: number;
+    authorID: string;
+    content: string;
+    link: string;
+  };
+  end: {
+    id: string;
+    timestamp: string;
+    index: number;
+    authorID: string;
+    content: string;
+    link: string;
   };
 }
 
@@ -279,6 +325,7 @@ export interface SceneIssue {
   reason: IssueReason | string;
   scene_pk: number | null;
   scene_key: string;
+  scene_kind?: 'scene' | 'session';
   channel_name: string;
   channel_discord_id: string;
   next_scene_pk?: number | null;
@@ -367,6 +414,11 @@ export interface MessageOverridesResponse extends PaginatedResponse {
 
 export interface ScenesResponse extends PaginatedResponse {
   scenes: Scene[];
+}
+
+export interface SessionsResponse extends PaginatedResponse {
+  sessions: ChatSession[];
+  scenes?: Scene[];
 }
 
 export interface AdminTestActionResponse {

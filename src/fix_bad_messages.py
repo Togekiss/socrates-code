@@ -67,10 +67,11 @@ def prepare_channel_messages(
     - Filters out messages matching MENTION_ONLY_PAT.
     - Filters out messages marked as 'ignored' in resolved_flags_map.
     - Overlays override_content and override_author in memory for messages marked as 'override'.
+    - Preserves 'raw_index': i on each prepared message for raw channel JSON indexing.
     """
     prepared: List[Dict[str, Any]] = []
 
-    for msg in messages:
+    for i, msg in enumerate(messages):
         if msg.get("type") != "Default":
             continue
 
@@ -87,6 +88,7 @@ def prepare_channel_messages(
                 continue
             elif res == FlaggedResolution.OVERRIDE.value:
                 m_copy = dict(msg)
+                m_copy["raw_index"] = i
                 o_content = flag_info.get("override_content") if isinstance(flag_info, dict) else getattr(flag_info, "override_content", None)
                 o_author = flag_info.get("override_author") if isinstance(flag_info, dict) else getattr(flag_info, "override_author", None)
                 if o_content is not None:
@@ -96,7 +98,9 @@ def prepare_channel_messages(
                 prepared.append(m_copy)
                 continue
 
-        prepared.append(msg)
+        m_copy = dict(msg)
+        m_copy["raw_index"] = i
+        prepared.append(m_copy)
 
     return prepared
 
@@ -221,10 +225,19 @@ def fix_bad_messages():
 
         all_flagged: List[Dict[str, Any]] = []
 
+        path_to_cat: Dict[str, str] = {}
+        for cat in backup.categories:
+            for p in cat.get_all_paths():
+                path_to_cat[p] = cat.name
+
         for path in backup.get_all_paths():
             file_path = (Path(c.DATA_FOLDER) / path).as_posix()
             t.log("log", f"\t    Analysing {file_path}...")
             raw_channel = t.load_from_json(file_path)
+            chan_cat = raw_channel.get("channel", {}).get("category") or path_to_cat.get(path) or ""
+            if chan_cat in c.CHATROOM_CATEGORIES:
+                t.log("log", f"\t    Skipping chatroom category channel ({chan_cat}): {file_path}")
+                continue
             raw_messages = raw_channel.get("messages", [])
             chan_id = raw_channel.get("channel", {}).get("id") or ""
 
