@@ -15,7 +15,7 @@ from tests.reset_test_backup import reset_test_backup
 # pyrefly: ignore [missing-import]
 import utils.tricks as t
 # pyrefly: ignore [missing-import]
-from db.session import db_session, close_all_engines
+from db.session import db_session, close_all_engines, stamp_schema_version
 # pyrefly: ignore [missing-import]
 from db.migrate import migrate_for_tests
 # pyrefly: ignore [missing-import]
@@ -33,6 +33,7 @@ from server import (
     get_characters,
     get_scenes,
     get_sessions,
+    get_events,
     get_writers,
     get_groups,
     create_group,
@@ -239,7 +240,7 @@ class TestScenesEndpoint(unittest.TestCase):
 
 
 class TestSessionsEndpoint(unittest.TestCase):
-    """Tests chat session querying, filtering, and pagination from SQLite."""
+    """Tests chat session and event querying, filtering, and pagination from SQLite."""
 
     @classmethod
     def setUpClass(cls):
@@ -248,7 +249,7 @@ class TestSessionsEndpoint(unittest.TestCase):
         SceneManager.clear_cache()
         close_all_engines()
 
-        # Ensure chat sessions are indexed in Elysium-sql-tests
+        # Ensure chat sessions and events are indexed in Elysium-sql-tests
         from assign_ids import assign_ids
         from index_scenes import index_scenes
         from models.backup_context import BackupContext
@@ -313,6 +314,78 @@ class TestSessionsEndpoint(unittest.TestCase):
     def test_backup_info_number_of_sessions(self):
         info = get_backup_info("1791895360")
         self.assertEqual(info.get("number_of_sessions"), 121)
+        self.assertEqual(info.get("number_of_events"), 4)
+
+    def test_get_events_pagination_and_structure(self):
+        events_res = get_events("1791895360", page=1, per_page=10)
+        self.assertIsInstance(events_res, dict)
+        self.assertEqual(events_res["total_items"], 4)
+        self.assertEqual(events_res["current_page"], 1)
+        self.assertEqual(len(events_res["events"]), 4)
+
+        first_event = events_res["events"][0]
+        for key in (
+            "pk",
+            "id",
+            "event_key",
+            "status",
+            "is_curated",
+            "start",
+            "end",
+            "start_timestamp",
+            "end_timestamp",
+            "message_count",
+            "characters",
+            "character_movements",
+            "channels",
+        ):
+            self.assertIn(key, first_event)
+        self.assertTrue(first_event["start_timestamp"])
+        self.assertTrue(first_event["end_timestamp"])
+        for ch in first_event["channels"]:
+            self.assertIn("scene_pk", ch)
+            self.assertIn("pk", ch)
+
+        # Check multi-channel event has channels and movements
+        multi_ch_events = [ev for ev in events_res["events"] if len(ev["channels"]) >= 2]
+        self.assertGreaterEqual(len(multi_ch_events), 1)
+
+        # Check event with threads has indented thread entries under parent channel
+        threaded_events = [
+            ev for ev in events_res["events"]
+            if any(len(ch.get("threads", [])) > 0 for ch in ev["channels"])
+        ]
+        self.assertGreaterEqual(len(threaded_events), 1)
+        th_ev = threaded_events[0]
+        all_threads = [th for ch in th_ev["channels"] for th in ch.get("threads", [])]
+        self.assertEqual(len(all_threads), 2)
+        for th in all_threads:
+            self.assertEqual(th["type"], "thread")
+            self.assertGreater(len(th["participants"]), 0)
+
+    def test_get_events_filters_and_sorting(self):
+        # Filter by channel
+        ch_res = get_events("1791895360", channels=["event-1"])
+        self.assertEqual(ch_res["total_items"], 2)
+
+        ch_res_3 = get_events("1791895360", channels=["event-3"])
+        self.assertEqual(ch_res_3["total_items"], 2)
+
+        # Filter by character
+        all_res = get_events("1791895360")
+        sample_cid = all_res["events"][0]["characters"][0]
+        char_res = get_events("1791895360", characters=[sample_cid])
+        self.assertGreater(char_res["total_items"], 0)
+        for ev in char_res["events"]:
+            self.assertIn(sample_cid, ev["characters"])
+
+        # Sort order
+        asc_res = get_events("1791895360", sort="asc")
+        desc_res = get_events("1791895360", sort="desc")
+        self.assertEqual(
+            [e["id"] for e in asc_res["events"]],
+            list(reversed([e["id"] for e in desc_res["events"]])),
+        )
 
 
 class TestCharacterAndGroupMutations(unittest.TestCase):
@@ -538,22 +611,36 @@ class TestBackupConfigEndpoints(unittest.TestCase):
             self.assertNotIn("\033[92m", res["output"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 class TestOutdatedSchemaEndpoint(unittest.TestCase):
     """Tests loading backup info and curation summary on a database with an outdated schema."""
 
+    TEST_BACKUP_ID = "1791895360"
+
+    @classmethod
+    def setUpClass(cls):
+        reset_test_backup()
+        migrate_for_tests(cls.TEST_BACKUP_ID)
+        # Delete existing schema_version records and stamp as 3 to simulate an outdated database
+        with db_session(cls.TEST_BACKUP_ID) as session:
+            from db.models import SchemaVersionModel
+            session.query(SchemaVersionModel).delete()
+            stamp_schema_version(session, 3)
+
+    @classmethod
+    def tearDownClass(cls):
+        close_all_engines()
+        reset_test_backup()
+
     def test_outdated_schema_v3_loads_successfully(self):
-        info = get_backup_info("1")
+        info = get_backup_info(self.TEST_BACKUP_ID)
         self.assertIsInstance(info, dict)
         self.assertTrue(info.get("is_schema_outdated"))
         self.assertEqual(info.get("schema_version"), 3)
-        self.assertEqual(info.get("current_schema_version"), 4)
+        self.assertEqual(info.get("current_schema_version"), 5)
         self.assertGreater(info.get("number_of_scenes", 0), 0)
 
     def test_outdated_schema_curation_summary_does_not_fail(self):
-        summary = get_curation_summary("1")
+        summary = get_curation_summary(self.TEST_BACKUP_ID)
         self.assertIsInstance(summary, dict)
         self.assertIn("unresolved_issues", summary)
         self.assertIn("unassigned_characters", summary)
@@ -561,5 +648,9 @@ class TestOutdatedSchemaEndpoint(unittest.TestCase):
         self.assertIn("unlinked_writers", summary)
 
     def test_outdated_schema_my_writer_does_not_fail(self):
-        writer = get_my_writer("1", user={"sub": "nonexistent_discord_id"})
+        writer = get_my_writer(self.TEST_BACKUP_ID, user={"sub": "nonexistent_discord_id"})
         self.assertIsNone(writer)
+
+
+if __name__ == "__main__":
+    unittest.main()

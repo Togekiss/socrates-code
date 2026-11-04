@@ -175,6 +175,9 @@ def finish_update():
 
         t.log("info", f"\nFinished the update! The backup is now up to date as of {main_info.updated_at}\n")
     
+        import gc
+        gc.collect()
+
         try:
             # Rename the c.DATA_FOLDER to "Old Data" and the c.MERGE_FOLDER to c.DATA_FOLDER
             old_data_target = f"{c.DATA_FOLDER}_Old"
@@ -211,6 +214,7 @@ def finish_update():
                                 (Path(root) / d).rmdir()
                             except OSError:
                                 pass
+                gc.collect()
                 shutil.rmtree(c.MERGE_FOLDER, ignore_errors=True)
                 t.log("debug", f"\tMerged files synced into '{c.DATA_FOLDER}' and '{c.MERGE_FOLDER}' cleaned up.")
 
@@ -220,6 +224,10 @@ def finish_update():
         if not c.DEBUG_FILES:
             try:
                 # Delete the old data and update folders
+                gc.collect()
+                if Path(c.MERGE_FOLDER).exists():
+                    shutil.rmtree(c.MERGE_FOLDER, ignore_errors=True)
+                    t.log("debug", f"\tDeleted merge folder: '{c.MERGE_FOLDER}'")
                 if Path(f"{c.DATA_FOLDER}_Old").exists():
                     shutil.rmtree(f"{c.DATA_FOLDER}_Old", ignore_errors=True)
                     t.log("debug", f"\tDeleted old data folder: '{c.DATA_FOLDER}_Old'")

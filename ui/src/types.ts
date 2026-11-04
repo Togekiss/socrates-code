@@ -56,6 +56,7 @@ export interface BackupInfo {
   backup_name?: string;
   number_of_scenes?: number;
   number_of_sessions?: number;
+  number_of_events?: number;
   number_of_characters?: number;
   number_of_categories?: number;
   number_of_channels?: number;
@@ -66,8 +67,23 @@ export interface BackupInfo {
   is_schema_outdated?: boolean;
 }
 
+export interface AdminConfig {
+  verbosity?: Record<string, boolean>;
+  eventCategories?: string[];
+  chatroomCategories?: string[];
+  categoriesToKeep?: string[];
+  categoriesToIgnore?: string[];
+  dmCategories?: string[];
+  keepMode?: boolean;
+  serverId?: string;
+  serverName?: string;
+  backupName?: string;
+  path?: string;
+  [key: string]: unknown;
+}
+
 export interface BackupConfig {
-  server_id: string;
+  server_id?: string;
   server_name?: string;
   format?: string;
   categories?: string[];
@@ -76,6 +92,7 @@ export interface BackupConfig {
   include_archived?: boolean;
   export_formats?: string[];
   timezone?: string;
+  admin?: AdminConfig;
   [key: string]: unknown;
 }
 
@@ -85,10 +102,7 @@ export interface GlobalConfig {
   client_id?: string;
   client_secret?: string;
   redirect_uri?: string;
-  admin?: {
-    verbosity: Record<string, boolean>;
-    [key: string]: unknown;
-  };
+  admin?: AdminConfig;
   [key: string]: unknown;
 }
 
@@ -125,36 +139,16 @@ export interface Character {
   version_type?: string | null;
 }
 
-export interface CharacterGroupMember {
-  id: number;
-  name: string;
-}
-
-export interface CharacterGroup {
-  id: number;
-  name: string;
-  names: string[];
-  members: CharacterGroupMember[];
-}
-
-export interface Writer {
-  id: number;
-  name: string;
-  aliases: string[];
-}
+export interface CharacterGroupMember { id: number; name: string; }
+export interface CharacterGroup { id: number; name: string; names: string[]; members: CharacterGroupMember[]; }
+export interface Writer { id: number; name: string; aliases: string[]; }
 
 export interface WriterDetailed {
   id: number;
   display_name: string;
   discord_user_id: string | null;
   aliases: string[];
-  characters: Array<{
-    id: number;
-    name: string;
-    names: string[];
-    origin?: string | null;
-    activity?: string | null;
-  }>;
+  characters: Array<{ id: number; name: string; names: string[]; origin?: string | null; activity?: string | null }>;
 }
 
 export interface WriterLinkSuggestion {
@@ -171,28 +165,9 @@ export interface WriterLinkSuggestion {
   evidence_count?: number;
 }
 
-export interface MyWriter {
-  id: number;
-  display_name: string;
-  discord_user_id: string;
-  aliases: string[];
-  character_ids: number[];
-}
-
-export interface UnassignedCharacter {
-  id: number;
-  name: string;
-  names: string[];
-  origin?: string | null;
-  activity?: string | null;
-}
-
-export interface SceneParticipant {
-  character_id: number;
-  character_name: string;
-  writer_name?: string;
-  message_count: number;
-}
+export interface MyWriter { id: number; display_name: string; discord_user_id: string; aliases: string[]; character_ids: number[]; }
+export interface UnassignedCharacter { id: number; name: string; names: string[]; origin?: string | null; activity?: string | null; }
+export interface SceneParticipant { character_id: number; character_name: string; writer_name?: string; message_count: number; }
 
 export interface SceneParticipantDetail {
   char_id: number;
@@ -220,7 +195,7 @@ export interface SceneIssueRef {
 export interface Scene {
   id: number | string;
   scene_key: string;
-  kind?: 'scene' | 'session';
+  kind?: 'scene' | 'session' | 'event';
   category_name?: string;
   channel_name?: string;
   start_time?: string;
@@ -238,24 +213,8 @@ export interface Scene {
   thread_name?: string | null;
   characters?: number[];
   issues?: SceneIssueRef[];
-  start?: {
-    id?: string;
-    timestamp?: string;
-    index?: number;
-    authorID?: string;
-    content?: string;
-    excerpt?: string;
-    link?: string;
-  };
-  end?: {
-    id?: string;
-    timestamp?: string;
-    index?: number;
-    authorID?: string;
-    content?: string;
-    excerpt?: string;
-    link?: string;
-  };
+  start?: { id?: string; timestamp?: string; index?: number; authorID?: string; content?: string; excerpt?: string; link?: string };
+  end?: { id?: string; timestamp?: string; index?: number; authorID?: string; content?: string; excerpt?: string; link?: string };
 }
 
 export interface ChatSession {
@@ -272,160 +231,117 @@ export interface ChatSession {
   characters: number[];
   participants: SceneParticipantDetail[];
   issues?: SceneIssueRef[];
-  start: {
-    id: string;
-    timestamp: string;
-    index: number;
-    authorID: string;
-    content: string;
-    link: string;
-  };
-  end: {
-    id: string;
-    timestamp: string;
-    index: number;
-    authorID: string;
-    content: string;
-    link: string;
-  };
+  start: { id: string; timestamp: string; index: number; authorID: string; content: string; link: string };
+  end: { id: string; timestamp: string; index: number; authorID: string; content: string; link: string };
 }
 
-export interface SuggestedCharacter {
-  char_id: number;
-  name: string;
-  writer_name?: string;
-  reason: string;
+export interface EventMovementHop {
+  channel_id: string;
+  channel_name: string;
+  custom_name?: string | null;
+  first_message_id: string;
+  first_timestamp?: string | null;
+  first_at?: string | null;
+  first_link: string;
 }
+
+export interface EventChannelEntry {
+  scene_pk: number;
+  pk?: number;
+  scene_key: string;
+  channel_id: string;
+  channel_name: string;
+  custom_name?: string | null;
+  type: 'channel' | 'thread';
+  parent_channel_id?: string | null;
+  status: string;
+  message_count: number;
+  start: { id: string; timestamp: string; index?: number; authorID?: string; content?: string; link: string };
+  end: { id: string; timestamp: string; index?: number; authorID?: string; content?: string; link: string };
+  characters?: number[];
+  participants: SceneParticipantDetail[];
+  threads?: EventChannelEntry[];
+}
+
+export interface EventRecord {
+  pk: number;
+  id: string;
+  event_key?: string;
+  name?: string | null;
+  status: string;
+  is_curated?: boolean;
+  start_timestamp: string;
+  end_timestamp: string;
+  start_at?: string;
+  end_at?: string;
+  message_count: number;
+  characters: number[];
+  participants: SceneParticipantDetail[];
+  character_movements: Record<string, EventMovementHop[]>;
+  channels: EventChannelEntry[];
+}
+
+export interface SuggestedCharacter { char_id: number; name: string; writer_name?: string; reason: string; }
 
 export type IssueKind = 'auto_split' | 'soft_boundary';
 export type IssueResolution = 'split' | 'merged';
 export type IssueReason = 'separate_roster' | 'start_tag_roster_change' | 'start_tag_same_roster' | 'roster_change' | 'manual';
 export type SceneStatus = 'open' | 'closed' | 'no_end_tag';
-
 export type FlaggedKind = 'failed_tupper' | 'ooc_boundary' | 'ooc_message' | 'manual';
-
-export interface ManualSplitResponse {
-  status: string;
-  action: string;
-  issue_id: number;
-  scene_pk: number;
-  scene_key: string;
-  next_scene_pk: number;
-  next_scene_key: string;
-  resolution: string;
-  resolved_at: string;
-  resolved_note: string | null;
-  action_performed: boolean;
-}
 export type FlaggedResolution = 'override' | 'ignored' | 'kept';
 
+export interface ManualSplitResponse {
+  status: string; action: string; issue_id: number; scene_pk: number; scene_key: string;
+  next_scene_pk: number; next_scene_key: string; resolution: string; resolved_at: string;
+  resolved_note: string | null; action_performed: boolean;
+}
+
 export interface SceneIssue {
-  id: number;
-  kind: IssueKind;
-  reason: IssueReason | string;
-  scene_pk: number | null;
-  scene_key: string;
-  scene_kind?: 'scene' | 'session';
-  channel_name: string;
-  channel_discord_id: string;
-  next_scene_pk?: number | null;
-  next_scene_key?: string | null;
-  candidate_message_id?: string | null;
-  candidate_index?: number | null;
-  candidate_excerpt?: string | null;
-  previous_chars?: number[] | null;
-  next_chars?: number[] | null;
-  previous_char_names?: string[] | null;
-  next_char_names?: string[] | null;
-  discord_link: string;
-  candidate_discord_link?: string | null;
-  created_at: string | null;
-  resolved_at: string | null;
-  resolved_note: string | null;
-  resolution?: IssueResolution | null;
-  action_performed: boolean;
+  id: number; kind: IssueKind; reason: IssueReason | string; scene_pk: number | null; scene_key: string;
+  scene_kind?: 'scene' | 'session'; channel_name: string; channel_discord_id: string;
+  next_scene_pk?: number | null; next_scene_key?: string | null; candidate_message_id?: string | null;
+  candidate_index?: number | null; candidate_excerpt?: string | null;
+  previous_chars?: number[] | null; next_chars?: number[] | null;
+  previous_char_names?: string[] | null; next_char_names?: string[] | null;
+  discord_link: string; candidate_discord_link?: string | null;
+  created_at: string | null; resolved_at: string | null; resolved_note: string | null;
+  resolution?: IssueResolution | null; action_performed: boolean;
 }
 
 export interface DiscordAuthor {
-  id?: string;
-  name?: string;
-  discriminator?: string;
-  nickname?: string;
-  avatar_url?: string;
+  id?: string; name?: string; discriminator?: string; nickname?: string; avatar_url?: string;
 }
 
 export interface FlaggedMessage {
-  id: number;
-  message_id: string;
-  kind: FlaggedKind;
-  channel_name: string;
-  channel_discord_id: string;
-  content: string;
-  author: DiscordAuthor;
-  discord_link: string;
-  flagged_at: string | null;
-  resolution?: FlaggedResolution | null;
-  override_content?: string | null;
-  override_author?: DiscordAuthor | null;
-  resolved_at?: string | null;
-  resolved_note?: string | null;
+  id: number; message_id: string; kind: FlaggedKind; channel_name: string; channel_discord_id: string;
+  content: string; author: DiscordAuthor; discord_link: string; flagged_at: string | null;
+  resolution?: FlaggedResolution | null; override_content?: string | null;
+  override_author?: DiscordAuthor | null; resolved_at?: string | null; resolved_note?: string | null;
   suggested_character?: SuggestedCharacter | null;
 }
 
 export interface MessageOverride {
-  id: number;
-  message_id: string;
-  channel_name: string;
-  channel_discord_id: string;
-  content: string;
-  author: DiscordAuthor;
-  discord_link: string;
-  created_at: string | null;
+  id: number; message_id: string; channel_name: string; channel_discord_id: string;
+  content: string; author: DiscordAuthor; discord_link: string; created_at: string | null;
 }
 
 export interface PaginatedResponse {
-  total_items: number;
-  current_page: number;
-  per_page: number;
-  total_pages: number;
+  total_items: number; current_page: number; per_page: number; total_pages: number;
 }
 
 export interface SceneIssuesResponse extends PaginatedResponse {
-  issues: SceneIssue[];
-  status_counts?: {
-    unresolved: number;
-    resolved: number;
-    all: number;
-  };
+  issues: SceneIssue[]; status_counts?: { unresolved: number; resolved: number; all: number };
 }
 
 export interface FlaggedMessagesResponse extends PaginatedResponse {
-  messages: FlaggedMessage[];
-  status_counts?: {
-    unresolved: number;
-    resolved: number;
-    all: number;
-  };
+  messages: FlaggedMessage[]; status_counts?: { unresolved: number; resolved: number; all: number };
 }
 
-export interface MessageOverridesResponse extends PaginatedResponse {
-  overrides: MessageOverride[];
-}
-
-export interface ScenesResponse extends PaginatedResponse {
-  scenes: Scene[];
-}
-
-export interface SessionsResponse extends PaginatedResponse {
-  sessions: ChatSession[];
-  scenes?: Scene[];
-}
+export interface MessageOverridesResponse extends PaginatedResponse { overrides: MessageOverride[]; }
+export interface ScenesResponse extends PaginatedResponse { scenes: Scene[]; }
+export interface SessionsResponse extends PaginatedResponse { sessions: ChatSession[]; scenes?: Scene[]; }
+export interface EventsResponse extends PaginatedResponse { events: EventRecord[]; }
 
 export interface AdminTestActionResponse {
-  status: 'success' | 'failed';
-  message: string;
-  returncode?: number;
-  output?: string;
-  report?: Record<string, unknown>;
+  status: 'success' | 'failed'; message: string; returncode?: number; output?: string; report?: Record<string, unknown>;
 }
-

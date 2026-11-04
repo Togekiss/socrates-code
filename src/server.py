@@ -111,6 +111,27 @@ class ResolveFlaggedMessageRequest(BaseModel):
     override_author: Optional[Dict[str, Any]] = None
 
 
+class UpdateEventMetadataRequest(BaseModel):
+    name: Optional[str] = None
+    channel_names: Optional[Dict[Any, Optional[str]]] = None
+
+
+class MergeEventsRequest(BaseModel):
+    event_pks: Optional[List[int]] = None
+    target_event_pk: Optional[int] = None
+    source_event_pk: Optional[int] = None
+    name: Optional[str] = None
+    merged_name: Optional[str] = None
+
+
+class SplitEventRequest(BaseModel):
+    scene_ids: Optional[List[Any]] = None
+    scene_pks: Optional[List[Any]] = None
+    channel_ids: Optional[List[Any]] = None
+    new_name: Optional[str] = None
+    new_event_name: Optional[str] = None
+
+
 class AuthCallback(BaseModel):
     code: str
 
@@ -440,6 +461,7 @@ def get_backup_info(backup_id: str):
                 "number_of_threads": 0,
                 "number_of_scenes": 0,
                 "number_of_sessions": 0,
+                "number_of_events": 0,
                 "categories": [],
             }
         else:
@@ -926,6 +948,202 @@ def get_sessions(
         before=before,
         after=after
     )
+
+
+# --- EVENTS ENDPOINTS ---
+
+
+@app.get("/api/backups/{backup_id}/events")
+def get_events(
+    backup_id: str,
+    page: int = Query(1),
+    per_page: int = Query(50),
+    channels: Optional[List[str]] = Query(None),
+    statuses: Optional[List[str]] = Query(None),
+    status: str = Query("all"),
+    characters: Optional[List[int]] = Query(None),
+    character_logic: str = Query("OR"),
+    character_name: Optional[str] = Query(None),
+    writers: Optional[List[str]] = Query(None),
+    writer_logic: str = Query("OR"),
+    include_alter_egos: bool = Query(True),
+    include_familiars: bool = Query(True),
+    include_npcs: bool = Query(True),
+    before: Optional[str] = Query(None),
+    after: Optional[str] = Query(None),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    sort: str = Query("asc"),
+    by_me: bool = Query(False),
+    request: Request = None,
+):
+    base_path = get_backup_path(backup_id)
+    if not isinstance(page, int): page = 1
+    if not isinstance(per_page, int): per_page = 50
+    if not isinstance(channels, (list, tuple, set)): channels = None
+    if not isinstance(statuses, (list, tuple, set)): statuses = None
+    if not isinstance(status, str): status = "all"
+    if not isinstance(characters, (list, tuple, set)): characters = None
+    if not isinstance(character_logic, str): character_logic = "OR"
+    if not isinstance(character_name, str): character_name = None
+    if not isinstance(writers, (list, tuple, set)): writers = None
+    if not isinstance(writer_logic, str): writer_logic = "OR"
+    if not isinstance(include_alter_egos, bool): include_alter_egos = True
+    if not isinstance(include_familiars, bool): include_familiars = True
+    if not isinstance(include_npcs, bool): include_npcs = True
+    if not isinstance(before, str): before = None
+    if not isinstance(after, str): after = None
+    if not isinstance(start_date, str): start_date = None
+    if not isinstance(end_date, str): end_date = None
+    if not isinstance(search, str): search = None
+    if not isinstance(sort, str): sort = "asc"
+
+    if by_me and request:
+        user = get_optional_user(request)
+        if user and user.get("sub"):
+            writer_info = curation_service.get_my_writer(backup_id, base_path, str(user["sub"]))
+            if writer_info:
+                writers = [writer_info["display_name"]]
+            else:
+                return {
+                    "total_items": 0,
+                    "current_page": 1,
+                    "per_page": per_page,
+                    "total_pages": 0,
+                    "events": [],
+                    "scenes": [],
+                }
+        else:
+            return {
+                "total_items": 0,
+                "current_page": 1,
+                "per_page": per_page,
+                "total_pages": 0,
+                "events": [],
+                "scenes": [],
+            }
+
+    from models import SceneManager
+    manager = SceneManager.get_instance(backup_id, base_path)
+    return manager.get_paginated_events(
+        page=page,
+        per_page=per_page,
+        channels=channels,
+        statuses=statuses,
+        status=status,
+        character_ids=characters,
+        character_logic=character_logic,
+        character_name=character_name,
+        writer_names=writers,
+        writer_logic=writer_logic,
+        include_alter_egos=include_alter_egos,
+        include_familiars=include_familiars,
+        include_npcs=include_npcs,
+        before=before,
+        after=after,
+        start_date=start_date,
+        end_date=end_date,
+        search=search,
+        sort=sort,
+    )
+
+
+@app.put("/api/backups/{backup_id}/events/{event_pk}")
+def update_event(backup_id: str, event_pk: int, req: UpdateEventMetadataRequest):
+    api_log(backup_id, "info", f"Updating event #{event_pk} metadata...")
+    base_path = get_backup_path(backup_id)
+    try:
+        check_not_indexing(backup_id, base_path)
+        res = curation_service.update_event_metadata(
+            backup_id,
+            base_path,
+            event_pk=event_pk,
+            name=req.name,
+            channel_names=req.channel_names,
+        )
+        from models import SceneManager
+        SceneManager.clear_cache(backup_id)
+        api_log(backup_id, "base", "Event metadata updated successfully.")
+        return res
+    except exc.ConflictError as e:
+        api_log(backup_id, "error", f"Event update conflict: {e}")
+        raise HTTPException(status_code=409, detail=str(e))
+    except exc.NotFoundError as e:
+        api_log(backup_id, "error", f"Event not found: {e}")
+        raise HTTPException(status_code=404, detail=str(e))
+    except (exc.ValidationError, ValueError) as e:
+        api_log(backup_id, "error", f"Event update validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        api_log(backup_id, "error", f"Event update failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/backups/{backup_id}/events/merge")
+def merge_events(backup_id: str, req: MergeEventsRequest):
+    eff_pks = list(req.event_pks or [])
+    if not eff_pks and req.target_event_pk is not None and req.source_event_pk is not None:
+        eff_pks = [req.target_event_pk, req.source_event_pk]
+    api_log(backup_id, "info", f"Merging events {eff_pks}...")
+    base_path = get_backup_path(backup_id)
+    try:
+        check_not_indexing(backup_id, base_path)
+        res = curation_service.merge_events(
+            backup_id,
+            base_path,
+            event_pks=eff_pks,
+            target_name=req.name if req.name is not None else req.merged_name,
+        )
+        from models import SceneManager
+        SceneManager.clear_cache(backup_id)
+        api_log(backup_id, "base", "Events merged successfully.")
+        return res
+    except exc.ConflictError as e:
+        api_log(backup_id, "error", f"Merge events conflict: {e}")
+        raise HTTPException(status_code=409, detail=str(e))
+    except exc.NotFoundError as e:
+        api_log(backup_id, "error", f"Merge events not found: {e}")
+        raise HTTPException(status_code=404, detail=str(e))
+    except (exc.ValidationError, ValueError) as e:
+        api_log(backup_id, "error", f"Merge events validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        api_log(backup_id, "error", f"Merge events failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/backups/{backup_id}/events/{event_pk}/split")
+def split_event(backup_id: str, event_pk: int, req: SplitEventRequest):
+    raw_ids = req.scene_ids or req.scene_pks or req.channel_ids or []
+    ids_to_extract = [str(x) for x in raw_ids]
+    api_log(backup_id, "info", f"Splitting event #{event_pk} scenes {ids_to_extract}...")
+    base_path = get_backup_path(backup_id)
+    try:
+        check_not_indexing(backup_id, base_path)
+        res = curation_service.split_event(
+            backup_id,
+            base_path,
+            event_pk=event_pk,
+            scene_ids_to_extract=ids_to_extract,
+            new_event_name=req.new_name if req.new_name is not None else req.new_event_name,
+        )
+        from models import SceneManager
+        SceneManager.clear_cache(backup_id)
+        api_log(backup_id, "base", "Event split successfully.")
+        return res
+    except exc.ConflictError as e:
+        api_log(backup_id, "error", f"Split event conflict: {e}")
+        raise HTTPException(status_code=409, detail=str(e))
+    except exc.NotFoundError as e:
+        api_log(backup_id, "error", f"Split event not found: {e}")
+        raise HTTPException(status_code=404, detail=str(e))
+    except (exc.ValidationError, ValueError) as e:
+        api_log(backup_id, "error", f"Split event validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        api_log(backup_id, "error", f"Split event failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- CHARACTER GROUPS ENDPOINTS ---

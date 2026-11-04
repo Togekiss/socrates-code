@@ -195,6 +195,13 @@ def clean(message):
 
     return no_ansi.lstrip('\n').rstrip('\n')
 
+
+def sanitize_filename(name: str) -> str:
+    """Replaces filesystem-reserved characters (matching DCE export naming) with underscores."""
+    if not name:
+        return ""
+    return re.sub(r'[:/\\*?"<>|]', '_', str(name))
+
 """
 log(level, message)
 

@@ -52,6 +52,7 @@ from db.models import (
     GroupNameModel,
     CharacterModel,
     CharacterNameModel,
+    EventModel,
     SceneModel,
     SceneParticipantModel,
     SceneIssueModel,
@@ -106,6 +107,7 @@ def extract_database_data(engine) -> Dict[str, List[Dict[str, Any]]]:
         "group_names",
         "characters",
         "character_names",
+        "events",
         "scenes",
         "scene_participants",
         "scene_issues",
@@ -131,8 +133,8 @@ def extract_database_data(engine) -> Dict[str, List[Dict[str, Any]]]:
 def populate_schema(
     target_engine,
     data: Dict[str, List[Dict[str, Any]]],
-    backup_id: str,
-    old_version: int,
+    backup_id: str = "",
+    old_version: int = 4,
     target_schema_version: int = CURRENT_SCHEMA_VERSION,
 ) -> Dict[str, int]:
     """
@@ -150,6 +152,7 @@ def populate_schema(
         "group_names": 0,
         "characters": 0,
         "character_names": 0,
+        "events": 0,
         "scenes": 0,
         "scene_participants": 0,
         "scene_issues": 0,
@@ -334,6 +337,26 @@ def populate_schema(
             metrics["character_names"] += 1
         session.flush()
 
+        # 7b. Events
+        event_pk_map: Dict[int, int] = {}
+        for ev in data.get("events", []):
+            old_pk = ev["pk"]
+            ev_model = EventModel(
+                backup_id=str(ev["backup_id"]),
+                event_key=str(ev["event_key"]),
+                name=ev.get("name"),
+                status=str(ev.get("status") or "open"),
+                start_at=parse_datetime(ev["start_at"]) or datetime.now(timezone.utc),
+                end_at=parse_datetime(ev["end_at"]) or datetime.now(timezone.utc),
+                message_count=int(ev.get("message_count", 0)),
+                is_curated=bool(ev.get("is_curated", False)),
+                character_movements=ev.get("character_movements"),
+            )
+            session.add(ev_model)
+            session.flush()
+            event_pk_map[old_pk] = ev_model.pk
+            metrics["events"] += 1
+
         # 8. Scenes
         scene_pk_map: Dict[int, int] = {}
         for s in data.get("scenes", []):
@@ -347,6 +370,8 @@ def populate_schema(
                 scene_key=str(s["scene_key"]),
                 channel_pk=new_chan_pk,
                 category_pk=new_cat_pk,
+                event_pk=event_pk_map.get(s.get("event_pk")) if s.get("event_pk") is not None else None,
+                custom_name=s.get("custom_name"),
                 kind=str(s.get("kind") or "scene"),
                 status=str(s["status"]),
                 start_message_id=str(s["start_message_id"]),
@@ -497,6 +522,9 @@ def populate_schema(
         session.commit()
 
     return metrics
+
+
+_copy_all_data = populate_schema
 
 
 def upgrade_single_backup(

@@ -14,6 +14,8 @@ import type {
   CharacterGroup,
   CurationSummary,
   DiscordAuthor,
+  EventRecord,
+  EventsResponse,
   FlaggedMessage,
   FlaggedMessagesResponse,
   FlaggedResolution,
@@ -42,10 +44,7 @@ export interface ApiError extends Error {
 }
 
 const fetchWithAuth = async (url: string, options: RequestInit = {}): Promise<Response> => {
-  const res = await fetch(url, {
-    ...options,
-    credentials: 'include',
-  });
+  const res = await fetch(url, { ...options, credentials: 'include' });
   if (!res.ok) {
     const errorBody = await res.json().catch(() => ({ detail: res.statusText }));
     const error = new Error(errorBody.detail || `Request failed with status ${res.status}`) as ApiError;
@@ -133,19 +132,13 @@ export const api = {
     }).then(res => res.json()),
 
   cancelRun: (backupId: string): Promise<{ status: string }> =>
-    fetchWithAuth(`${API_BASE}/backups/${backupId}/cancel`, {
-      method: 'POST',
-    }).then(res => res.json()),
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/cancel`, { method: 'POST' }).then(res => res.json()),
 
   rerunAction: (backupId: string, action: string): Promise<{ status: string; action: string }> =>
-    fetchWithAuth(`${API_BASE}/backups/${backupId}/rerun/${action}`, {
-      method: 'POST',
-    }).then(res => res.json()),
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/rerun/${action}`, { method: 'POST' }).then(res => res.json()),
 
   upgradeBackup: (backupId: string): Promise<{ status: string; message?: string; report?: Record<string, unknown> }> =>
-    fetchWithAuth(`${API_BASE}/backups/${backupId}/upgrade`, {
-      method: 'POST',
-    }).then(res => res.json()),
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/upgrade`, { method: 'POST' }).then(res => res.json()),
 
   // --- Curation Summary ---
   getCurationSummary: (backupId: string): Promise<CurationSummary> =>
@@ -170,15 +163,9 @@ export const api = {
     }).then(res => res.json()),
 
   unnestCharacter: (backupId: string, charId: number): Promise<{ status: string }> =>
-    fetchWithAuth(`${API_BASE}/backups/${backupId}/characters/${charId}/unnest`, {
-      method: 'POST',
-    }).then(res => res.json()),
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/characters/${charId}/unnest`, { method: 'POST' }).then(res => res.json()),
 
-  updateCharacter: (
-    backupId: string,
-    charId: number,
-    data: { tags?: string[]; names?: string[]; writer?: string[] }
-  ): Promise<{ status: string }> =>
+  updateCharacter: (backupId: string, charId: number, data: { tags?: string[]; names?: string[]; writer?: string[] }): Promise<{ status: string }> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/characters/${charId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -195,11 +182,7 @@ export const api = {
       body: JSON.stringify(data),
     }).then(res => res.json()),
 
-  updateGroup: (
-    backupId: string,
-    groupId: number,
-    data: { names?: string[]; member_ids?: number[] }
-  ): Promise<{ status: string }> =>
+  updateGroup: (backupId: string, groupId: number, data: { names?: string[]; member_ids?: number[] }): Promise<{ status: string }> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/groups/${groupId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -207,17 +190,64 @@ export const api = {
     }).then(res => res.json()),
 
   deleteGroup: (backupId: string, groupId: number): Promise<{ status: string }> =>
-    fetchWithAuth(`${API_BASE}/backups/${backupId}/groups/${groupId}`, {
-      method: 'DELETE',
-    }).then(res => res.json()),
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/groups/${groupId}`, { method: 'DELETE' }).then(res => res.json()),
 
-  // --- Scenes ---
+  // --- Scenes, Chat Sessions & Events ---
   getScenes: (backupId: string, queryParams: URLSearchParams = new URLSearchParams()): Promise<ScenesResponse> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/scenes?${queryParams.toString()}`).then(res => res.json()),
 
-  // --- Chat Sessions ---
   getSessions: (backupId: string, queryParams: URLSearchParams = new URLSearchParams()): Promise<SessionsResponse> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/sessions?${queryParams.toString()}`).then(res => res.json()),
+
+  getEvents: (backupId: string, queryParams: URLSearchParams = new URLSearchParams()): Promise<EventsResponse> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/events?${queryParams.toString()}`).then(res => res.json()),
+
+  fetchEvents: (backupId: string, queryParams: URLSearchParams = new URLSearchParams()): Promise<EventsResponse> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/events?${queryParams.toString()}`).then(res => res.json()),
+
+  updateEventMetadata: (
+    backupId: string,
+    eventPk: number,
+    data: { name?: string | null; channel_names?: Record<string | number, string | null> }
+  ): Promise<{ status: string; event: EventRecord }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/events/${eventPk}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }).then(res => res.json()),
+
+  mergeEvents: (
+    backupId: string,
+    targetEventPk: number,
+    sourceEventPk: number,
+    name?: string | null
+  ): Promise<{ status: string; event: EventRecord }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/events/merge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event_pks: [targetEventPk, sourceEventPk],
+        target_event_pk: targetEventPk,
+        source_event_pk: sourceEventPk,
+        name,
+      }),
+    }).then(res => res.json()),
+
+  splitEvent: (
+    backupId: string,
+    eventPk: number,
+    scenePks: number[],
+    newEventName?: string | null
+  ): Promise<{ status: string; original_event: EventRecord; new_event: EventRecord }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/events/${eventPk}/split`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        scene_pks: scenePks,
+        scene_ids: scenePks.map(String),
+        new_event_name: newEventName,
+      }),
+    }).then(res => res.json()),
 
   // --- Writers & User Linking ---
   getWriters: (backupId: string): Promise<Writer[]> =>
@@ -226,21 +256,14 @@ export const api = {
   getWritersDetailed: (backupId: string): Promise<WriterDetailed[]> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/writers/detailed`).then(res => res.json()),
 
-  createWriter: (
-    backupId: string,
-    data: { display_name: string; aliases?: string[]; discord_user_id?: string }
-  ): Promise<{ status: string; writer_id: number }> =>
+  createWriter: (backupId: string, data: { display_name: string; aliases?: string[]; discord_user_id?: string }): Promise<{ status: string; writer_id: number }> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/writers`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     }).then(res => res.json()),
 
-  updateWriter: (
-    backupId: string,
-    writerId: number,
-    data: { display_name?: string; aliases?: string[]; discord_user_id?: string | null }
-  ): Promise<{ status: string }> =>
+  updateWriter: (backupId: string, writerId: number, data: { display_name?: string; aliases?: string[]; discord_user_id?: string | null }): Promise<{ status: string }> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/writers/${writerId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -248,9 +271,7 @@ export const api = {
     }).then(res => res.json()),
 
   deleteWriter: (backupId: string, writerId: number): Promise<{ status: string }> =>
-    fetchWithAuth(`${API_BASE}/backups/${backupId}/writers/${writerId}`, {
-      method: 'DELETE',
-    }).then(res => res.json()),
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/writers/${writerId}`, { method: 'DELETE' }).then(res => res.json()),
 
   getWriterLinkSuggestions: (backupId: string): Promise<WriterLinkSuggestion[]> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/writers/link-suggestions`).then(res => res.json()),
@@ -298,14 +319,9 @@ export const api = {
     }).then(res => res.json()),
 
   reopenSceneIssue: (backupId: string, issueId: number): Promise<{ status: string; issue_id: number; reopened: boolean }> =>
-    fetchWithAuth(`${API_BASE}/backups/${backupId}/scene-issues/${issueId}/reopen`, {
-      method: 'PUT',
-    }).then(res => res.json()),
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/scene-issues/${issueId}/reopen`, { method: 'PUT' }).then(res => res.json()),
 
-  createManualSceneSplit: (
-    backupId: string,
-    data: { discord_link: string; note?: string }
-  ): Promise<ManualSplitResponse> =>
+  createManualSceneSplit: (backupId: string, data: { discord_link: string; note?: string }): Promise<ManualSplitResponse> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/scene-issues/manual-split`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -316,10 +332,7 @@ export const api = {
   getFlaggedMessages: (backupId: string, params: URLSearchParams = new URLSearchParams()): Promise<FlaggedMessagesResponse> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/flagged-messages?${params.toString()}`).then(res => res.json()),
 
-  addManualFlaggedMessage: (
-    backupId: string,
-    data: { discord_link: string; note?: string }
-  ): Promise<FlaggedMessage> =>
+  addManualFlaggedMessage: (backupId: string, data: { discord_link: string; note?: string }): Promise<FlaggedMessage> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/flagged-messages/manual`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -329,12 +342,7 @@ export const api = {
   resolveFlaggedMessage: (
     backupId: string,
     messageId: string,
-    data: {
-      resolution: FlaggedResolution;
-      note?: string;
-      override_content?: string;
-      override_author?: DiscordAuthor;
-    }
+    data: { resolution: FlaggedResolution; note?: string; override_content?: string; override_author?: DiscordAuthor }
   ): Promise<{ status: string; message_id: string; resolution: string; resolved_at: string }> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/flagged-messages/${messageId}/resolve`, {
       method: 'PUT',
@@ -342,13 +350,8 @@ export const api = {
       body: JSON.stringify(data),
     }).then(res => res.json()),
 
-  reopenFlaggedMessage: (
-    backupId: string,
-    messageId: string
-  ): Promise<{ status: string; message_id: string; reopened: boolean }> =>
-    fetchWithAuth(`${API_BASE}/backups/${backupId}/flagged-messages/${messageId}/reopen`, {
-      method: 'PUT',
-    }).then(res => res.json()),
+  reopenFlaggedMessage: (backupId: string, messageId: string): Promise<{ status: string; message_id: string; reopened: boolean }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/flagged-messages/${messageId}/reopen`, { method: 'PUT' }).then(res => res.json()),
 
   promoteFlaggedMessage: (
     backupId: string,
@@ -365,31 +368,21 @@ export const api = {
     fetchWithAuth(`${API_BASE}/backups/${backupId}/message-overrides?${params.toString()}`).then(res => res.json()),
 
   deleteMessageOverride: (backupId: string, messageId: string): Promise<{ status: string }> =>
-    fetchWithAuth(`${API_BASE}/backups/${backupId}/message-overrides/${messageId}`, {
-      method: 'DELETE',
-    }).then(res => res.json()),
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/message-overrides/${messageId}`, { method: 'DELETE' }).then(res => res.json()),
 
   // --- Live Log Stream URL ---
   getLogsStreamUrl: (backupId: string): string => `${API_BASE}/backups/${backupId}/logs/stream`,
 
   // --- Admin Testing & Verification ---
   resetTestingBackup: (): Promise<AdminTestActionResponse> =>
-    fetchWithAuth(`${API_BASE}/admin/test-backup/reset`, {
-      method: 'POST',
-    }).then(res => res.json()),
+    fetchWithAuth(`${API_BASE}/admin/test-backup/reset`, { method: 'POST' }).then(res => res.json()),
 
   migrateTestingBackup: (): Promise<AdminTestActionResponse> =>
-    fetchWithAuth(`${API_BASE}/admin/test-backup/migrate`, {
-      method: 'POST',
-    }).then(res => res.json()),
+    fetchWithAuth(`${API_BASE}/admin/test-backup/migrate`, { method: 'POST' }).then(res => res.json()),
 
   upgradeAllDatabases: (): Promise<AdminTestActionResponse> =>
-    fetchWithAuth(`${API_BASE}/admin/upgrade-all`, {
-      method: 'POST',
-    }).then(res => res.json()),
+    fetchWithAuth(`${API_BASE}/admin/upgrade-all`, { method: 'POST' }).then(res => res.json()),
 
   runPythonTests: (): Promise<AdminTestActionResponse> =>
-    fetchWithAuth(`${API_BASE}/admin/tests/run`, {
-      method: 'POST',
-    }).then(res => res.json()),
+    fetchWithAuth(`${API_BASE}/admin/tests/run`, { method: 'POST' }).then(res => res.json()),
 };

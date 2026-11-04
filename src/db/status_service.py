@@ -217,7 +217,11 @@ def _sync_channels_internal(session: Any, export_pk: int, categories: list) -> N
 
     for ch in existing_channels:
         if ch.discord_id not in seen_discord_ids:
-            ch.is_deleted = True
+            if ch.type == "GuildCategory":
+                session.flush()
+                session.query(ChannelModel).filter(ChannelModel.pk == ch.pk).delete(synchronize_session="fetch")
+            else:
+                ch.is_deleted = True
 
 
 def save_backup_state(

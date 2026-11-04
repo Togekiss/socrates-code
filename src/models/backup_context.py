@@ -63,6 +63,7 @@ class BackupContext:
     server_id: str = ""
     dm_categories: List[str] = field(default_factory=list)
     chatroom_categories: List[str] = field(default_factory=list)
+    event_categories: List[str] = field(default_factory=list)
     categories_to_ignore: Set[str] = field(default_factory=set)
     categories_to_keep: Set[str] = field(default_factory=set)
     keep_mode: bool = False
@@ -234,6 +235,7 @@ class BackupContext:
             server_id=admin_cfg.get('serverId', ""),
             dm_categories=admin_cfg.get('dmCategories', []),
             chatroom_categories=admin_cfg.get('chatroomCategories', []),
+            event_categories=admin_cfg.get('eventCategories', []),
             categories_to_ignore=set(admin_cfg.get('categoriesToIgnore', [])),
             categories_to_keep=set(admin_cfg.get('categoriesToKeep', [])),
             keep_mode=admin_cfg.get('keepMode', False),

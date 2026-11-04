@@ -230,13 +230,19 @@ def fix_bad_messages():
             for p in cat.get_all_paths():
                 path_to_cat[p] = cat.name
 
+        event_cat_names = set(getattr(c, "EVENT_CATEGORIES", []) or []) | {"Events"}
+
         for path in backup.get_all_paths():
             file_path = (Path(c.DATA_FOLDER) / path).as_posix()
             t.log("log", f"\t    Analysing {file_path}...")
             raw_channel = t.load_from_json(file_path)
-            chan_cat = raw_channel.get("channel", {}).get("category") or path_to_cat.get(path) or ""
-            if chan_cat in c.CHATROOM_CATEGORIES:
+            chan_cat = path_to_cat.get(path) or raw_channel.get("channel", {}).get("category") or ""
+            raw_cat = raw_channel.get("channel", {}).get("category") or ""
+            if chan_cat in c.CHATROOM_CATEGORIES or raw_cat in c.CHATROOM_CATEGORIES:
                 t.log("log", f"\t    Skipping chatroom category channel ({chan_cat}): {file_path}")
+                continue
+            if chan_cat in event_cat_names or raw_cat in event_cat_names:
+                t.log("log", f"\t    Skipping event category channel ({chan_cat}): {file_path}")
                 continue
             raw_messages = raw_channel.get("messages", [])
             chan_id = raw_channel.get("channel", {}).get("id") or ""

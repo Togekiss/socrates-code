@@ -11,10 +11,22 @@ interface BackupCategorySelectorProps {
   chatroomCategoriesList: string[];
   addChatroomCategory: (cat: string) => void;
   removeChatroomCategory: (cat: string) => void;
+  eventCategoriesList?: string[];
+  addEventCategory?: (cat: string) => void;
+  removeEventCategory?: (cat: string) => void;
   serverCategories: { id: string; name: string }[] | null;
   loadingCategories: boolean;
   categoriesError: string | null;
 }
+
+const selectStyle: React.CSSProperties = {
+  flex: 1,
+  padding: '0.5rem',
+  background: 'var(--bg-tertiary)',
+  border: '1px solid var(--border-color)',
+  color: 'white',
+  borderRadius: '4px',
+};
 
 export const BackupCategorySelector: React.FC<BackupCategorySelectorProps> = ({
   backupId,
@@ -26,6 +38,9 @@ export const BackupCategorySelector: React.FC<BackupCategorySelectorProps> = ({
   chatroomCategoriesList,
   addChatroomCategory,
   removeChatroomCategory,
+  eventCategoriesList = [],
+  addEventCategory,
+  removeEventCategory,
   serverCategories,
   loadingCategories,
   categoriesError,
@@ -72,14 +87,7 @@ export const BackupCategorySelector: React.FC<BackupCategorySelectorProps> = ({
                 }
               }}
               defaultValue=""
-              style={{
-                flex: 1,
-                padding: '0.5rem',
-                background: 'var(--bg-tertiary)',
-                border: '1px solid var(--border-color)',
-                color: 'white',
-                borderRadius: '4px',
-              }}
+              style={selectStyle}
             >
               <option value="" disabled>-- Select a category to filter --</option>
               {serverCategories.map(cat => (
@@ -138,14 +146,7 @@ export const BackupCategorySelector: React.FC<BackupCategorySelectorProps> = ({
                 }
               }}
               defaultValue=""
-              style={{
-                flex: 1,
-                padding: '0.5rem',
-                background: 'var(--bg-tertiary)',
-                border: '1px solid var(--border-color)',
-                color: 'white',
-                borderRadius: '4px',
-              }}
+              style={selectStyle}
             >
               <option value="" disabled>-- Select a chatroom category to add --</option>
               {serverCategories.map(cat => (
@@ -183,6 +184,68 @@ export const BackupCategorySelector: React.FC<BackupCategorySelectorProps> = ({
           </div>
         )}
       </div>
+
+      {/* Roleplayed Event Categories */}
+      {addEventCategory && removeEventCategory && (
+        <div style={{ marginTop: '0.5rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '0.25rem' }}>
+            <label style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+              Event Categories
+            </label>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+              Merged into Events category &amp; indexed as server-wide events
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
+            {serverCategories && serverCategories.length > 0 ? (
+              <select
+                onChange={e => {
+                  if (e.target.value) {
+                    addEventCategory(e.target.value);
+                    e.target.value = '';
+                  }
+                }}
+                defaultValue=""
+                style={selectStyle}
+              >
+                <option value="" disabled>-- Select an event category to add --</option>
+                {serverCategories.map(cat => (
+                  <option key={cat.id} value={cat.name} disabled={eventCategoriesList.includes(cat.name)}>
+                    {cat.name} {eventCategoriesList.includes(cat.name) ? '(Added)' : ''}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>No categories available</div>
+            )}
+          </div>
+
+          {eventCategoriesList.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.5rem' }}>
+              {eventCategoriesList.map((cat: string) => (
+                <span
+                  key={cat}
+                  style={{
+                    background: 'rgba(139, 92, 246, 0.15)',
+                    border: '1px solid #8b5cf6',
+                    color: '#c4b5fd',
+                    padding: '0.25rem 0.5rem',
+                    borderRadius: '4px',
+                    fontSize: '0.85rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.4rem',
+                  }}
+                >
+                  {cat}
+                  <X size={14} style={{ cursor: 'pointer' }} onClick={() => removeEventCategory(cat)} />
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </>
   );
 };

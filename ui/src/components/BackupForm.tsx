@@ -5,20 +5,20 @@ import { BackupCategorySelector } from './BackupCategorySelector';
 import { BackupFormModal } from './BackupFormModal';
 import type { BackupConfig, GlobalConfig } from '../types';
 
-export const BackupForm = ({ 
-  backupId, 
-  initialConfig, 
-  globalConfig, 
-  onStart, 
+export const BackupForm = ({
+  backupId,
+  initialConfig,
+  globalConfig,
+  onStart,
   onCancel,
   onSave,
-  isModal = false
-}: { 
-  backupId: string; 
-  initialConfig: any; 
-  globalConfig: GlobalConfig | null; 
-  onStart: () => void; 
-  onCancel: () => void; 
+  isModal = false,
+}: {
+  backupId: string;
+  initialConfig: any;
+  globalConfig: GlobalConfig | null;
+  onStart: () => void;
+  onCancel: () => void;
   onSave?: (savedConfig: BackupConfig) => void;
   isModal?: boolean;
 }) => {
@@ -31,6 +31,13 @@ export const BackupForm = ({
   });
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [showExtra, setShowExtra] = useState(false);
+  const [serverCategories, setServerCategories] = useState<{ id: string; name: string }[] | null>(null);
+  const [loadingCategories, setLoadingCategories] = useState(true);
+  const [categoriesError, setCategoriesError] = useState<string | null>(null);
+  const [matchBackupName, setMatchBackupName] = useState(backupId === 'New Backup');
+  const [allPaths, setAllPaths] = useState<string[]>([]);
+  const [pathConflict, setPathConflict] = useState(false);
 
   useEffect(() => {
     if (initialConfig) {
@@ -42,21 +49,12 @@ export const BackupForm = ({
     }
   }, [initialConfig]);
 
-  const [showExtra, setShowExtra] = useState(false);
-  const [serverCategories, setServerCategories] = useState<{ id: string; name: string }[] | null>(null);
-  const [loadingCategories, setLoadingCategories] = useState(true);
-  const [categoriesError, setCategoriesError] = useState<string | null>(null);
-  
-  const [matchBackupName, setMatchBackupName] = useState(backupId === 'New Backup');
-  const [allPaths, setAllPaths] = useState<string[]>([]);
-  const [pathConflict, setPathConflict] = useState(false);
-
   useEffect(() => {
     api.getAllBackupPaths().then(res => setAllPaths(res.filter(Boolean))).catch(console.error);
   }, []);
 
   const admin = config?.admin || {};
-  const currentPath = admin.path || ('Backups/' + (admin.backupName || admin.serverName || 'Unnamed').replace(/[^a-zA-Z0-9_-]/g, '_'));
+  const currentPath = admin.path || 'Backups/' + (admin.backupName || admin.serverName || 'Unnamed').replace(/[^a-zA-Z0-9_-]/g, '_');
 
   useEffect(() => {
     if (matchBackupName) {
@@ -68,11 +66,7 @@ export const BackupForm = ({
   }, [matchBackupName, admin.backupName, admin.serverName, admin.path]);
 
   useEffect(() => {
-    if (backupId === 'New Backup' && allPaths.some(p => p.toLowerCase() === currentPath.toLowerCase())) {
-      setPathConflict(true);
-    } else {
-      setPathConflict(false);
-    }
+    setPathConflict(backupId === 'New Backup' && allPaths.some(p => p.toLowerCase() === currentPath.toLowerCase()));
   }, [currentPath, allPaths, backupId]);
 
   useEffect(() => {
@@ -82,22 +76,20 @@ export const BackupForm = ({
     }
     setLoadingCategories(true);
     setCategoriesError(null);
-    api.getServerCategories(admin.serverId)
+    api
+      .getServerCategories(admin.serverId)
       .then(res => {
         if (Array.isArray(res)) {
           setServerCategories(res);
         } else if (typeof res === 'object' && res !== null) {
-          const catArray = Object.entries(res).map(([id, name]) => ({ id, name: String(name) }));
-          setServerCategories(catArray);
+          setServerCategories(Object.entries(res).map(([id, name]) => ({ id, name: String(name) })));
         }
       })
       .catch((err: any) => {
         console.error(err);
         setCategoriesError('Failed to fetch server categories');
       })
-      .finally(() => {
-        setLoadingCategories(false);
-      });
+      .finally(() => setLoadingCategories(false));
   }, [admin.serverId]);
 
   const handleSaveOnly = async () => {
@@ -105,11 +97,8 @@ export const BackupForm = ({
     setSaveError(null);
     try {
       await api.updateBackupConfig(backupId, config);
-      if (onSave) {
-        onSave(config);
-      } else {
-        onCancel();
-      }
+      if (onSave) onSave(config);
+      else onCancel();
     } catch (err: any) {
       console.error('Failed to save config:', err);
       setSaveError(err.message || 'Failed to save configuration');
@@ -122,11 +111,8 @@ export const BackupForm = ({
     setIsSaving(true);
     setSaveError(null);
     try {
-      if (backupId === 'New Backup') {
-        await api.createNewBackup(config);
-      } else {
-        await api.runBackup(backupId, config);
-      }
+      if (backupId === 'New Backup') await api.createNewBackup(config);
+      else await api.runBackup(backupId, config);
       onStart();
     } catch (err: any) {
       console.error('Failed to start backup:', err);
@@ -136,19 +122,17 @@ export const BackupForm = ({
   };
 
   const isKeepMode = admin.keepMode || false;
-  const categoriesList = isKeepMode ? (admin.categoriesToKeep || []) : (admin.categoriesToIgnore || []);
+  const categoriesList = isKeepMode ? admin.categoriesToKeep || [] : admin.categoriesToIgnore || [];
   const chatroomCategoriesList = admin.chatroomCategories || [];
+  const eventCategoriesList = admin.eventCategories || [];
 
   const addCategory = (value: string) => {
-    if (value.trim()) {
-      if (categoriesList.includes(value.trim())) return;
-      const list = [...categoriesList, value.trim()];
+    const val = value.trim();
+    if (val && !categoriesList.includes(val)) {
+      const list = [...categoriesList, val];
       setConfig({
         ...config,
-        admin: {
-          ...admin,
-          [isKeepMode ? 'categoriesToKeep' : 'categoriesToIgnore']: list
-        }
+        admin: { ...admin, [isKeepMode ? 'categoriesToKeep' : 'categoriesToIgnore']: list },
       });
     }
   };
@@ -157,22 +141,19 @@ export const BackupForm = ({
     const list = categoriesList.filter((c: string) => c !== cat);
     setConfig({
       ...config,
-      admin: {
-        ...admin,
-        [isKeepMode ? 'categoriesToKeep' : 'categoriesToIgnore']: list
-      }
+      admin: { ...admin, [isKeepMode ? 'categoriesToKeep' : 'categoriesToIgnore']: list },
     });
   };
 
   const addChatroomCategory = (value: string) => {
     const val = value.trim();
-    if (val) {
-      if (chatroomCategoriesList.includes(val)) return;
+    if (val && !chatroomCategoriesList.includes(val)) {
       const newChatList = [...chatroomCategoriesList, val];
       const newIgnore = (admin.categoriesToIgnore || []).filter((c: string) => c !== val);
-      const newKeep = isKeepMode && !(admin.categoriesToKeep || []).includes(val)
-        ? [...(admin.categoriesToKeep || []), val]
-        : (admin.categoriesToKeep || []);
+      const newKeep =
+        isKeepMode && !(admin.categoriesToKeep || []).includes(val)
+          ? [...(admin.categoriesToKeep || []), val]
+          : admin.categoriesToKeep || [];
       setConfig({
         ...config,
         admin: {
@@ -180,43 +161,64 @@ export const BackupForm = ({
           chatroomCategories: newChatList,
           categoriesToIgnore: newIgnore,
           categoriesToKeep: newKeep,
-        }
+        },
       });
     }
   };
 
   const removeChatroomCategory = (cat: string) => {
-    const newChatList = chatroomCategoriesList.filter((c: string) => c !== cat);
     setConfig({
       ...config,
-      admin: {
-        ...admin,
-        chatroomCategories: newChatList
-      }
+      admin: { ...admin, chatroomCategories: chatroomCategoriesList.filter((c: string) => c !== cat) },
+    });
+  };
+
+  const addEventCategory = (value: string) => {
+    const val = value.trim();
+    if (val && !eventCategoriesList.includes(val)) {
+      const newEventList = [...eventCategoriesList, val];
+      const newIgnore = (admin.categoriesToIgnore || []).filter((c: string) => c !== val);
+      const baseKeep = admin.categoriesToKeep || [];
+      const nextKeep = isKeepMode
+        ? Array.from(new Set([...baseKeep, val, 'Events']))
+        : baseKeep;
+      setConfig({
+        ...config,
+        admin: {
+          ...admin,
+          eventCategories: newEventList,
+          categoriesToIgnore: newIgnore,
+          categoriesToKeep: nextKeep,
+        },
+      });
+    }
+  };
+
+  const removeEventCategory = (cat: string) => {
+    setConfig({
+      ...config,
+      admin: { ...admin, eventCategories: eventCategoriesList.filter((c: string) => c !== cat) },
     });
   };
 
   const toggleKeepMode = (keep: boolean) => {
-    setConfig({
-      ...config,
-      admin: {
-        ...admin,
-        keepMode: keep
-      }
-    });
+    setConfig({ ...config, admin: { ...admin, keepMode: keep } });
   };
 
   const updateVerbosity = (key: string, val: boolean) => {
     setConfig({
       ...config,
-      admin: {
-        ...admin,
-        verbosity: {
-          ...(admin.verbosity || {}),
-          [key]: val
-        }
-      }
+      admin: { ...admin, verbosity: { ...(admin.verbosity || {}), [key]: val } },
     });
+  };
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%',
+    padding: '0.5rem',
+    background: 'var(--bg-tertiary)',
+    border: '1px solid var(--border-color)',
+    color: 'white',
+    borderRadius: '4px',
   };
 
   const formFields = (
@@ -224,22 +226,17 @@ export const BackupForm = ({
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1rem' }}>
         <div>
           <label style={{ display: 'block', marginBottom: '0.25rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Backup Name</label>
-          <input 
-            type="text" 
-            value={admin.backupName || ''} 
+          <input
+            type="text"
+            value={admin.backupName || ''}
             onChange={e => setConfig({ ...config, admin: { ...admin, backupName: e.target.value } })}
-            style={{ width: '100%', padding: '0.5rem', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'white', borderRadius: '4px' }}
+            style={inputStyle}
           />
         </div>
 
         <div>
           <label style={{ display: 'block', marginBottom: '0.25rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Server ID</label>
-          <input 
-            type="text" 
-            disabled 
-            value={admin.serverId || ''} 
-            style={{ width: '100%', padding: '0.5rem', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'gray', borderRadius: '4px' }}
-          />
+          <input type="text" disabled value={admin.serverId || ''} style={{ ...inputStyle, color: 'gray' }} />
         </div>
       </div>
 
@@ -247,20 +244,20 @@ export const BackupForm = ({
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
           <label style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Output Path</label>
           <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-            <input 
-              type="checkbox" 
-              checked={matchBackupName} 
-              onChange={e => setMatchBackupName(e.target.checked)}
-            />
+            <input type="checkbox" checked={matchBackupName} onChange={e => setMatchBackupName(e.target.checked)} />
             Match backup name
           </label>
         </div>
-        <input 
-          type="text" 
+        <input
+          type="text"
           disabled={matchBackupName}
-          value={currentPath} 
+          value={currentPath}
           onChange={e => setConfig({ ...config, admin: { ...admin, path: e.target.value } })}
-          style={{ width: '100%', padding: '0.5rem', background: 'var(--bg-tertiary)', border: `1px solid ${pathConflict ? 'var(--danger)' : 'var(--border-color)'}`, color: matchBackupName ? 'gray' : 'white', borderRadius: '4px' }}
+          style={{
+            ...inputStyle,
+            border: `1px solid ${pathConflict ? 'var(--danger)' : 'var(--border-color)'}`,
+            color: matchBackupName ? 'gray' : 'white',
+          }}
         />
         {pathConflict && (
           <span style={{ color: 'var(--danger)', fontSize: '0.8rem', marginTop: '0.25rem', display: 'block' }}>
@@ -279,14 +276,17 @@ export const BackupForm = ({
         chatroomCategoriesList={chatroomCategoriesList}
         addChatroomCategory={addChatroomCategory}
         removeChatroomCategory={removeChatroomCategory}
+        eventCategoriesList={eventCategoriesList}
+        addEventCategory={addEventCategory}
+        removeEventCategory={removeEventCategory}
         serverCategories={serverCategories}
         loadingCategories={loadingCategories}
         categoriesError={categoriesError}
       />
 
       <div>
-        <button 
-          type="button" 
+        <button
+          type="button"
           onClick={() => setShowExtra(!showExtra)}
           style={{ background: 'transparent', border: 'none', color: 'var(--accent-secondary)', display: 'flex', alignItems: 'center', gap: '0.25rem', padding: 0, cursor: 'pointer', fontSize: '0.9rem' }}
         >
@@ -302,11 +302,7 @@ export const BackupForm = ({
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', fontSize: '0.85rem' }}>
                   {['info', 'debug', 'console', 'log'].map(key => (
                     <label key={key} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
-                      <input 
-                        type="checkbox" 
-                        checked={admin.verbosity?.[key] || false} 
-                        onChange={e => updateVerbosity(key, e.target.checked)}
-                      />
+                      <input type="checkbox" checked={admin.verbosity?.[key] || false} onChange={e => updateVerbosity(key, e.target.checked)} />
                       Show {key} messages
                     </label>
                   ))}
@@ -316,19 +312,11 @@ export const BackupForm = ({
                 <strong style={{ display: 'block', marginBottom: '0.5rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Other settings</strong>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', fontSize: '0.85rem' }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
-                    <input 
-                      type="checkbox" 
-                      checked={admin.verbosity?.debugFiles || false} 
-                      onChange={e => updateVerbosity('debugFiles', e.target.checked)}
-                    />
+                    <input type="checkbox" checked={admin.verbosity?.debugFiles || false} onChange={e => updateVerbosity('debugFiles', e.target.checked)} />
                     Keep debug files
                   </label>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
-                    <input 
-                      type="checkbox" 
-                      checked={admin.verbosity?.dryRun || false} 
-                      onChange={e => updateVerbosity('dryRun', e.target.checked)}
-                    />
+                    <input type="checkbox" checked={admin.verbosity?.dryRun || false} onChange={e => updateVerbosity('dryRun', e.target.checked)} />
                     Dry run mode
                   </label>
                 </div>
@@ -361,7 +349,7 @@ export const BackupForm = ({
       <h3 style={{ margin: '0 0 1rem 0' }}>
         Configure Backup: {admin.serverName} <span style={{ fontSize: '0.75em', color: 'var(--text-secondary)', fontWeight: 'normal' }}>({admin.serverId})</span>
       </h3>
-      
+
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
         {saveError && (
           <div style={{ background: 'rgba(239, 68, 68, 0.15)', border: '1px solid var(--danger)', color: 'var(--danger)', padding: '0.75rem', borderRadius: '4px', fontSize: '0.85rem' }}>
@@ -371,7 +359,7 @@ export const BackupForm = ({
         {formFields}
 
         <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>
-          <button 
+          <button
             onClick={handleSaveAndRun}
             disabled={isSaving}
             style={{ padding: '0.5rem 1.5rem', background: 'var(--accent-primary)', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 600, cursor: isSaving ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem' }}
@@ -379,7 +367,7 @@ export const BackupForm = ({
             {isSaving && <Loader2 size={16} className="animate-spin" />}
             Start backup
           </button>
-          <button 
+          <button
             onClick={onCancel}
             disabled={isSaving}
             style={{ padding: '0.5rem 1.5rem', background: 'transparent', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: '6px', cursor: 'pointer' }}

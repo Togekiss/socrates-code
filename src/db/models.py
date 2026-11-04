@@ -14,7 +14,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 
-CURRENT_SCHEMA_VERSION = 4  # See docs/database_design.md for full schema changelog
+CURRENT_SCHEMA_VERSION = 5  # See docs/database_design.md for full schema changelog
 
 
 class Scope(StrEnum):
@@ -52,6 +52,7 @@ class SceneStatus(StrEnum):
 class SceneKind(StrEnum):
     SCENE = "scene"
     SESSION = "session"
+    EVENT = "event"
 
 
 class IssueKind(StrEnum):
@@ -136,6 +137,7 @@ class BackupModel(Base):
     writers = relationship("WriterModel", back_populates="backup", cascade="all, delete-orphan")
     character_groups = relationship("CharacterGroupModel", back_populates="backup", cascade="all, delete-orphan")
     characters = relationship("CharacterModel", back_populates="backup", cascade="all, delete-orphan")
+    events = relationship("EventModel", back_populates="backup", cascade="all, delete-orphan")
     scenes = relationship("SceneModel", back_populates="backup", cascade="all, delete-orphan")
     flagged_messages = relationship("FlaggedMessageModel", back_populates="backup", cascade="all, delete-orphan")
 
@@ -281,6 +283,28 @@ class CharacterNameModel(Base):
     character = relationship("CharacterModel", back_populates="names")
 
 
+class EventModel(Base):
+    __tablename__ = "events"
+    __table_args__ = (
+        UniqueConstraint("backup_id", "event_key", name="uq_backup_event_key"),
+        Index("ix_events_backup_start", "backup_id", "start_at"),
+    )
+
+    pk = Column(Integer, primary_key=True, autoincrement=True)
+    backup_id = Column(String(64), ForeignKey("backups.backup_id", ondelete="CASCADE"), nullable=False, index=True)
+    event_key = Column(String(32), nullable=False)
+    name = Column(String(128), nullable=True)
+    status = Column(String(32), nullable=False, default=SceneStatus.OPEN.value, index=True)
+    start_at = Column(DateTime(timezone=True), nullable=False)
+    end_at = Column(DateTime(timezone=True), nullable=False)
+    message_count = Column(Integer, nullable=False, default=0)
+    is_curated = Column(Boolean, nullable=False, default=False)
+    character_movements = Column(JSON, nullable=True)
+
+    backup = relationship("BackupModel", back_populates="events")
+    scenes = relationship("SceneModel", back_populates="event")
+
+
 class SceneModel(Base):
     __tablename__ = "scenes"
     __table_args__ = (
@@ -294,6 +318,8 @@ class SceneModel(Base):
     scene_key = Column(String(32), nullable=False)
     channel_pk = Column(Integer, ForeignKey("channels.pk", ondelete="CASCADE"), nullable=False, index=True)
     category_pk = Column(Integer, ForeignKey("channels.pk", ondelete="CASCADE"), nullable=False, index=True)
+    event_pk = Column(Integer, ForeignKey("events.pk", ondelete="SET NULL"), nullable=True, index=True)
+    custom_name = Column(String(128), nullable=True)
     kind = Column(String(16), nullable=False, default=SceneKind.SCENE.value, index=True)
     status = Column(String(32), nullable=False, index=True)  # "open", "closed", "no_end_tag"
     start_message_id = Column(String(20), nullable=False)
@@ -310,8 +336,15 @@ class SceneModel(Base):
     backup = relationship("BackupModel", back_populates="scenes")
     channel = relationship("ChannelModel", foreign_keys=[channel_pk])
     category = relationship("ChannelModel", foreign_keys=[category_pk])
+    event = relationship("EventModel", back_populates="scenes")
     participants = relationship("SceneParticipantModel", back_populates="scene", cascade="all, delete-orphan")
     issues = relationship("SceneIssueModel", foreign_keys="[SceneIssueModel.scene_pk]", back_populates="scene", passive_deletes=True)
+
+    @property
+    def message_count(self) -> int:
+        if self.start_index is not None and self.end_index is not None:
+            return max(0, int(self.end_index) - int(self.start_index) + 1)
+        return 0
 
 
 class SceneParticipantModel(Base):

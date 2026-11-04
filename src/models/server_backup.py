@@ -254,6 +254,8 @@ class ServerBackup:
                 self._category_by_channel_index[channel.id] = category
                 for thread in channel.threads:
                     self._thread_index[thread.id] = thread
+
+    _rebuild_indexes = build_indexes
     
     def save(self, write_snapshot: bool = False):
         """

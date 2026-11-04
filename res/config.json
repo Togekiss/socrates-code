@@ -8,22 +8,29 @@
         "chatroomCategories": [
             "Group Chats"
         ],
+        "eventCategories": [
+            "EVENT",
+            "EVENT STORAGE",
+            "NSFW Events"
+        ],
         "categoriesToIgnore": [
             "Staff Only",
             "Welcome!",
             "OOC",
             "RP Information",
             "RP Section",
-            "EVENT",
             "Social Media",
             "NSFW Room",
-            "NSFW Events",
             "Confessional",
             "->WAITING ROOM<-"
         ],
         "categoriesToKeep": [
             "The Twisted Viper Bar",
-            "Group Chats"
+            "Group Chats",
+            "EVENT",
+            "EVENT STORAGE",
+            "NSFW Events",
+            "Events"
         ],
         "keepMode": true,
         "verbosity": {

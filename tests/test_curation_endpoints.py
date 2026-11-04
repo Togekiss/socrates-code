@@ -1104,5 +1104,262 @@ class TestNewSceneIndexingAndSuggestions(unittest.TestCase):
             migrate_for_tests("1791895360")
 
 
+class TestEventsEngineAndCuration(unittest.TestCase):
+    """Tests the 3-stage Event Detection & Movement Engine and Event Curation endpoints."""
+
+    @classmethod
+    def tearDownClass(cls):
+        SceneManager.clear_cache()
+        close_all_engines()
+        reset_test_backup()
+        migrate_for_tests("1791895360")
+
+    def test_event_engine_segmentation_and_movements(self):
+        from index_events import detect_event_channel_segments, _smooth_character_runs
+        from models.backup_context import BackupContext
+
+        # 1. Verify ping-pong and trailing 1-msg smoothing on character runs
+        runs_pingpong = [
+            {
+                "scene_id": "ev-1-1",
+                "scene_key": "ev-1-1",
+                "channel_id": "1001",
+                "channel_name": "event-1",
+                "first_message_id": "10",
+                "first_at": "2023-05-05T10:00:00+00:00",
+                "last_message_id": "12",
+                "last_at": "2023-05-05T10:10:00+00:00",
+                "message_count": 3,
+            },
+            {
+                "scene_id": "ev-1-2",
+                "scene_key": "ev-1-2",
+                "channel_id": "1002",
+                "channel_name": "event-2",
+                "first_message_id": "13",
+                "first_at": "2023-05-05T10:15:00+00:00",
+                "last_message_id": "13",
+                "last_at": "2023-05-05T10:15:00+00:00",
+                "message_count": 1,
+            },
+            {
+                "scene_id": "ev-1-1",
+                "scene_key": "ev-1-1",
+                "channel_id": "1001",
+                "channel_name": "event-1",
+                "first_message_id": "14",
+                "first_at": "2023-05-05T10:20:00+00:00",
+                "last_message_id": "14",
+                "last_at": "2023-05-05T10:20:00+00:00",
+                "message_count": 1,
+            },
+            {
+                "scene_id": "ev-1-2",
+                "scene_key": "ev-1-2",
+                "channel_id": "1002",
+                "channel_name": "event-2",
+                "first_message_id": "15",
+                "first_at": "2023-05-05T10:25:00+00:00",
+                "last_message_id": "16",
+                "last_at": "2023-05-05T10:30:00+00:00",
+                "message_count": 2,
+            },
+        ]
+        smoothed = _smooth_character_runs(runs_pingpong)
+        self.assertEqual(len(smoothed), 2)
+        self.assertEqual(smoothed[0]["channel_name"], "event-1")
+        self.assertEqual(smoothed[0]["message_count"], 4)
+        self.assertEqual(smoothed[1]["channel_name"], "event-2")
+        self.assertEqual(smoothed[1]["message_count"], 3)
+
+        # Verify trailing 1-msg return A(3) -> B(2) -> A(1) collapses to A(3) -> B(2)
+        runs_trailing = [
+            dict(smoothed[0], message_count=3),
+            dict(smoothed[1], message_count=2),
+            {
+                "scene_id": "ev-1-1",
+                "scene_key": "ev-1-1",
+                "channel_id": "1001",
+                "channel_name": "event-1",
+                "first_message_id": "17",
+                "first_at": "2023-05-05T10:35:00+00:00",
+                "last_message_id": "17",
+                "last_at": "2023-05-05T10:35:00+00:00",
+                "message_count": 1,
+            },
+        ]
+        smoothed_tail = _smooth_character_runs(runs_trailing)
+        self.assertEqual(len(smoothed_tail), 2)
+        self.assertEqual(smoothed_tail[0]["channel_name"], "event-1")
+        self.assertEqual(smoothed_tail[1]["channel_name"], "event-2")
+
+        # 2. Verify moderator END vs tupper [END], 1-msg setup banner merge, and delayed cleanup END
+        ctx = BackupContext.create(backup_id="1791895360")
+        with BackupContext.activate(context=ctx):
+            synthetic_data = {
+                "channel": {
+                    "id": "900001",
+                    "name": "event-1",
+                    "categoryId": "events_category",
+                    "category": "Events",
+                    "type": "GuildTextChat",
+                },
+                "messages": [
+                    # 1-msg setup banner followed 14h later by actual RP (> 12h would split, <= 24h merges)
+                    {
+                        "id": "100",
+                        "timestamp": "2023-06-01T00:00:00+00:00",
+                        "content": "**Welcome to the Masquerade Ball!**",
+                        "author": {"id": "777888999000111222", "name": "ModUser", "isBot": False},
+                    },
+                    {
+                        "id": "101",
+                        "timestamp": "2023-06-01T14:00:00+00:00",
+                        "content": "Elise enters the ballroom. [END]",
+                        "author": {"id": "1", "name": "Elise", "isBot": True},
+                    },
+                    {
+                        "id": "102",
+                        "timestamp": "2023-06-01T15:00:00+00:00",
+                        "content": "Alrick greets her.",
+                        "author": {"id": "3", "name": "Alrick", "isBot": True},
+                    },
+                    # Delayed moderator cleanup END 20h later closes the segment instead of starting a new 1-msg segment
+                    {
+                        "id": "103",
+                        "timestamp": "2023-06-02T11:00:00+00:00",
+                        "content": "[EVENT END]",
+                        "author": {"id": "777888999000111222", "name": "ModUser", "isBot": False},
+                    },
+                ],
+            }
+            segs = detect_event_channel_segments(synthetic_data)
+            self.assertEqual(len(segs), 1)
+            self.assertEqual(segs[0]["status"], "closed")
+            self.assertEqual(segs[0]["start"]["id"], "100")
+            self.assertEqual(segs[0]["end"]["id"], "103")
+            self.assertEqual(segs[0]["message_count"], 4)
+
+    def test_event_curation_update_split_merge_and_persistence(self):
+        from assign_ids import assign_ids
+        from index_scenes import index_scenes
+        from models.backup_context import BackupContext
+        from server import (
+            get_events,
+            update_event,
+            split_event,
+            merge_events,
+            UpdateEventMetadataRequest,
+            SplitEventRequest,
+            MergeEventsRequest,
+        )
+
+        reset_test_backup()
+        migrate_for_tests("1791895360")
+        SceneManager.clear_cache()
+        close_all_engines()
+
+        ctx = BackupContext.create(backup_id="1791895360")
+        with BackupContext.activate(context=ctx):
+            assign_ids()
+            index_scenes()
+        SceneManager.clear_cache("1791895360")
+        close_all_engines()
+
+        # 1. Verify initial 4 events
+        res0 = get_events("1791895360", sort="asc")
+        self.assertEqual(res0["total_items"], 4)
+        ev1 = res0["events"][0]
+        self.assertEqual(len(ev1["channels"]), 2)
+        ev1_pk = ev1["pk"]
+        ch1_id = ev1["channels"][0]["channel_id"]
+        ch2_id = ev1["channels"][1]["channel_id"]
+
+        # 2. Update event name and channel custom names (including scene_pk key used by frontend)
+        ch1_scene_pk = ev1["channels"][0]["scene_pk"]
+        upd_res = update_event(
+            "1791895360",
+            ev1_pk,
+            UpdateEventMetadataRequest(
+                name="Grand Opening Gala",
+                channel_names={str(ch1_scene_pk): "Hotel Lobby", ch2_id: "Medical Tent"},
+            ),
+        )
+        self.assertEqual(upd_res["name"], "Grand Opening Gala")
+        self.assertTrue(upd_res["is_curated"])
+        ch_by_id = {ch["channel_id"]: ch for ch in upd_res["channels"]}
+        self.assertEqual(ch_by_id[ch1_id]["custom_name"], "Hotel Lobby")
+        self.assertEqual(ch_by_id[ch2_id]["custom_name"], "Medical Tent")
+
+        # Verify movement hops also reflect custom_name and first_timestamp
+        for hops in upd_res["character_movements"].values():
+            for hop in hops:
+                self.assertIn("first_timestamp", hop)
+                if hop["channel_id"] == ch1_id:
+                    self.assertEqual(hop["custom_name"], "Hotel Lobby")
+                elif hop["channel_id"] == ch2_id:
+                    self.assertEqual(hop["custom_name"], "Medical Tent")
+
+        # 3. Split ch2 into its own event using scene_pks (matching frontend payload)
+        ch2_scene_pk = ch_by_id[ch2_id]["scene_pk"]
+        split_res = split_event(
+            "1791895360",
+            ev1_pk,
+            SplitEventRequest(scene_pks=[ch2_scene_pk], new_event_name="Medical Tent Aftermath"),
+        )
+        self.assertEqual(split_res["status"], "success")
+        rem_ev = split_res["remaining_event"]
+        new_ev = split_res["new_event"]
+        self.assertEqual(len(rem_ev["channels"]), 1)
+        self.assertEqual(len(new_ev["channels"]), 1)
+        self.assertTrue(rem_ev["is_curated"])
+        self.assertTrue(new_ev["is_curated"])
+        self.assertEqual(new_ev["name"], "Medical Tent Aftermath")
+
+        res_after_split = get_events("1791895360", sort="asc")
+        self.assertEqual(res_after_split["total_items"], 5)
+
+        # 4. Re-run index_scenes() and verify curated split & names survive re-indexing!
+        with BackupContext.activate(context=ctx):
+            index_scenes()
+        SceneManager.clear_cache("1791895360")
+
+        res_reindexed = get_events("1791895360", sort="asc")
+        self.assertEqual(res_reindexed["total_items"], 5)
+        names_reindexed = {ev["name"] for ev in res_reindexed["events"] if ev.get("name")}
+        self.assertIn("Grand Opening Gala", names_reindexed)
+        self.assertIn("Medical Tent Aftermath", names_reindexed)
+
+        # Find the two split events by name
+        gala_ev = next(ev for ev in res_reindexed["events"] if ev.get("name") == "Grand Opening Gala")
+        tent_ev = next(ev for ev in res_reindexed["events"] if ev.get("name") == "Medical Tent Aftermath")
+        self.assertEqual(gala_ev["channels"][0]["custom_name"], "Hotel Lobby")
+        self.assertEqual(tent_ev["channels"][0]["custom_name"], "Medical Tent")
+
+        # 5. Merge the two events back together (using target_event_pk / source_event_pk matching frontend payload)
+        merge_res = merge_events(
+            "1791895360",
+            MergeEventsRequest(target_event_pk=gala_ev["pk"], source_event_pk=tent_ev["pk"], name="Reunited Gala"),
+        )
+        self.assertEqual(merge_res["status"], "success")
+        merged_ev = merge_res["event"]
+        self.assertEqual(merged_ev["name"], "Reunited Gala")
+        self.assertTrue(merged_ev["is_curated"])
+        self.assertEqual(len(merged_ev["channels"]), 2)
+
+        res_after_merge = get_events("1791895360", sort="asc")
+        self.assertEqual(res_after_merge["total_items"], 4)
+
+        # 6. Re-run index_scenes() and verify merged event survives re-indexing!
+        with BackupContext.activate(context=ctx):
+            index_scenes()
+        SceneManager.clear_cache("1791895360")
+
+        res_final = get_events("1791895360", sort="asc")
+        self.assertEqual(res_final["total_items"], 4)
+        self.assertEqual(res_final["events"][0]["name"], "Reunited Gala")
+        self.assertTrue(res_final["events"][0]["is_curated"])
+
+
 if __name__ == "__main__":
     unittest.main()

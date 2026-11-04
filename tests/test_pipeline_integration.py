@@ -1,6 +1,7 @@
 import os
 import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from db.models import (
     ChannelModel,
     WriterModel,
     CharacterModel,
+    EventModel,
     SceneModel,
     SceneParticipantModel,
     SceneIssueModel,
@@ -46,6 +48,8 @@ from fix_bad_messages import fix_bad_messages
 from index_scenes import index_scenes
 # pyrefly: ignore [missing-import]
 from backup_server import backup_server
+# pyrefly: ignore [missing-import]
+from deprecated.inject_category import inject_category
 from tests.reset_test_backup import reset_test_backup
 # pyrefly: ignore [missing-import]
 import utils.tricks as t
@@ -53,7 +57,7 @@ import utils.tricks as t
 
 class TestPipelineIntegration(unittest.TestCase):
     """
-    End-to-end integration test verifying the complete v2 SQLite migration and pipeline execution.
+    End-to-end integration test verifying the complete SQLite migration and pipeline execution.
     Tests: JSON -> SQLite migration -> assign_ids -> fix_bad_messages -> index_scenes -> find_character_scenes -> update.
     """
 
@@ -89,7 +93,7 @@ class TestPipelineIntegration(unittest.TestCase):
             expected_tables = {
                 "backups", "exports", "backup_steps", "channels", "writers",
                 "writer_aliases", "character_groups", "group_names", "characters",
-                "character_names", "scenes", "scene_participants", "scene_issues",
+                "character_names", "events", "scenes", "scene_participants", "scene_issues",
                 "flagged_messages"
             }
             self.assertTrue(expected_tables.issubset(tables), f"Missing tables: {expected_tables - tables}")
@@ -147,7 +151,7 @@ class TestPipelineIntegration(unittest.TestCase):
             backup = ServerBackup.load(scope="base")
             self.assertEqual(backup.steps[Step.FIX_MESSAGES], Status.SUCCESS)
 
-            # Chatroom channels in c.CHATROOM_CATEGORIES must be skipped by fix_bad_messages
+            # Chatroom channels in c.CHATROOM_CATEGORIES and event channels in Events must be skipped by fix_bad_messages
             with db_session(backup_id=self.backup_id, backup_path=self.backup_path) as session:
                 chatroom_chan = session.query(ChannelModel).filter(ChannelModel.discord_id == "858215486272962581").first()
                 if chatroom_chan:
@@ -157,10 +161,18 @@ class TestPipelineIntegration(unittest.TestCase):
                     ).count()
                     self.assertEqual(flagged_count, 0, "Chatroom channels must have 0 flagged messages")
 
+                event_chan = session.query(ChannelModel).filter(ChannelModel.discord_id == "1008065639467982868").first()
+                if event_chan:
+                    event_flagged = session.query(FlaggedMessageModel).filter(
+                        FlaggedMessageModel.backup_id == str(self.backup_id),
+                        FlaggedMessageModel.channel_pk == event_chan.pk
+                    ).count()
+                    self.assertEqual(event_flagged, 0, "Event channels must have 0 flagged messages")
+
         t.log("console", "fix_bad_messages executed successfully and updated SQLite step status.")
 
     def test_04_index_scenes_execution(self):
-        """Phase 4: Test index_scenes() saving indexed scenes into SQLite via SceneManager."""
+        """Phase 4: Test index_scenes() saving indexed scenes, chat sessions, and events into SQLite."""
         t.log("console", "Testing index_scenes step...")
         ctx = BackupContext.create(
             backup_id=self.backup_id,
@@ -193,6 +205,18 @@ class TestPipelineIntegration(unittest.TestCase):
                 ).count()
                 self.assertEqual(session_scenes_count, 121, "Should have 121 chatroom sessions")
 
+                # Verify Events and Event channel/thread scenes
+                events_count = session.query(EventModel).filter(
+                    EventModel.backup_id == self.backup_id
+                ).count()
+                self.assertEqual(events_count, 4, "Should have 4 indexed events in SQLite")
+
+                event_scenes_count = session.query(SceneModel).filter(
+                    SceneModel.backup_id == self.backup_id,
+                    SceneModel.kind == SceneKind.EVENT.value
+                ).count()
+                self.assertEqual(event_scenes_count, 7, "Should have 7 event scene segments (5 channel segments + 2 threads)")
+
                 # Verify participant details on session scenes
                 session_participants = (
                     session.query(SceneParticipantModel)
@@ -208,19 +232,22 @@ class TestPipelineIntegration(unittest.TestCase):
                     self.assertIsNotNone(p.last_at)
                     self.assertGreaterEqual(p.position, 0)
 
-                # Verify zero auto-detected issues for session scenes
-                session_issues = (
+                # Verify zero auto-detected issues for session and event scenes
+                non_rp_issues = (
                     session.query(SceneIssueModel)
                     .join(SceneModel, SceneIssueModel.scene_pk == SceneModel.pk)
-                    .filter(SceneModel.backup_id == self.backup_id, SceneModel.kind == SceneKind.SESSION.value)
+                    .filter(
+                        SceneModel.backup_id == self.backup_id,
+                        SceneModel.kind.in_([SceneKind.SESSION.value, SceneKind.EVENT.value])
+                    )
                     .count()
                 )
-                self.assertEqual(session_issues, 0, "Chat sessions should not produce auto-detected scene issues")
+                self.assertEqual(non_rp_issues, 0, "Chat sessions and events should not produce auto-detected scene issues")
 
                 participants_count = session.query(SceneParticipantModel).count()
                 self.assertGreater(participants_count, 0, "Scene participants must be stored in SQLite")
 
-        t.log("console", "index_scenes executed successfully and saved scenes to SQLite.")
+        t.log("console", "index_scenes executed successfully and saved scenes and events to SQLite.")
 
     def test_05_scene_manager_character_filtering(self):
         """Phase 5: Test SceneManager filtering scenes by character IDs directly from SQLite."""
@@ -246,7 +273,7 @@ class TestPipelineIntegration(unittest.TestCase):
 
     @patch("utils.tricks.run_command")
     def test_06_update_with_backup_server(self, mock_run_cmd):
-        """Phase 6: Test full update pipeline with backup_server() against testing backup."""
+        """Phase 6: Test full update pipeline with backup_server() against testing backup including raw event categories."""
         t.log("console", "Testing full update with backup_server()...")
 
         # Ensure database is migrated
@@ -258,10 +285,15 @@ class TestPipelineIntegration(unittest.TestCase):
         pre_backup = ServerBackup.load(scope="base", backup_id=self.backup_id, backup_path=self.backup_path)
         original_updated_at = pre_backup.updated_at
 
-        # Mock DCE CLI calls for channels and export
+        # Mock DCE CLI calls for channels and export (including raw event categories in Update/)
         def fake_run_command(command: str, show_lines: int = None):
             if "channels" in command:
                 mock_channels_output = (
+                    "1008065547155558431 \\ 6# CURRENT EVENT\n"
+                    "1008065681998221352 | 1# GuildTextChat / hotel-lobby\n"
+                    "1008065639467982868 | 2# GuildTextChat / game-booths\n"
+                    "* 1132200643776487524 | 1# GuildPublicThread / Tamina Freaky Hours~ | game-booths\n"
+                    "* 1132744421587296397 | 2# GuildPublicThread / Sand Dunes | game-booths\n"
                     "1106268351220678767 \\ 7# Group Chats\n"
                     "858215486272962581 | 1# GuildTextChat / chatroom\n"
                     "1019770957172326470 \\ 14# The Twisted Viper Bar\n"
@@ -271,6 +303,11 @@ class TestPipelineIntegration(unittest.TestCase):
                     "* 1158294831097970738 | 2# GuildPublicThread / Conversation | back-of-bar\n"
                     "1019771317303644261 | 3# GuildTextChat / bar-tables\n"
                     "* 1285969286808076360 | 1# GuildPublicThread / Full Moon | bar-tables\n"
+                    "1345359342970343486 \\ 23# NSFW Events\n"
+                    "1345360008409518121 | 1# GuildTextChat / room-9\n"
+                    "987749861963214878 \\ 28# EVENT STORAGE\n"
+                    "1008065664034025533 | 1# GuildTextChat / medical-tent\n"
+                    "* 1131989202465210569 | 1# GuildPublicThread / Room 4: Ruki, Aoi, Kaoru | medical-tent\n"
                 )
                 return 0, mock_channels_output
             elif "export" in command:
@@ -326,7 +363,15 @@ class TestPipelineIntegration(unittest.TestCase):
             self.assertEqual(full_moon_thread.name, "Full Moon")
             self.assertEqual(full_moon_thread.type, "GuildPublicThread")
 
-            # Scenes must be indexed in SQLite: 17 RP scenes (including Full Moon) and 54 chat sessions
+            # New event channel 'room-9' normalized to 'event-4'
+            event4_chan = session.query(ChannelModel).filter(
+                ChannelModel.export_pk == base_export.pk,
+                ChannelModel.discord_id == "1345360008409518121"
+            ).first()
+            self.assertIsNotNone(event4_chan, "New event channel 'event-4' must be saved in ChannelModel")
+            self.assertEqual(event4_chan.name, "event-4")
+
+            # Scenes must be indexed in SQLite: 17 RP scenes (including Full Moon) and 121 chat sessions
             rp_count = session.query(SceneModel).filter(
                 SceneModel.backup_id == str(self.backup_id),
                 SceneModel.kind == SceneKind.SCENE.value
@@ -339,10 +384,22 @@ class TestPipelineIntegration(unittest.TestCase):
             ).count()
             self.assertEqual(sessions_count, 121, "Chat sessions count must remain 121 after update")
 
+            # Events must be indexed in SQLite (4 base events + new event(s) from Update)
+            events_count = session.query(EventModel).filter(
+                EventModel.backup_id == str(self.backup_id)
+            ).count()
+            self.assertGreaterEqual(events_count, 5, "Events count must increase after merging new event channels")
+
         # 3. Verify Filesystem state
         data_dir = Path(ctx.data_folder)
         full_moon_file = data_dir / "14# The Twisted Viper Bar" / "Threads" / "3-1# Full Moon.json"
         self.assertTrue(full_moon_file.exists(), f"Full Moon thread file must exist at {full_moon_file}")
+
+        event4_file = data_dir / "6# Events" / "4# event-4.json"
+        self.assertTrue(event4_file.exists(), f"Normalized event-4 file must exist at {event4_file}")
+
+        sand_dunes_file = data_dir / "6# Events" / "Threads" / "1-2# Sand Dunes.json"
+        self.assertTrue(sand_dunes_file.exists(), f"Normalized Sand Dunes thread file must exist at {sand_dunes_file}")
 
         # Update, Data_Old, and Merge folders should be cleaned up
         self.assertFalse(Path(ctx.update_folder).exists(), "Update folder should be cleaned up")
@@ -350,6 +407,74 @@ class TestPipelineIntegration(unittest.TestCase):
         self.assertFalse(Path(ctx.merge_folder).exists(), "Merge folder should be cleaned up")
 
         t.log("console", "Full update with backup_server executed and verified successfully.")
+
+    def test_07_inject_category_events(self):
+        """
+        Tests injecting a raw event category into an existing backup using inject_category(..., is_event=True).
+        Verifies:
+          1. Category is normalized into the faux 'Events' category ('event-1..N').
+          2. Raw category folder is cleaned up and normalized on disk.
+          3. EventModel and SceneModel (kind='event') rows are indexed and saved to SQLite.
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_backup = Path(tmp_dir) / "TestInjectBackup"
+            clean_backup = PROJECT_ROOT / "Backups" / "Elysium-sql-tests-clean"
+            shutil.copytree(clean_backup, tmp_backup)
+
+            data_dir = tmp_backup / "Data"
+            faux_events_dir = data_dir / "6# Events"
+            raw_event_storage = data_dir / "28# EVENT STORAGE"
+            if faux_events_dir.exists():
+                faux_events_dir.rename(raw_event_storage)
+                ch1 = raw_event_storage / "1# event-1.json"
+                if ch1.exists():
+                    ch1.rename(raw_event_storage / "1# hogsmeade.json")
+                ch2 = raw_event_storage / "2# event-2.json"
+                if ch2.exists():
+                    ch2.rename(raw_event_storage / "2# common-room.json")
+                ch3 = raw_event_storage / "3# event-3.json"
+                if ch3.exists():
+                    ch3.rename(raw_event_storage / "3# hagrids-hut.json")
+
+            try:
+                migrate_single_backup(
+                    backup={
+                        "path": tmp_backup.as_posix(),
+                        "backup_id": "999999999",
+                        "backup_name": "TestInjectBackup",
+                        "server_id": "857848490683269161",
+                        "server_name": "Diabolik: Elysium",
+                    },
+                    dry_run=False,
+                )
+
+                inject_category(
+                    backup_id="999999999",
+                    backup_path=tmp_backup.as_posix(),
+                    category_name="EVENT STORAGE",
+                    is_event=True,
+                )
+
+                with db_session(backup_id="999999999", backup_path=tmp_backup.as_posix()) as session:
+                    events = session.query(EventModel).filter_by(backup_id="999999999").all()
+                    event_scenes = session.query(SceneModel).filter_by(
+                        backup_id="999999999", kind=SceneKind.EVENT.value
+                    ).all()
+                    self.assertGreater(len(events), 0, "EventModel rows must be created")
+                    self.assertGreater(len(event_scenes), 0, "SceneModel (kind='event') rows must be created")
+                    for ev in events:
+                        self.assertGreater(ev.message_count, 0)
+                        self.assertIsNotNone(ev.start_at)
+                        self.assertIsNotNone(ev.end_at)
+
+                self.assertFalse(raw_event_storage.exists(), "Raw category folder must be cleaned up")
+                events_dirs = [d for d in data_dir.iterdir() if d.is_dir() and "events" in d.name.lower()]
+                self.assertEqual(len(events_dirs), 1, "Exactly one normalized Events folder must exist")
+                norm_files = [f.name for f in events_dirs[0].glob("*.json")]
+                self.assertTrue(any("event-1.json" in f for f in norm_files), "event-1.json must exist in normalized folder")
+
+            finally:
+                close_all_engines()
 
 
 if __name__ == "__main__":

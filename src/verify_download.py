@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 import re
+import shutil
 import utils.tricks as t
 import utils.exceptions as exc
 from models import ServerBackup, Category, Channel
@@ -250,22 +251,27 @@ def verify_category_folder(cat: Category, folder):
             
 
 """
-verify_files(is_update)
+verify_files(backup, folder_or_is_update, is_update)
 
     This function navigates the backup folder and, for each folder and file,
     checks if it has an entry in the status file.
 
     Args:
         backup (ServerBackup): The loaded ServerBackup object.
+        folder_or_is_update (str | bool): Either the folder path or is_update boolean.
         is_update (bool): Whether the backup is in update mode or not.
 
     Returns:
         None
 """
-def verify_files(backup: ServerBackup, is_update):
+def verify_files(backup: ServerBackup, folder_or_is_update=False, is_update: bool = False):
         
     try:
-        folder = c.UPDATE_FOLDER if is_update else c.DATA_FOLDER
+        if isinstance(folder_or_is_update, bool):
+            is_update = folder_or_is_update
+            folder = c.UPDATE_FOLDER if is_update else c.DATA_FOLDER
+        else:
+            folder = folder_or_is_update or (c.UPDATE_FOLDER if is_update else c.DATA_FOLDER)
 
         t.log("info", f"\n\tVerifying paths in {folder}...\n")
 
@@ -285,7 +291,9 @@ def verify_files(backup: ServerBackup, is_update):
     except Exception as e:
         raise e
 
-            
+
+from update_paths import normalize_event_categories
+
 
 ################# Main function #################
 
@@ -296,9 +304,13 @@ def verify_download():
     backup, is_update = load_status()
 
     try:
+        folder = c.UPDATE_FOLDER if is_update else c.DATA_FOLDER
 
         # Check that everything was downloaded correctly
-        verify_files(backup, is_update)
+        verify_files(backup, folder, is_update)
+
+        # Consolidate event categories into the faux Events category
+        normalize_event_categories(backup, folder, is_update)
 
         backup.finish_verify()
     

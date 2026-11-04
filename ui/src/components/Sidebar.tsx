@@ -6,6 +6,7 @@ import {
   Users,
   Film,
   MessageSquare,
+  Calendar,
   AlertTriangle,
   MessageSquareCode,
   Settings,
@@ -24,6 +25,7 @@ export type TabType =
   | 'characters'
   | 'scenes'
   | 'chat_sessions'
+  | 'events'
   | 'scene_issues'
   | 'flagged_messages'
   | 'admin'
@@ -87,9 +89,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           id: 'writers',
           label: 'Writers',
           icon: UserCheck,
-          badge: curationSummary?.link_suggestions
-            ? `${curationSummary.link_suggestions}`
-            : null,
+          badge: curationSummary?.link_suggestions ? `${curationSummary.link_suggestions}` : null,
           badgeColor: 'var(--accent-secondary)',
         },
         { id: 'characters', label: 'Characters', icon: Users },
@@ -100,6 +100,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       items: [
         { id: 'scenes', label: 'Scenes', icon: Film },
         { id: 'chat_sessions', label: 'Chat Sessions', icon: MessageSquare },
+        { id: 'events', label: 'Events', icon: Calendar },
         {
           id: 'scene_issues',
           label: 'Scene Issues',
@@ -153,14 +154,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       >
         {!collapsed && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <span
-              style={{
-                fontSize: '1.35rem',
-                fontWeight: 700,
-                color: 'var(--accent-secondary)',
-                letterSpacing: '-0.02em',
-              }}
-            >
+            <span style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--accent-secondary)', letterSpacing: '-0.02em' }}>
               Socrates
             </span>
           </div>
@@ -210,11 +204,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               }}
             >
               <option value="">
-                {!user
-                  ? 'Log in to select...'
-                  : backups.length === 0
-                  ? 'No backups found'
-                  : '-- Select Backup --'}
+                {!user ? 'Log in to select...' : backups.length === 0 ? 'No backups found' : '-- Select Backup --'}
               </option>
               {backups.map(b => (
                 <option key={b.id || b.backup_id} value={b.id || b.backup_id}>
@@ -250,13 +240,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <button
             onClick={onNewBackup}
             title="Create New Backup"
-            style={{
-              background: 'transparent',
-              border: 'none',
-              padding: '0.4rem',
-              color: 'var(--accent-secondary)',
-              cursor: 'pointer',
-            }}
+            style={{ background: 'transparent', border: 'none', padding: '0.4rem', color: 'var(--accent-secondary)', cursor: 'pointer' }}
           >
             <PlusCircle size={20} />
           </button>
@@ -298,25 +282,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       {/* User & Logout Footer */}
-      <div
-        style={{
-          borderTop: '1px solid var(--border-color)',
-          paddingTop: '0.75rem',
-          marginTop: '0.5rem',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '0.5rem',
-        }}
-      >
+      <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '0.75rem', marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
         {user ? (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: collapsed ? 'center' : 'space-between',
-              padding: '0.25rem 0.5rem',
-            }}
-          >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: collapsed ? 'center' : 'space-between', padding: '0.25rem 0.5rem' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0 }}>
               {user.avatar ? (
                 <img
@@ -343,15 +311,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 </div>
               )}
               {!collapsed && (
-                <span
-                  style={{
-                    fontSize: '0.85rem',
-                    fontWeight: 600,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
+                <span style={{ fontSize: '0.85rem', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {user.username}
                 </span>
               )}
@@ -360,14 +320,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <button
                 onClick={onLogout}
                 title="Logout"
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  padding: '0.35rem',
-                  color: 'var(--text-secondary)',
-                  cursor: 'pointer',
-                  borderRadius: '4px',
-                }}
+                style={{ background: 'transparent', border: 'none', padding: '0.35rem', color: 'var(--text-secondary)', cursor: 'pointer', borderRadius: '4px' }}
               >
                 <LogOut size={16} />
               </button>

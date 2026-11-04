@@ -31,6 +31,7 @@ from db.models import (
 )
 from db.session import db_session, require_sqlite_db, init_db
 from db.snapshots import export_character_list_snapshot, export_curation_snapshots
+from db.event_service import update_event_metadata, merge_events, split_event
 from find_character_scenes import MENTION_ONLY_PAT, EXCERPT_MAX_LEN, has_end_tag
 from utils import exceptions as exc
 import utils.tricks as t
@@ -684,23 +685,42 @@ def _merge_scenes(
     session.delete(s2)
     session.flush()
 
-    # Renumber channel scene keys
-    channel_scenes = (
-        session.query(SceneModel)
-        .filter(
-            SceneModel.channel_pk == s1.channel_pk,
-            SceneModel.backup_id == str(backup_id),
+    # Renumber scene keys (across event if event_pk is set, else within channel)
+    if s1.event_pk is not None:
+        from db.models import EventModel
+        from db.event_service import _recompute_event_from_scenes
+        ev = session.query(EventModel).filter_by(pk=s1.event_pk).first()
+        if ev:
+            ev_scenes = (
+                session.query(SceneModel)
+                .filter_by(event_pk=ev.pk, backup_id=str(backup_id))
+                .order_by(SceneModel.start_at, SceneModel.pk)
+                .all()
+            )
+            for sc in ev_scenes:
+                sc.scene_key = f"tmp-ev-{sc.pk}"
+            session.flush()
+            for idx, sc in enumerate(ev_scenes, start=1):
+                sc.scene_key = f"{ev.event_key}-{idx}"
+            session.flush()
+            _recompute_event_from_scenes(ev, ev_scenes)
+    else:
+        channel_scenes = (
+            session.query(SceneModel)
+            .filter(
+                SceneModel.channel_pk == s1.channel_pk,
+                SceneModel.backup_id == str(backup_id),
+            )
+            .order_by(SceneModel.start_index)
+            .all()
         )
-        .order_by(SceneModel.start_index)
-        .all()
-    )
-    key_prefix = s1_key.rsplit("-", 1)[0]
-    for sc in channel_scenes:
-        sc.scene_key = f"tmp-{sc.pk}"
-    session.flush()
-    for idx, sc in enumerate(channel_scenes):
-        sc.scene_key = f"{key_prefix}-{idx + 1}"
-    session.flush()
+        key_prefix = s1_key.rsplit("-", 1)[0]
+        for sc in channel_scenes:
+            sc.scene_key = f"tmp-{sc.pk}"
+        session.flush()
+        for idx, sc in enumerate(channel_scenes):
+            sc.scene_key = f"{key_prefix}-{idx + 1}"
+        session.flush()
 
     # Clear SceneManager cache
     try:
@@ -814,6 +834,8 @@ def _split_scene_at(
         scene_key="tmp-split-new",
         channel_pk=scene.channel_pk,
         category_pk=scene.category_pk,
+        event_pk=scene.event_pk,
+        custom_name=scene.custom_name,
         kind=scene.kind,
         status=orig_status,
         start_message_id=str(cand_msg.get("id", "")),
@@ -862,20 +884,40 @@ def _split_scene_at(
             last_at=p_info["last_at"],
         ))
 
-    # Renumber scenes in channel
-    channel_scenes = (
-        session.query(SceneModel)
-        .filter(SceneModel.channel_pk == scene.channel_pk, SceneModel.backup_id == str(backup_id))
-        .order_by(SceneModel.start_index)
-        .all()
-    )
-    key_prefix = orig_scene_key.rsplit("-", 1)[0]
-    for sc in channel_scenes:
-        sc.scene_key = f"tmp-{sc.pk}"
-    session.flush()
-    for idx, sc in enumerate(channel_scenes):
-        sc.scene_key = f"{key_prefix}-{idx + 1}"
-    session.flush()
+    # Renumber scenes (across event if event_pk is set, else within channel)
+    if scene.event_pk is not None:
+        session.flush()
+        from db.models import EventModel
+        from db.event_service import _recompute_event_from_scenes
+        ev = session.query(EventModel).filter_by(pk=scene.event_pk).first()
+        if ev:
+            ev_scenes = (
+                session.query(SceneModel)
+                .filter_by(event_pk=ev.pk, backup_id=str(backup_id))
+                .order_by(SceneModel.start_at, SceneModel.pk)
+                .all()
+            )
+            for sc in ev_scenes:
+                sc.scene_key = f"tmp-ev-{sc.pk}"
+            session.flush()
+            for idx, sc in enumerate(ev_scenes, start=1):
+                sc.scene_key = f"{ev.event_key}-{idx}"
+            session.flush()
+            _recompute_event_from_scenes(ev, ev_scenes)
+    else:
+        channel_scenes = (
+            session.query(SceneModel)
+            .filter(SceneModel.channel_pk == scene.channel_pk, SceneModel.backup_id == str(backup_id))
+            .order_by(SceneModel.start_index)
+            .all()
+        )
+        key_prefix = orig_scene_key.rsplit("-", 1)[0]
+        for sc in channel_scenes:
+            sc.scene_key = f"tmp-{sc.pk}"
+        session.flush()
+        for idx, sc in enumerate(channel_scenes):
+            sc.scene_key = f"{key_prefix}-{idx + 1}"
+        session.flush()
 
     # Re-link other issues that were on Scene 1 at or after cand_idx to Scene 2
     relink_q = session.query(SceneIssueModel).filter(
@@ -1317,7 +1359,11 @@ def _renumber_channel_scenes(session, backup_id: str, channel_pk: int) -> None:
     """Renumbers scene keys tmp- then 1..N within a channel after scene addition or deletion."""
     channel_scenes = (
         session.query(SceneModel)
-        .filter(SceneModel.channel_pk == channel_pk, SceneModel.backup_id == str(backup_id))
+        .filter(
+            SceneModel.channel_pk == channel_pk,
+            SceneModel.backup_id == str(backup_id),
+            SceneModel.event_pk.is_(None),
+        )
         .order_by(SceneModel.start_index)
         .all()
     )

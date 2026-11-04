@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 import shutil
 import time
@@ -427,7 +428,8 @@ def update_file_path(item):
         if not c.DRY_RUN:
             # if item is thread, create folder /threads
             Path(target_path).parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(old_path, target_path)
+            src_path = f"{old_path}.moving_tmp" if Path(f"{old_path}.moving_tmp").exists() else old_path
+            shutil.move(src_path, target_path)
             t.log("info", f"\tMoved '{old_path}' to '{target_path}'")
         else:
             t.log("info", f"\tDRY RUN: Would move {old_path} to {target_path}")
@@ -467,6 +469,25 @@ def fix_paths(main_backup:ServerBackup):
         if old_path is not None:
             old_paths.append(old_path)
 
+        cat_items = []
+        for channel in cat.channels:
+            cat_items.append(channel)
+            for thread in channel.threads:
+                cat_items.append(thread)
+
+        moving_items = [
+            it for it in cat_items
+            if it.is_updated() and it.new_path is not None and it.new_path != it.path
+        ]
+        moving_old_paths = {(Path(c.MERGE_FOLDER) / it.path).as_posix() for it in moving_items}
+
+        if not c.DRY_RUN:
+            for it in moving_items:
+                it_old = (Path(c.MERGE_FOLDER) / it.path).as_posix()
+                it_target = (Path(c.MERGE_FOLDER) / it.new_path).as_posix()
+                if (it_target in moving_old_paths or any((Path(c.MERGE_FOLDER) / other.new_path).as_posix() == it_old for other in moving_items)) and Path(it_old).exists():
+                    shutil.move(it_old, f"{it_old}.moving_tmp")
+
         for channel in cat.channels:
             update_file_path(channel)
 
@@ -494,6 +515,201 @@ def fix_paths(main_backup:ServerBackup):
         else:
             t.log("error", f"Folder '{path}' still has files in it. Not deleting.")
         
+
+
+def normalize_event_categories(backup: ServerBackup, folder: str = None, is_update: bool = False):
+    """
+    Consolidates raw Discord event categories (e.g., EVENT, EVENT STORAGE, NSFW Events)
+    into a single faux 'Events' category (id='events_category', name='Events') with
+    canonical 'event-1..N' channel names sorted deterministically by snowflake ID.
+    """
+    if folder is None:
+        folder = c.UPDATE_FOLDER if is_update else c.DATA_FOLDER
+
+    event_cat_names = set(getattr(c, "EVENT_CATEGORIES", []) or [])
+    FAUX_CAT_ID = "events_category"
+    FAUX_CAT_NAME = "Events"
+    EVENT_CH_PAT = re.compile(r"^event-(\d+)$")
+
+    matched_cats = [
+        cat for cat in backup.categories
+        if cat.name in event_cat_names or cat.id == FAUX_CAT_ID or cat.name == FAUX_CAT_NAME
+    ]
+    if not matched_cats:
+        return
+
+    if (
+        len(matched_cats) == 1
+        and matched_cats[0].id == FAUX_CAT_ID
+        and matched_cats[0].name == FAUX_CAT_NAME
+        and all(EVENT_CH_PAT.match(ch.name) for ch in matched_cats[0].channels)
+    ):
+        return
+
+    t.log("info", f"\tNormalizing {len(matched_cats)} event categor{'y' if len(matched_cats) == 1 else 'ies'} into '{FAUX_CAT_NAME}'...")
+
+    existing_channels_by_id = {}
+    faux_cat_pos = None
+
+    if is_update:
+        try:
+            main_backup = ServerBackup.load(scope="base")
+            main_cat = next(
+                (cat for cat in main_backup.categories if cat.id == FAUX_CAT_ID or cat.name == FAUX_CAT_NAME),
+                None,
+            )
+            if main_cat is not None:
+                faux_cat_pos = main_cat.position
+                existing_channels_by_id = {ch.id: ch for ch in main_cat.channels}
+        except Exception:
+            pass
+
+    if faux_cat_pos is None:
+        faux_cat_pos = min(cat.position for cat in matched_cats)
+
+    faux_cat_path = f"{faux_cat_pos}# {FAUX_CAT_NAME}"
+
+    all_channels = []
+    seen_ch_ids = set()
+    for cat in matched_cats:
+        for ch in cat.channels:
+            if ch.id not in seen_ch_ids:
+                seen_ch_ids.add(ch.id)
+                all_channels.append(ch)
+
+    def _safe_int_id(val):
+        try:
+            return (0, int(val))
+        except (ValueError, TypeError):
+            return (1, str(val))
+
+    assigned_channels = []
+    unassigned_channels = []
+    for ch in all_channels:
+        if ch.id in existing_channels_by_id:
+            k = existing_channels_by_id[ch.id].position
+            ch.position = k
+            ch.name = f"event-{k}"
+            assigned_channels.append(ch)
+        elif not is_update and EVENT_CH_PAT.match(ch.name):
+            k = int(EVENT_CH_PAT.match(ch.name).group(1))
+            ch.position = k
+            ch.name = f"event-{k}"
+            assigned_channels.append(ch)
+        else:
+            unassigned_channels.append(ch)
+
+    max_existing_pos = max(
+        [ch.position for ch in existing_channels_by_id.values()] + [ch.position for ch in assigned_channels],
+        default=0,
+    )
+    unassigned_channels.sort(key=lambda ch: _safe_int_id(ch.id))
+    for offset, ch in enumerate(unassigned_channels, start=1):
+        pos = max_existing_pos + offset
+        ch.position = pos
+        ch.name = f"event-{pos}"
+
+    all_channels.sort(key=lambda ch: ch.position)
+
+    for ch in all_channels:
+        if is_update and ch.id in existing_channels_by_id:
+            existing_threads_by_id = {th.id: th for th in existing_channels_by_id[ch.id].threads}
+            assigned_threads = []
+            unassigned_threads = []
+            for th in ch.threads:
+                if th.id in existing_threads_by_id:
+                    th.position = existing_threads_by_id[th.id].position
+                    assigned_threads.append(th)
+                else:
+                    unassigned_threads.append(th)
+            max_th_pos = max(
+                [th.position for th in existing_threads_by_id.values()] + [th.position for th in assigned_threads],
+                default=0,
+            )
+            unassigned_threads.sort(key=lambda th: _safe_int_id(th.id))
+            for offset, th in enumerate(unassigned_threads, start=1):
+                th.position = max_th_pos + offset
+            ch.threads.sort(key=lambda th: th.position)
+        else:
+            ch.threads.sort(key=lambda th: (th.position, _safe_int_id(th.id)))
+            for idx, th in enumerate(ch.threads, start=1):
+                th.position = idx
+
+    staged_channel_writes = []
+    staged_thread_writes = []
+    old_files_to_cleanup = []
+
+    for ch in all_channels:
+        old_ch_file = Path(folder) / ch.path
+        ch_data = t.load_from_json(old_ch_file.as_posix())
+        if "channel" in ch_data and isinstance(ch_data["channel"], dict):
+            ch_data["channel"]["categoryId"] = FAUX_CAT_ID
+            ch_data["channel"]["category"] = FAUX_CAT_NAME
+            ch_data["channel"]["name"] = ch.name
+        new_rel_ch_path = f"{faux_cat_path}/{ch.position}# {ch.name}.json"
+        new_ch_file = Path(folder) / new_rel_ch_path
+        staged_channel_writes.append((ch, new_rel_ch_path, new_ch_file, ch_data))
+        if old_ch_file.resolve() != new_ch_file.resolve():
+            old_files_to_cleanup.append(old_ch_file)
+
+        for th in ch.threads:
+            old_th_file = Path(folder) / th.path
+            th_data = t.load_from_json(old_th_file.as_posix())
+            if "channel" in th_data and isinstance(th_data["channel"], dict):
+                th_data["channel"]["categoryId"] = ch.id
+                th_data["channel"]["category"] = ch.name
+            safe_th_name = t.sanitize_filename(th.name)
+            new_rel_th_path = f"{faux_cat_path}/Threads/{ch.position}-{th.position}# {safe_th_name}.json"
+            new_th_file = Path(folder) / new_rel_th_path
+            staged_thread_writes.append((th, new_rel_th_path, new_th_file, th_data))
+            if old_th_file.resolve() != new_th_file.resolve():
+                old_files_to_cleanup.append(old_th_file)
+
+    for old_file in old_files_to_cleanup:
+        if old_file.exists():
+            old_file.unlink()
+
+    target_cat_dir = Path(folder) / faux_cat_path
+    for cat in matched_cats:
+        old_cat_dir = Path(folder) / cat.path
+        if not old_cat_dir.exists():
+            continue
+        old_threads_dir = old_cat_dir / "Threads"
+        if old_threads_dir.exists() and not any(old_threads_dir.iterdir()):
+            old_threads_dir.rmdir()
+        if not any(old_cat_dir.iterdir()):
+            old_cat_dir.rmdir()
+        elif old_cat_dir.name != target_cat_dir.name and old_cat_dir.name.lower() == target_cat_dir.name.lower():
+            tmp_dir = old_cat_dir.with_name(f"{target_cat_dir.name}.renaming_tmp")
+            old_cat_dir.rename(tmp_dir)
+            tmp_dir.rename(target_cat_dir)
+
+    target_cat_dir.mkdir(parents=True, exist_ok=True)
+    if staged_thread_writes:
+        (target_cat_dir / "Threads").mkdir(parents=True, exist_ok=True)
+
+    for ch, new_rel_ch_path, new_ch_file, ch_data in staged_channel_writes:
+        t.save_to_json(ch_data, new_ch_file.as_posix())
+        ch.path = new_rel_ch_path
+
+    for th, new_rel_th_path, new_th_file, th_data in staged_thread_writes:
+        t.save_to_json(th_data, new_th_file.as_posix())
+        th.path = new_rel_th_path
+
+    faux_cat = Category(
+        id=FAUX_CAT_ID,
+        name=FAUX_CAT_NAME,
+        position=faux_cat_pos,
+        path=faux_cat_path,
+        channels=all_channels,
+    )
+    faux_cat.build_indexes()
+
+    matched_cat_obj_ids = {id(cat) for cat in matched_cats}
+    backup.categories = [cat for cat in backup.categories if id(cat) not in matched_cat_obj_ids]
+    backup.categories.append(faux_cat)
+    backup.sort_categories()
+    backup._rebuild_indexes()
 
 
 ################# Main function ################

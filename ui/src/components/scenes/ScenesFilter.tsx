@@ -5,15 +5,8 @@ import type { Character } from '../../types';
 /**
  * ScenesFilter.tsx
  * 
- * Component responsible for rendering the complex filter sidebar in the Scenes tab.
- * 
- * Design Notes:
- * - Uses nested mapping to flatten character objects (which might contain familiars/alter egos)
- *   so they can all be selected uniformly in the dropdown `<select>`.
- * - Toggles (Alter Egos, Familiars, NPCs) automatically disable when 'AND' character logic 
- *   is selected. This is because 'AND' requires all selected base characters to be present 
- *   in the scene; adding expanded alternative versions mathematically conflicts with most 
- *   'AND' queries on a scene level unless intentionally requested via individual manual selection.
+ * Component responsible for rendering the complex filter sidebar in the Scenes, Chat Sessions,
+ * and Events tabs.
  */
 
 interface ScenesFilterProps {
@@ -43,7 +36,7 @@ interface ScenesFilterProps {
   setAfter: (v: string) => void;
   byMe: boolean;
   setByMe: (v: boolean) => void;
-  mode?: 'scenes' | 'sessions';
+  mode?: 'scenes' | 'sessions' | 'events';
   allCharacters: Character[];
 }
 
@@ -107,9 +100,11 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
     return `Unknown (${id})`;
   };
 
+  const isChannelFilterMode = mode === 'sessions' || mode === 'events';
+  const statusOptions = mode === 'events' ? ['closed', 'open'] : ['closed', 'open', 'no_end_tag'];
+
   return (
     <div style={{ background: 'var(--bg-secondary)', borderRadius: '8px', border: '1px solid var(--border-color)', marginBottom: '1rem' }}>
-      
       <div 
         onClick={() => setCollapsed(!collapsed)}
         style={{ padding: '0.75rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', userSelect: 'none' }}
@@ -120,7 +115,6 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
       
       {!collapsed && (
         <div style={{ padding: '1rem', borderTop: '1px solid var(--border-color)', display: 'flex', flexWrap: 'wrap', gap: '0.5rem 1.5rem' }}>
-          
           {/* Characters */}
           <div style={{ flex: '1 1 300px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
@@ -157,14 +151,12 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
             
             {charactersFilter.length > 0 && (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.5rem' }}>
-                {charactersFilter.map(id => {
-                  return (
-                    <div key={id} style={{ background: 'var(--accent-secondary)', color: '#000', padding: '0.2rem 0.5rem', borderRadius: '12px', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                      {getCharName(id)}
-                      <button type="button" onClick={() => removeCharFilter(id)} style={{ background: 'transparent', border: 'none', color: '#000', padding: 0, cursor: 'pointer', display: 'flex' }}><X size={12} /></button>
-                    </div>
-                  );
-                })}
+                {charactersFilter.map(id => (
+                  <div key={id} style={{ background: 'var(--accent-secondary)', color: '#000', padding: '0.2rem 0.5rem', borderRadius: '12px', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                    {getCharName(id)}
+                    <button type="button" onClick={() => removeCharFilter(id)} style={{ background: 'transparent', border: 'none', color: '#000', padding: 0, cursor: 'pointer', display: 'flex' }}><X size={12} /></button>
+                  </div>
+                ))}
               </div>
             )}
             
@@ -211,22 +203,14 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
                     cursor: 'pointer',
                     fontWeight: byMe ? 'bold' : 'normal'
                   }}
-                  title="Filter to scenes written by the logged-in Discord user"
+                  title="Filter to items written by the logged-in Discord user"
                 >
                   ★ By Me
                 </button>
                 <button
                   type="button"
                   onClick={() => setWriterLogic(writerLogic === 'AND' ? 'OR' : 'AND')}
-                  style={{
-                    fontSize: '0.7rem',
-                    padding: '0.1rem 0.4rem',
-                    background: 'var(--bg-tertiary)',
-                    border: '1px solid var(--border-color)',
-                    color: 'white',
-                    borderRadius: '4px',
-                    cursor: 'pointer'
-                  }}
+                  style={{ fontSize: '0.7rem', padding: '0.1rem 0.4rem', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'white', borderRadius: '4px', cursor: 'pointer' }}
                 >
                   Logic: {writerLogic}
                 </button>
@@ -239,15 +223,7 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
                 onChange={e => setWriterInput(e.target.value)}
                 placeholder={byMe ? 'Bound to user session' : 'Add writer...'}
                 disabled={byMe}
-                style={{
-                  flex: 1,
-                  background: 'var(--bg-tertiary)',
-                  border: '1px solid var(--border-color)',
-                  color: 'white',
-                  padding: '0.5rem',
-                  borderRadius: '4px',
-                  opacity: byMe ? 0.5 : 1
-                }}
+                style={{ flex: 1, background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'white', padding: '0.5rem', borderRadius: '4px', opacity: byMe ? 0.5 : 1 }}
               />
             </form>
             {writersFilter.length > 0 && (
@@ -264,14 +240,14 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
           {/* Categories / Channels */}
           <div style={{ flex: '1 1 200px' }}>
             <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>
-              {mode === 'sessions' ? 'Channel (OR)' : 'Category (OR)'}
+              {isChannelFilterMode ? 'Channel (OR)' : 'Category (OR)'}
             </label>
             <form onSubmit={addCategoryFilter} style={{ display: 'flex', gap: '0.5rem' }}>
               <input
                 type="text"
                 value={categoryInput}
                 onChange={e => setCategoryInput(e.target.value)}
-                placeholder={mode === 'sessions' ? 'Add channel...' : 'Add category...'}
+                placeholder={isChannelFilterMode ? 'Add channel...' : 'Add category...'}
                 style={{ flex: 1, background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'white', padding: '0.5rem', borderRadius: '4px' }}
               />
             </form>
@@ -290,12 +266,12 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
           <div style={{ flex: '1 1 150px' }}>
             <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Status (OR)</label>
             <div style={{ display: 'flex', gap: '0.5rem' }}>
-              {['closed', 'open', 'no_end_tag'].map(s => (
+              {statusOptions.map(s => (
                 <button key={s} onClick={() => toggleArrayItem(statusesFilter, setStatusesFilter, s)} style={{ padding: '0.2rem 0.5rem', borderRadius: '4px', border: '1px solid var(--border-color)', background: statusesFilter.includes(s) ? 'var(--accent-primary)' : 'var(--bg-tertiary)', color: statusesFilter.includes(s) ? '#000' : 'white' }}>{s.replace('no_end_tag', 'issues')}</button>
               ))}
             </div>
             
-            {mode !== 'sessions' && (
+            {!isChannelFilterMode && (
               <>
                 <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '1rem', marginBottom: '0.25rem' }}>Type (OR)</label>
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
@@ -330,7 +306,6 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
               </div>
             </div>
           </div>
-
         </div>
       )}
     </div>

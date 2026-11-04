@@ -574,3 +574,4 @@ def query_scenes(
             return res_dict
 
         return formatted_scenes
+

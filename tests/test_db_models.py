@@ -27,6 +27,7 @@ from db.models import (
     GroupNameModel,
     CharacterModel,
     CharacterNameModel,
+    EventModel,
     SceneModel,
     SceneParticipantModel,
     SceneIssueModel,
@@ -49,6 +50,8 @@ from db.models import (
 
 # pyrefly: ignore [missing-import]
 from db.session import init_db, get_db_schema_version
+# pyrefly: ignore [missing-import]
+from db.upgrade import extract_database_data, populate_schema
 # pyrefly: ignore [missing-import]
 from utils import exceptions as exc
 # pyrefly: ignore [missing-import]
@@ -80,6 +83,7 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
             "group_names",
             "characters",
             "character_names",
+            "events",
             "scenes",
             "scene_participants",
             "scene_issues",
@@ -253,9 +257,9 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
 
     def test_schema_version_tracking(self):
         """Verifies that schema_version table correctly tracks CURRENT_SCHEMA_VERSION."""
-        self.assertEqual(CURRENT_SCHEMA_VERSION, 4)
+        self.assertEqual(CURRENT_SCHEMA_VERSION, 5)
         current_ver = get_db_schema_version(self.engine)
-        self.assertEqual(current_ver, 4)
+        self.assertEqual(current_ver, 5)
 
         with self.Session() as session:
             record = session.query(SchemaVersionModel).filter_by(version=CURRENT_SCHEMA_VERSION).first()
@@ -263,29 +267,116 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
             self.assertIsNotNone(record.applied_at)
 
     def test_scene_kind_and_participant_details_schema(self):
-        """Verifies SceneKind enum and columns on SceneModel and SceneParticipantModel."""
-        expected_kinds = {"scene", "session"}
+        """Verifies SceneKind enum and columns on SceneModel, EventModel, and SceneParticipantModel."""
+        expected_kinds = {"scene", "session", "event"}
         actual_kinds = {k.value for k in SceneKind}
         self.assertEqual(actual_kinds, expected_kinds)
 
         inspector = inspect(self.engine)
         scene_cols = {c["name"]: c for c in inspector.get_columns("scenes")}
         self.assertIn("kind", scene_cols)
+        self.assertIn("event_pk", scene_cols)
+        self.assertIn("custom_name", scene_cols)
+
+        event_cols = {c["name"]: c for c in inspector.get_columns("events")}
+        for col_name in ("pk", "backup_id", "event_key", "name", "status", "start_at", "end_at", "message_count", "character_movements"):
+            self.assertIn(col_name, event_cols)
 
         part_cols = {c["name"]: c for c in inspector.get_columns("scene_participants")}
         for col_name in ("position", "first_message_id", "first_at", "last_message_id", "last_at"):
             self.assertIn(col_name, part_cols)
 
+    def test_event_model_and_upgrade_roundtrip(self):
+        """Verifies EventModel creation, SceneModel.event_pk relationship, and upgrade extraction/population."""
+        import datetime
+        now = datetime.datetime.now(datetime.timezone.utc)
+        with self.Session() as session:
+            backup = BackupModel(
+                backup_id="test_ev_backup",
+                backup_name="Test Event Backup",
+                server_id="999",
+                server_name="Event Server",
+            )
+            session.add(backup)
+            session.flush()
+
+            export = ExportModel(backup_id=backup.backup_id, scope=Scope.BASE)
+            session.add(export)
+            session.flush()
+
+            channel = ChannelModel(
+                export_pk=export.pk,
+                discord_id="1008065639467982868",
+                type="GuildTextChat",
+                name="event-1",
+                position=1,
+                path="6# Events/1# event-1.json",
+            )
+            session.add(channel)
+            session.flush()
+
+            ev = EventModel(
+                backup_id=backup.backup_id,
+                event_key="ev-1",
+                name="Summer Beach Festival",
+                status="closed",
+                start_at=now,
+                end_at=now,
+                message_count=42,
+                character_movements={"1": [{"channel_id": "10", "channel_name": "event-1", "first_message_id": "100"}]},
+            )
+            session.add(ev)
+            session.flush()
+
+            scene = SceneModel(
+                backup_id=backup.backup_id,
+                scene_key="6-1-ev1",
+                channel_pk=channel.pk,
+                category_pk=channel.pk,
+                kind=SceneKind.EVENT.value,
+                event_pk=ev.pk,
+                custom_name="beach-shore",
+                status="closed",
+                start_message_id="100",
+                end_message_id="141",
+                start_index=0,
+                end_index=41,
+                start_at=now,
+                end_at=now,
+                start_author_id="1",
+                end_author_id="1",
+            )
+            session.add(scene)
+            session.commit()
+
+        # Extract and re-populate into a fresh engine to verify upgrade preservation
+        data = extract_database_data(self.engine)
+        self.assertEqual(len(data["events"]), 1)
+        self.assertEqual(data["events"][0]["name"], "Summer Beach Festival")
+
+        fresh_engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(fresh_engine)
+        counts = populate_schema(fresh_engine, data)
+        self.assertEqual(counts["events"], 1)
+        self.assertEqual(counts["scenes"], 1)
+
+        FreshSession = sessionmaker(bind=fresh_engine)
+        with FreshSession() as s2:
+            loaded_ev = s2.query(EventModel).filter_by(event_key="ev-1").first()
+            self.assertIsNotNone(loaded_ev)
+            self.assertEqual(loaded_ev.name, "Summer Beach Festival")
+            self.assertEqual(len(loaded_ev.scenes), 1)
+            self.assertEqual(loaded_ev.scenes[0].custom_name, "beach-shore")
+        fresh_engine.dispose()
+
     def test_schema_version_mismatch_raises_error(self):
         """Verifies that init_db raises DatabaseSchemaMismatchError when DB version < CURRENT_SCHEMA_VERSION."""
-        # Wipe schema_version table to simulate legacy v0 database with existing tables
         with self.Session() as session:
             session.query(SchemaVersionModel).delete()
             session.commit()
 
         self.assertEqual(get_db_schema_version(self.engine), 0)
 
-        # Calling init_db with check_version=True should raise DatabaseSchemaMismatchError
         with self.assertRaises(exc.DatabaseSchemaMismatchError) as ctx:
             init_db(self.engine, check_version=True)
         self.assertIn("older than required version", str(ctx.exception))

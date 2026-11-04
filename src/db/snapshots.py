@@ -17,6 +17,7 @@ from .models import (
     WriterModel,
     CharacterGroupModel,
     CharacterModel,
+    EventModel,
     SceneModel,
     SceneKind,
     Scope,
@@ -73,11 +74,18 @@ def export_backup_info_snapshot(
     scene_counts_by_category: Dict[int, int] = {}
     total_scenes = 0
     total_sessions = 0
+    total_events = 0
 
     try:
         inspector = inspect(session.bind)
         existing_tables = set(inspector.get_table_names())
         has_scenes = "scenes" in existing_tables
+        has_events = "events" in existing_tables
+        if has_events:
+            total_events = session.query(func.count(EventModel.pk)).filter(
+                EventModel.backup_id == str(backup_id),
+            ).scalar() or 0
+
         has_kind_col = False
         if has_scenes:
             cols = {c["name"] for c in inspector.get_columns("scenes")}
@@ -220,6 +228,7 @@ def export_backup_info_snapshot(
         "number_of_threads": total_thread_count,
         "number_of_scenes": total_scenes,
         "number_of_sessions": total_sessions,
+        "number_of_events": total_events,
         "categories": categories_json,
     }
 
@@ -393,5 +402,3 @@ def export_curation_snapshots(
 
     save_json_atomic(bad_messages_data, (info_dir / "bad_messages.json").as_posix())
     save_json_atomic(bad_end_messages_data, (info_dir / "bad_end_messages.json").as_posix())
-
-

@@ -9,6 +9,7 @@ import { WritersTab } from './components/WritersTab';
 import { CharactersTab } from './components/CharactersTab';
 import { ScenesTab } from './components/ScenesTab';
 import { ChatSessionsTab } from './components/ChatSessionsTab';
+import { EventsTab } from './components/EventsTab';
 import { SceneIssuesTab } from './components/SceneIssuesTab';
 import { FlaggedMessagesTab } from './components/FlaggedMessagesTab';
 import { AdminTab } from './components/AdminTab';
@@ -28,18 +29,14 @@ function AuthCallback() {
       setError('No authorization code provided by Discord.');
       return;
     }
-
     if (hasRequested.current) return;
     hasRequested.current = true;
 
     api
       .authDiscord(code)
       .then(res => {
-        if (res.status === 'success') {
-          navigate('/', { replace: true });
-        } else {
-          setError('Authentication failed. Please try again.');
-        }
+        if (res.status === 'success') navigate('/', { replace: true });
+        else setError('Authentication failed. Please try again.');
       })
       .catch(err => {
         console.error(err);
@@ -57,14 +54,7 @@ function AuthCallback() {
             <p style={{ color: 'var(--text-secondary)', lineHeight: '1.5', marginBottom: '1.75rem', fontSize: '0.95rem' }}>{error}</p>
             <button
               onClick={() => navigate('/', { replace: true })}
-              style={{
-                padding: '0.65rem 1.5rem',
-                background: 'var(--bg-tertiary)',
-                border: '1px solid var(--border-color)',
-                borderRadius: '6px',
-                color: 'white',
-                fontWeight: 500,
-              }}
+              style={{ padding: '0.65rem 1.5rem', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'white', fontWeight: 500 }}
             >
               Return to Home
             </button>
@@ -72,18 +62,7 @@ function AuthCallback() {
         ) : (
           <>
             <div style={{ display: 'inline-flex', position: 'relative', marginBottom: '1.5rem' }}>
-              <div
-                style={{
-                  width: '64px',
-                  height: '64px',
-                  borderRadius: '50%',
-                  background: 'rgba(109, 40, 217, 0.15)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  border: '1px solid var(--border-color)',
-                }}
-              >
+              <div style={{ width: '64px', height: '64px', borderRadius: '50%', background: 'rgba(109, 40, 217, 0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid var(--border-color)' }}>
                 <Loader2 size={32} className="animate-spin" style={{ color: 'var(--accent-secondary)' }} />
               </div>
             </div>
@@ -117,24 +96,25 @@ function NewBackupTab({ user, onStart, onCancel }: { user: User; onStart: () => 
 
   const servers = user?.authorized_guilds || [];
   const serverInfo = servers.find(s => s.id === selectedServer);
-
-  const initialConfigForServer = selectedServer && serverInfo ? {
-    ...globalConfig,
-    admin: {
-      ...((globalConfig.admin as Record<string, unknown>) || {}),
-      serverId: serverInfo.id,
-      serverName: serverInfo.name,
-      categoriesToKeep: [],
-      categoriesToIgnore: [],
-      dmCategories: [],
-    },
-  } : globalConfig;
+  const initialConfigForServer =
+    selectedServer && serverInfo
+      ? {
+          ...globalConfig,
+          admin: {
+            ...((globalConfig.admin as Record<string, unknown>) || {}),
+            serverId: serverInfo.id,
+            serverName: serverInfo.name,
+            categoriesToKeep: [],
+            categoriesToIgnore: [],
+            dmCategories: [],
+          },
+        }
+      : globalConfig;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
       <div className="glass-panel">
         <h2 style={{ marginTop: 0, color: 'var(--text-primary)', marginBottom: '1.5rem' }}>Create a New Backup</h2>
-
         <div style={{ marginBottom: '1.5rem' }}>
           <label style={{ display: 'block', marginBottom: '0.5rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
             Select a Server to Backup
@@ -142,21 +122,11 @@ function NewBackupTab({ user, onStart, onCancel }: { user: User; onStart: () => 
           <select
             value={selectedServer}
             onChange={e => setSelectedServer(e.target.value)}
-            style={{
-              width: '100%',
-              padding: '0.65rem',
-              background: 'var(--bg-tertiary)',
-              border: '1px solid var(--border-color)',
-              color: 'white',
-              borderRadius: '6px',
-              fontSize: '0.95rem',
-            }}
+            style={{ width: '100%', padding: '0.65rem', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'white', borderRadius: '6px', fontSize: '0.95rem' }}
           >
             <option value="">-- Select a Server --</option>
             {servers.map(s => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
+              <option key={s.id} value={s.id}>{s.name}</option>
             ))}
           </select>
         </div>
@@ -184,8 +154,6 @@ function Dashboard() {
   const [selectedBackupId, setSelectedBackupId] = useState<string | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [isLoadingAuth, setIsLoadingAuth] = useState<boolean>(true);
-
-  // Real-time metadata states
   const [curationSummary, setCurationSummary] = useState<CurationSummary | null>(null);
   const [backupInfo, setBackupInfo] = useState<BackupInfo | null>(null);
   const [myWriter, setMyWriter] = useState<MyWriter | null>(null);
@@ -239,8 +207,7 @@ function Dashboard() {
               const list = Array.isArray(data) ? data : [];
               setBackups(list);
               if (list.length > 0 && !selectedBackupId) {
-                const firstId = list[0].id || list[0].backup_id || '';
-                setSelectedBackupId(firstId);
+                setSelectedBackupId(list[0].id || list[0].backup_id || '');
               }
             })
             .catch(console.error);
@@ -253,20 +220,11 @@ function Dashboard() {
         setUser(null);
         setBackups([]);
       })
-      .finally(() => {
-        setIsLoadingAuth(false);
-      });
+      .finally(() => setIsLoadingAuth(false));
   }, []);
 
   const handleLogin = () => {
-    api
-      .getLoginUrl()
-      .then(res => {
-        if (res.url) {
-          window.location.href = res.url;
-        }
-      })
-      .catch(console.error);
+    api.getLoginUrl().then(res => res.url && (window.location.href = res.url)).catch(console.error);
   };
 
   const handleLogout = () => {
@@ -305,19 +263,7 @@ function Dashboard() {
           </p>
           <button
             onClick={handleLogin}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '0.75rem',
-              background: 'var(--accent-primary)',
-              color: '#fff',
-              fontWeight: 600,
-              padding: '0.75rem 1.75rem',
-              fontSize: '1rem',
-              borderRadius: '8px',
-              border: 'none',
-              cursor: 'pointer',
-            }}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '0.75rem', background: 'var(--accent-primary)', color: '#fff', fontWeight: 600, padding: '0.75rem 1.75rem', fontSize: '1rem', borderRadius: '8px', border: 'none', cursor: 'pointer' }}
           >
             <LogIn size={20} /> Log in with Discord
           </button>
@@ -328,7 +274,6 @@ function Dashboard() {
 
   return (
     <div style={{ display: 'flex', gap: '1.25rem', minHeight: '100vh', position: 'relative' }}>
-      {/* Side Menu Navigation */}
       <Sidebar
         user={user}
         backups={backups}
@@ -342,45 +287,19 @@ function Dashboard() {
         onLogout={handleLogout}
       />
 
-      {/* Main Content View Area */}
       <main style={{ flex: 1, minWidth: 0, paddingBottom: '2rem' }}>
         {backupInfo?.is_schema_outdated && (
-          <div
-            style={{
-              marginBottom: '1.25rem',
-              padding: '1rem 1.25rem',
-              backgroundColor: 'rgba(239, 68, 68, 0.15)',
-              border: '1px solid var(--danger)',
-              borderRadius: '8px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: '1rem',
-              flexWrap: 'wrap',
-            }}
-          >
+          <div style={{ marginBottom: '1.25rem', padding: '1rem 1.25rem', backgroundColor: 'rgba(239, 68, 68, 0.15)', border: '1px solid var(--danger)', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', color: 'var(--text-primary)' }}>
               <AlertTriangle size={24} style={{ color: 'var(--danger)', flexShrink: 0 }} />
               <div>
-                <strong>Database schema is outdated:</strong> Backup database is schema v{backupInfo.schema_version ?? 0}, but the application requires v{backupInfo.current_schema_version ?? 4}. Please upgrade the database.
+                <strong>Database schema is outdated:</strong> Backup database is schema v{backupInfo.schema_version ?? 0}, but the application requires v{backupInfo.current_schema_version ?? 5}. Please upgrade the database.
               </div>
             </div>
             <button
               onClick={handleUpgradeDatabase}
               disabled={isUpgrading}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '0.5rem',
-                backgroundColor: 'var(--danger)',
-                color: '#fff',
-                border: 'none',
-                padding: '0.5rem 1rem',
-                borderRadius: '6px',
-                fontWeight: 600,
-                cursor: isUpgrading ? 'not-allowed' : 'pointer',
-                opacity: isUpgrading ? 0.7 : 1,
-              }}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', backgroundColor: 'var(--danger)', color: '#fff', border: 'none', padding: '0.5rem 1rem', borderRadius: '6px', fontWeight: 600, cursor: isUpgrading ? 'not-allowed' : 'pointer', opacity: isUpgrading ? 0.7 : 1 }}
             >
               {isUpgrading && <Loader2 size={16} className="animate-spin" />}
               {isUpgrading ? 'Upgrading Database...' : 'Upgrade Database Now'}
@@ -392,69 +311,35 @@ function Dashboard() {
             <NewBackupTab
               user={user}
               onStart={() => {
-                setTimeout(() => {
-                  api
-                    .getBackups()
-                    .then(data => {
-                      if (Array.isArray(data)) setBackups(data);
-                    })
-                    .catch(console.error);
-                }, 1000);
+                setTimeout(() => api.getBackups().then(data => Array.isArray(data) && setBackups(data)).catch(console.error), 1000);
                 setActiveTab('status');
               }}
               onCancel={() => setActiveTab('status')}
             />
           )}
-
           {activeTab === 'status' && (
-            <StatusTab
-              backupId={selectedBackupId}
-              setTab={t => setActiveTab(t)}
-              curationSummary={curationSummary}
-              backupInfo={backupInfo}
-              onUpgrade={handleUpgradeDatabase}
-              isUpgrading={isUpgrading}
-            />
+            <StatusTab backupId={selectedBackupId} setTab={t => setActiveTab(t)} curationSummary={curationSummary} backupInfo={backupInfo} onUpgrade={handleUpgradeDatabase} isUpgrading={isUpgrading} />
           )}
-
           {activeTab === 'run' && selectedBackupId && <RunTab backupId={selectedBackupId} onRefreshSummary={refreshSummary} />}
-
-          {activeTab === 'writers' && selectedBackupId && (
-            <WritersTab backupId={selectedBackupId} onRefreshSummary={refreshSummary} />
-          )}
-
+          {activeTab === 'writers' && selectedBackupId && <WritersTab backupId={selectedBackupId} onRefreshSummary={refreshSummary} />}
           {activeTab === 'characters' && selectedBackupId && (
-            <CharactersTab
-              backupId={selectedBackupId}
-              myWriter={myWriter}
-              onNavigateToWriters={() => setActiveTab('writers')}
-            />
+            <CharactersTab backupId={selectedBackupId} myWriter={myWriter} onNavigateToWriters={() => setActiveTab('writers')} />
           )}
-
           {activeTab === 'scenes' && selectedBackupId && (
-            <ScenesTab
-              backupId={selectedBackupId}
-              myWriter={myWriter}
-              onNavigateToWriters={() => setActiveTab('writers')}
-            />
+            <ScenesTab backupId={selectedBackupId} myWriter={myWriter} onNavigateToWriters={() => setActiveTab('writers')} />
           )}
-
           {activeTab === 'chat_sessions' && selectedBackupId && (
-            <ChatSessionsTab
-              backupId={selectedBackupId}
-              myWriter={myWriter}
-              onNavigateToWriters={() => setActiveTab('writers')}
-            />
+            <ChatSessionsTab backupId={selectedBackupId} myWriter={myWriter} onNavigateToWriters={() => setActiveTab('writers')} />
           )}
-
+          {activeTab === 'events' && selectedBackupId && (
+            <EventsTab backupId={selectedBackupId} myWriter={myWriter} onNavigateToWriters={() => setActiveTab('writers')} onRefreshSummary={refreshSummary} />
+          )}
           {activeTab === 'scene_issues' && selectedBackupId && (
             <SceneIssuesTab backupId={selectedBackupId} onRefreshSummary={refreshSummary} />
           )}
-
           {activeTab === 'flagged_messages' && selectedBackupId && (
             <FlaggedMessagesTab backupId={selectedBackupId} onRefreshSummary={refreshSummary} />
           )}
-
           {activeTab === 'admin' && <AdminTab onRefreshSummary={refreshSummary} />}
         </ErrorBoundary>
       </main>
@@ -462,7 +347,7 @@ function Dashboard() {
   );
 }
 
-function App() {
+export default function App() {
   return (
     <BrowserRouter>
       <Routes>
@@ -472,5 +357,3 @@ function App() {
     </BrowserRouter>
   );
 }
-
-export default App;

@@ -55,6 +55,18 @@ class SceneManager:
             debug_files=debug_files
         )
 
+    def save_events(
+        self,
+        event_clusters: List[Dict[str, Any]],
+    ) -> None:
+        """Persists indexed events into SQLite via scene_service."""
+        from db import event_service
+        event_service.save_indexed_events(
+            backup_id=self.backup_id,
+            base_path=self.base_path,
+            event_clusters=event_clusters,
+        )
+
     def filter_scenes(
         self,
         kind: str = "scene",
@@ -117,5 +129,21 @@ class SceneManager:
             per_page=per_page,
             kind=kind,
             channels=channels,
+            **kwargs
+        )
+
+    def get_paginated_events(
+        self,
+        page: int = 1,
+        per_page: int = 50,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Delegates paginated event queries directly to SQLite via scene_service."""
+        from db import event_service
+        return event_service.query_events(
+            backup_id=self.backup_id,
+            base_path=self.base_path,
+            page=page,
+            per_page=per_page,
             **kwargs
         )

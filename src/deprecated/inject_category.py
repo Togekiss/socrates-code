@@ -4,13 +4,16 @@ import shutil
 from pathlib import Path
 
 # Add src to sys.path
-sys.path.insert(0, "src")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, (PROJECT_ROOT / "src").as_posix())
+sys.path.insert(0, PROJECT_ROOT.as_posix())
 
 import utils.tricks as t
 from models.backup_context import BackupContext
 from models import ServerBackup, Category, Channel, Thread, CharacterList
 from assign_ids import assign_ids_in_file
 from index_sessions import index_sessions
+from res import constants as c
 
 """
 INSTRUCTIONS
@@ -25,125 +28,210 @@ Before running:
   and add "--before <exportedAt date>" to the command
 - If the category position clashed with an existing one, just change the folder name to a free number
 - Once it's done downloading, change the constants in this script and run it
+  - If injecting an event category (EVENT, EVENT STORAGE, NSFW Events), set IS_EVENT = True
+    It will automatically normalize the category and channels into the faux 'Events' category ('event-1..N')
+    and index all events and character movements into SQLite!
+  - If injecting a regular RP or chatroom category, leave IS_EVENT = False
 
 At any point:
 - Check Backups/<backup>/backup_config.json and make sure the new category is added there
-
 """
 
 BACKUP_ID = "1"
 BACKUP_PATH = "Backups/Elysium"
-CATEGORY_NAME = "Group Chats"
+CATEGORY_NAME = "active event"
+IS_EVENT = True  # Set to True when injecting an event category (e.g. EVENT, EVENT STORAGE, NSFW Events, Events)
 
-# 1. Back up database first
-sqlite_path = Path(BACKUP_PATH) / "backup.sqlite"
-shutil.copy2(sqlite_path, sqlite_path.with_suffix(".sqlite.bak_pre_inject"))
-print(f"Created safety backup at {sqlite_path}.bak_pre_inject")
 
-# 2. Enter Backup Context
-with BackupContext.from_backup_id(BACKUP_ID):
-    data_dir = Path(BACKUP_PATH) / "Data"
-    
-    # Locate category folder
-    cat_dirs = [d for d in data_dir.iterdir() if d.is_dir() and CATEGORY_NAME.lower() in d.name.lower()]
-    if not cat_dirs:
-        print(f"Error: Could not find folder matching '{CATEGORY_NAME}' in {data_dir}")
-        sys.exit(1)
-    cat_dir = cat_dirs[0]
-    cat_pos = int(cat_dir.name.split("#")[0]) if "#" in cat_dir.name else 28
+def inject_category(
+    backup_id: str = BACKUP_ID,
+    backup_path: str = BACKUP_PATH,
+    category_name: str = CATEGORY_NAME,
+    is_event: bool = IS_EVENT,
+) -> None:
+    # 1. Back up database first
+    sqlite_path = Path(backup_path) / "backup.sqlite"
+    if sqlite_path.exists():
+        shutil.copy2(sqlite_path, sqlite_path.with_suffix(".sqlite.bak_pre_inject"))
+        print(f"Created safety backup at {sqlite_path}.bak_pre_inject")
 
-    # Read channel files
-    chan_files = sorted([f for f in cat_dir.glob("*.json") if not f.name.startswith("_")])
-    if not chan_files:
-        print("Error: No channel JSON files found in category folder.")
-        sys.exit(1)
-
-    # Grab category discord snowflake from the first channel file
-    with open(chan_files[0], "r", encoding="utf-8") as f:
-        first_payload = json.load(f)
-    cat_discord_id = str(first_payload["channel"]["categoryId"])
-    print(f"Found Category: {CATEGORY_NAME} (Discord ID: {cat_discord_id}, Pos: {cat_pos})")
-
-    # Load SQLite backup state
-    backup = ServerBackup.load(scope="base", backup_id=BACKUP_ID, backup_path=BACKUP_PATH)
-
-    new_cat = Category(
-        id=cat_discord_id,
-        name=CATEGORY_NAME,
-        position=cat_pos,
-        path=cat_dir.name
+    # 2. Enter Backup Context
+    ctx_mgr = (
+        BackupContext.create(backup_id=backup_id, backup_path=backup_path)
+        if backup_path
+        else BackupContext.from_backup_id(backup_id)
     )
+    with ctx_mgr:
+        data_dir = Path(backup_path) / "Data"
 
-    def normalize_date_range(data: dict) -> bool:
-        date_range = data.get("dateRange")
-        if date_range and date_range.get("before"):
-            data["exportedAt"] = date_range["before"]
-            date_range["before"] = None
-            return True
-        return False
+        # Locate category folder
+        cat_dirs = [d for d in data_dir.iterdir() if d.is_dir() and category_name.lower() in d.name.lower()]
+        if not cat_dirs:
+            print(f"Error: Could not find folder matching '{category_name}' in {data_dir}")
+            sys.exit(1)
+        cat_dir = cat_dirs[0]
+        cat_pos = int(cat_dir.name.split("#")[0]) if "#" in cat_dir.name else 28
 
-    for cf in chan_files:
-        with open(cf, "r", encoding="utf-8") as f:
-            cdata = json.load(f)
-        if normalize_date_range(cdata):
-            t.save_to_json(cdata, cf)
+        # Read channel files
+        chan_files = sorted([f for f in cat_dir.glob("*.json") if not f.name.startswith("_")])
+        if not chan_files:
+            print("Error: No channel JSON files found in category folder.")
+            sys.exit(1)
 
-        ch_info = cdata["channel"]
-        chan_pos = int(cf.name.split("#")[0]) if "#" in cf.name else 0
-        msg_count = len(cdata.get("messages", []))
+        # Grab category discord snowflake from the first channel file
+        with open(chan_files[0], "r", encoding="utf-8") as f:
+            first_payload = json.load(f)
+        cat_discord_id = str(first_payload["channel"]["categoryId"])
+        print(f"Found Category: {category_name} (Discord ID: {cat_discord_id}, Pos: {cat_pos})")
 
-        ch_model = Channel(
-            id=str(ch_info["id"]),
-            name=ch_info["name"],
-            position=chan_pos,
-            path=f"{cat_dir.name}/{cf.name}",
-            messages=msg_count
+        # Load SQLite backup state
+        backup = ServerBackup.load(scope="base", backup_id=backup_id, backup_path=backup_path)
+
+        new_cat = Category(
+            id=cat_discord_id,
+            name=category_name,
+            position=cat_pos,
+            path=cat_dir.name,
         )
-        new_cat.add_channel(ch_model)
-        print(f"  + Channel: #{ch_info['name']} (ID: {ch_info['id']}, Pos: {chan_pos}, Msgs: {msg_count})")
 
-    # Handle threads if present
-    threads_dir = cat_dir / "Threads"
-    if threads_dir.exists():
-        for tf in sorted(threads_dir.glob("*.json")):
-            with open(tf, "r", encoding="utf-8") as f:
-                tdata = json.load(f)
-            if normalize_date_range(tdata):
-                t.save_to_json(tdata, tf)
+        def normalize_date_range(data: dict) -> bool:
+            date_range = data.get("dateRange")
+            if date_range and date_range.get("before"):
+                data["exportedAt"] = date_range["before"]
+                date_range["before"] = None
+                return True
+            return False
 
-            th_info = tdata["channel"]
-            parent_id = str(th_info.get("categoryId"))
-            parent_ch = new_cat.get_channel_by_id(parent_id)
-            if parent_ch:
-                th_pos = int(tf.name.split("#")[0].split("-")[1]) if "-" in tf.name else 0
-                th_model = Thread(
-                    id=str(th_info["id"]),
-                    name=th_info["name"],
-                    position=th_pos,
-                    path=f"{cat_dir.name}/Threads/{tf.name}",
-                    messages=len(tdata.get("messages", []))
-                )
-                parent_ch.add_thread(th_model)
-                print(f"    + Thread: {th_info['name']} (ID: {th_info['id']})")
+        for cf in chan_files:
+            with open(cf, "r", encoding="utf-8") as f:
+                cdata = json.load(f)
+            if normalize_date_range(cdata):
+                t.save_to_json(cdata, cf.as_posix())
 
-    # Save to SQLite (replaces old entry if already registered)
-    backup.categories = [c for c in backup.categories if c.id != cat_discord_id]
-    backup.add_new_category(new_cat)
-    backup.sort_categories()
-    backup.save()
-    print("-> Successfully registered category and channels in backup.sqlite!")
+            ch_info = cdata["channel"]
+            chan_pos = int(cf.name.split("#")[0]) if "#" in cf.name else 0
+            msg_count = len(cdata.get("messages", []))
 
-    # 3. Assign Tupper IDs for new files
-    print("\nAssigning Tupper IDs in new files...")
-    char_list = CharacterList.load(backup_id=BACKUP_ID, base_path=BACKUP_PATH)
-    for ch in new_cat.channels:
-        assign_ids_in_file((data_dir / ch.path).as_posix(), char_list)
-        for thr in ch.threads:
-            assign_ids_in_file((data_dir / thr.path).as_posix(), char_list)
-    char_list.save()
-    print("-> Tupper characters resolved and saved to database.")
+            ch_model = Channel(
+                id=str(ch_info["id"]),
+                name=ch_info["name"],
+                position=chan_pos,
+                path=f"{cat_dir.name}/{cf.name}",
+                messages=msg_count,
+            )
+            new_cat.add_channel(ch_model)
+            print(f"  + Channel: #{ch_info['name']} (ID: {ch_info['id']}, Pos: {chan_pos}, Msgs: {msg_count})")
 
-    # 4. Index Chat Sessions
-    print("\nDetecting and indexing chat sessions...")
-    sessions = index_sessions(backup_id=BACKUP_ID, backup_path=BACKUP_PATH)
-    print(f"-> Done! {len(sessions)} chat sessions saved to backup.sqlite.")
+        # Handle threads if present
+        threads_dir = cat_dir / "Threads"
+        if threads_dir.exists():
+            for tf in sorted(threads_dir.glob("*.json")):
+                with open(tf, "r", encoding="utf-8") as f:
+                    tdata = json.load(f)
+                if normalize_date_range(tdata):
+                    t.save_to_json(tdata, tf.as_posix())
+
+                th_info = tdata["channel"]
+                parent_id = str(th_info.get("categoryId"))
+                parent_ch = new_cat.get_channel_by_id(parent_id)
+                if parent_ch:
+                    th_pos = int(tf.name.split("#")[0].split("-")[1]) if "-" in tf.name else 0
+                    th_model = Thread(
+                        id=str(th_info["id"]),
+                        name=th_info["name"],
+                        position=th_pos,
+                        path=f"{cat_dir.name}/Threads/{tf.name}",
+                        messages=len(tdata.get("messages", [])),
+                    )
+                    parent_ch.add_thread(th_model)
+                    print(f"    + Thread: {th_info['name']} (ID: {th_info['id']})")
+
+        if is_event:
+            # Update backup_config.json if present
+            cfg_path = Path(backup_path) / "backup_config.json"
+            if cfg_path.exists():
+                cfg = t.load_from_json(cfg_path.as_posix())
+                admin = cfg.setdefault("admin", {})
+                ev_cats = admin.setdefault("eventCategories", [])
+                for name in (category_name, "Events"):
+                    if name not in ev_cats:
+                        ev_cats.append(name)
+                keep_cats = admin.setdefault("categoriesToKeep", [])
+                for name in (category_name, "Events"):
+                    if name not in keep_cats:
+                        keep_cats.append(name)
+                ign_cats = admin.get("categoriesToIgnore", [])
+                admin["categoriesToIgnore"] = [c_name for c_name in ign_cats if c_name not in (category_name, "Events")]
+                t.save_json_atomic(cfg, cfg_path.as_posix())
+
+            # Ensure runtime context has event categories
+            if not hasattr(c, "EVENT_CATEGORIES") or not c.EVENT_CATEGORIES:
+                c.EVENT_CATEGORIES = []
+            for name in (category_name, "Events"):
+                if name not in c.EVENT_CATEGORIES:
+                    c.EVENT_CATEGORIES.append(name)
+
+            # Register category and normalize into faux 'Events' category ('event-1..N')
+            backup.categories = [cat for cat in backup.categories if cat.id != cat_discord_id]
+            backup.add_new_category(new_cat)
+
+            from update_paths import normalize_event_categories
+            normalize_event_categories(backup, folder=data_dir.as_posix(), is_update=False)
+            backup.save(write_snapshot=True)
+            print("-> Successfully registered and normalized event category in backup.sqlite!")
+        else:
+            # Save to SQLite (replaces old entry if already registered)
+            backup.categories = [cat for cat in backup.categories if cat.id != cat_discord_id]
+            backup.add_new_category(new_cat)
+            backup.sort_categories()
+            backup.save(write_snapshot=True)
+            print("-> Successfully registered category and channels in backup.sqlite!")
+
+        # 3. Assign Tupper IDs for new files
+        print("\nAssigning Tupper IDs in new files...")
+        char_list = CharacterList.load(backup_id=backup_id, base_path=backup_path)
+        target_cats = (
+            [cat for cat in backup.categories if cat.id == "events_category" or cat.name == "Events"]
+            if is_event
+            else [cat for cat in backup.categories if cat.id == cat_discord_id]
+        )
+        for target_cat in target_cats:
+            for ch in target_cat.channels:
+                assign_ids_in_file((data_dir / ch.path).as_posix(), char_list)
+                for thr in ch.threads:
+                    assign_ids_in_file((data_dir / thr.path).as_posix(), char_list)
+        char_list.save()
+        print("-> Tupper characters resolved and saved to database.")
+
+        # 4. Index based on category type
+        if is_event:
+            print("\nDetecting and indexing events...")
+            from index_events import index_event_categories
+            from db.event_service import save_indexed_events
+
+            event_cats = [cat for cat in backup.categories if cat.id == "events_category" or cat.name == "Events"]
+            event_clusters = index_event_categories(
+                event_categories=event_cats,
+                folder=data_dir.as_posix(),
+            )
+            save_indexed_events(
+                backup_id,
+                backup_path,
+                event_clusters,
+            )
+            print(f"-> Done! {len(event_clusters)} events saved to backup.sqlite.")
+        else:
+            chatroom_cats = getattr(c, "CHATROOM_CATEGORIES", []) or []
+            if category_name in chatroom_cats:
+                print("\nDetecting and indexing chat sessions...")
+                sessions = index_sessions(backup_id=backup_id, backup_path=backup_path)
+                print(f"-> Done! {len(sessions)} chat sessions saved to backup.sqlite.")
+            else:
+                print("\nDetecting and indexing scenes...")
+                from index_scenes import index_scenes
+                index_scenes()
+                print("-> Done! Scenes saved to backup.sqlite.")
+
+
+if __name__ == "__main__":
+    inject_category()

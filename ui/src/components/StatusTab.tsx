@@ -5,6 +5,7 @@ import {
   Folder,
   Hash,
   MessageSquare,
+  Calendar,
   Users,
   Clock,
   AlertCircle,
@@ -28,6 +29,13 @@ interface StatusTabProps {
   isUpgrading?: boolean;
 }
 
+const getCount = (numVal?: number, fallback?: number | unknown[]): number => {
+  if (typeof numVal === 'number') return numVal;
+  if (typeof fallback === 'number') return fallback;
+  if (Array.isArray(fallback)) return fallback.length;
+  return 0;
+};
+
 export const StatusTab = ({
   backupId,
   setTab,
@@ -43,9 +51,7 @@ export const StatusTab = ({
   useEffect(() => {
     if (!backupId) return;
     setError(null);
-    if (!parentInfo) {
-      setInfo(null);
-    }
+    if (!parentInfo) setInfo(null);
 
     Promise.all([
       api.getBackupInfo(backupId).then(setInfo),
@@ -54,15 +60,11 @@ export const StatusTab = ({
   }, [backupId]);
 
   useEffect(() => {
-    if (parentInfo) {
-      setInfo(parentInfo);
-    }
+    if (parentInfo) setInfo(parentInfo);
   }, [parentInfo]);
 
   useEffect(() => {
-    if (parentSummary) {
-      setSummary(parentSummary);
-    }
+    if (parentSummary) setSummary(parentSummary);
   }, [parentSummary]);
 
   if (!backupId) {
@@ -92,50 +94,21 @@ export const StatusTab = ({
   }
 
   const title = info.name || info.server_name || backupId;
-  const numScenes =
-    typeof info.number_of_scenes === 'number'
-      ? info.number_of_scenes
-      : typeof info.scenes === 'number'
-      ? info.scenes
-      : Array.isArray(info.scenes)
-      ? info.scenes.length
-      : 0;
+  const numScenes = getCount(info.number_of_scenes, info.scenes);
+  const numSessions = info.number_of_sessions ?? 0;
+  const numEvents = info.number_of_events ?? 0;
+  const numCharacters = getCount(info.number_of_characters, info.characters);
+  const numCategories = getCount(info.number_of_categories, info.categories);
+  const numChannels = getCount(info.number_of_channels, info.channels);
+  const numThreads = getCount(info.number_of_threads, info.threads);
 
-  const numCharacters =
-    typeof info.number_of_characters === 'number'
-      ? info.number_of_characters
-      : typeof info.characters === 'number'
-      ? info.characters
-      : Array.isArray(info.characters)
-      ? info.characters.length
-      : 0;
-
-  const numCategories =
-    typeof info.number_of_categories === 'number'
-      ? info.number_of_categories
-      : Array.isArray(info.categories)
-      ? info.categories.length
-      : typeof info.categories === 'number'
-      ? info.categories
-      : 0;
-
-  const numChannels =
-    typeof info.number_of_channels === 'number'
-      ? info.number_of_channels
-      : Array.isArray(info.channels)
-      ? info.channels.length
-      : typeof info.channels === 'number'
-      ? info.channels
-      : 0;
-
-  const numThreads =
-    typeof info.number_of_threads === 'number'
-      ? info.number_of_threads
-      : Array.isArray(info.threads)
-      ? info.threads.length
-      : typeof info.threads === 'number'
-      ? info.threads
-      : 0;
+  const statCardBase: React.CSSProperties = {
+    background: 'var(--bg-tertiary)',
+    padding: '1.25rem',
+    borderRadius: '10px',
+    border: '1px solid transparent',
+    transition: 'border-color 0.2s ease',
+  };
 
   return (
     <div>
@@ -184,7 +157,6 @@ export const StatusTab = ({
                   fontSize: '0.85rem',
                   cursor: isUpgrading ? 'not-allowed' : 'pointer',
                   opacity: isUpgrading ? 0.7 : 1,
-                  transition: 'opacity 0.2s ease',
                 }}
               >
                 {isUpgrading && <Loader2 size={14} className="animate-spin" />}
@@ -215,11 +187,7 @@ export const StatusTab = ({
                 <Clock size={18} />
               )}
               <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>
-                {info.status === 'success'
-                  ? 'Ready'
-                  : info.status === 'failed'
-                  ? 'Failed'
-                  : 'Pending / Running'}
+                {info.status === 'success' ? 'Ready' : info.status === 'failed' ? 'Failed' : 'Pending / Running'}
               </span>
             </div>
           </div>
@@ -230,22 +198,22 @@ export const StatusTab = ({
           <h3 style={{ fontSize: '0.95rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
             Dataset Overview
           </h3>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem' }}>
-            <div className="stat-card" style={{ background: 'var(--bg-tertiary)', padding: '1.25rem', borderRadius: '10px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '1rem' }}>
+            <div className="stat-card" style={statCardBase}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', marginBottom: '0.5rem', fontSize: '0.9rem' }}>
                 <Folder size={16} /> Categories
               </div>
               <div style={{ fontSize: '1.75rem', fontWeight: 700 }}>{numCategories}</div>
             </div>
 
-            <div className="stat-card" style={{ background: 'var(--bg-tertiary)', padding: '1.25rem', borderRadius: '10px' }}>
+            <div className="stat-card" style={statCardBase}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', marginBottom: '0.5rem', fontSize: '0.9rem' }}>
                 <Hash size={16} /> Channels
               </div>
               <div style={{ fontSize: '1.75rem', fontWeight: 700 }}>{numChannels}</div>
             </div>
 
-            <div className="stat-card" style={{ background: 'var(--bg-tertiary)', padding: '1.25rem', borderRadius: '10px' }}>
+            <div className="stat-card" style={statCardBase}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', marginBottom: '0.5rem', fontSize: '0.9rem' }}>
                 <MessageSquare size={16} /> Threads
               </div>
@@ -254,17 +222,8 @@ export const StatusTab = ({
 
             <div
               className="stat-card"
-              style={{
-                background: 'var(--bg-tertiary)',
-                padding: '1.25rem',
-                borderRadius: '10px',
-                cursor: numScenes > 0 ? 'pointer' : 'default',
-                border: '1px solid transparent',
-                transition: 'border-color 0.2s ease',
-              }}
-              onClick={() => {
-                if (numScenes > 0) setTab('scenes');
-              }}
+              style={{ ...statCardBase, cursor: numScenes > 0 ? 'pointer' : 'default' }}
+              onClick={() => numScenes > 0 && setTab('scenes')}
             >
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: 'var(--text-secondary)', marginBottom: '0.5rem', fontSize: '0.9rem' }}>
                 <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -272,24 +231,41 @@ export const StatusTab = ({
                 </span>
                 {numScenes > 0 && <ExternalLink size={14} />}
               </div>
-              <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--accent-secondary)' }}>
-                {numScenes}
-              </div>
+              <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--accent-secondary)' }}>{numScenes}</div>
             </div>
 
             <div
               className="stat-card"
-              style={{
-                background: 'var(--bg-tertiary)',
-                padding: '1.25rem',
-                borderRadius: '10px',
-                cursor: numCharacters > 0 ? 'pointer' : 'default',
-                border: '1px solid transparent',
-                transition: 'border-color 0.2s ease',
-              }}
-              onClick={() => {
-                if (numCharacters > 0) setTab('characters');
-              }}
+              style={{ ...statCardBase, cursor: numSessions > 0 ? 'pointer' : 'default' }}
+              onClick={() => numSessions > 0 && setTab('chat_sessions')}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: 'var(--text-secondary)', marginBottom: '0.5rem', fontSize: '0.9rem' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <MessageSquare size={16} /> Chat Sessions
+                </span>
+                {numSessions > 0 && <ExternalLink size={14} />}
+              </div>
+              <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--accent-secondary)' }}>{numSessions}</div>
+            </div>
+
+            <div
+              className="stat-card"
+              style={{ ...statCardBase, cursor: numEvents > 0 ? 'pointer' : 'default' }}
+              onClick={() => numEvents > 0 && setTab('events')}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: 'var(--text-secondary)', marginBottom: '0.5rem', fontSize: '0.9rem' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <Calendar size={16} /> Events
+                </span>
+                {numEvents > 0 && <ExternalLink size={14} />}
+              </div>
+              <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--accent-secondary)' }}>{numEvents}</div>
+            </div>
+
+            <div
+              className="stat-card"
+              style={{ ...statCardBase, cursor: numCharacters > 0 ? 'pointer' : 'default' }}
+              onClick={() => numCharacters > 0 && setTab('characters')}
             >
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: 'var(--text-secondary)', marginBottom: '0.5rem', fontSize: '0.9rem' }}>
                 <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -306,29 +282,19 @@ export const StatusTab = ({
         {summary && (
           <div>
             <h3 style={{ fontSize: '0.95rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
-              Curation & Review Queues
+              Curation &amp; Review Queues
             </h3>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
               <div
                 className="stat-card"
                 onClick={() => setTab('scene_issues')}
-                style={{
-                  background: 'rgba(239, 68, 68, 0.08)',
-                  border: '1px solid rgba(239, 68, 68, 0.25)',
-                  padding: '1.25rem',
-                  borderRadius: '10px',
-                  cursor: 'pointer',
-                }}
+                style={{ background: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.25)', padding: '1.25rem', borderRadius: '10px', cursor: 'pointer' }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: 'var(--danger)', marginBottom: '0.5rem', fontSize: '0.9rem', fontWeight: 600 }}>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <AlertTriangle size={16} /> Scene Issues
-                  </span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><AlertTriangle size={16} /> Scene Issues</span>
                   <ExternalLink size={14} />
                 </div>
-                <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--danger)' }}>
-                  {summary.unresolved_issues}
-                </div>
+                <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--danger)' }}>{summary.unresolved_issues}</div>
                 <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
                   {summary.unresolved_issues === 1 ? '1 unresolved issue' : `${summary.unresolved_issues} unresolved issues`}
                 </div>
@@ -337,79 +303,41 @@ export const StatusTab = ({
               <div
                 className="stat-card"
                 onClick={() => setTab('flagged_messages')}
-                style={{
-                  background: 'rgba(245, 158, 11, 0.08)',
-                  border: '1px solid rgba(245, 158, 11, 0.25)',
-                  padding: '1.25rem',
-                  borderRadius: '10px',
-                  cursor: 'pointer',
-                }}
+                style={{ background: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.25)', padding: '1.25rem', borderRadius: '10px', cursor: 'pointer' }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: 'var(--warning)', marginBottom: '0.5rem', fontSize: '0.9rem', fontWeight: 600 }}>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <MessageSquareCode size={16} /> Flagged Messages
-                  </span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><MessageSquareCode size={16} /> Flagged Messages</span>
                   <ExternalLink size={14} />
                 </div>
-                <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--warning)' }}>
-                  {summary.flagged_messages}
-                </div>
-                <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
-                  Non-tupper dialogue to review
-                </div>
+                <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--warning)' }}>{summary.flagged_messages}</div>
+                <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>Non-tupper dialogue to review</div>
               </div>
 
               <div
                 className="stat-card"
                 onClick={() => setTab('writers')}
-                style={{
-                  background: 'rgba(139, 92, 246, 0.08)',
-                  border: '1px solid rgba(139, 92, 246, 0.25)',
-                  padding: '1.25rem',
-                  borderRadius: '10px',
-                  cursor: 'pointer',
-                }}
+                style={{ background: 'rgba(139, 92, 246, 0.08)', border: '1px solid rgba(139, 92, 246, 0.25)', padding: '1.25rem', borderRadius: '10px', cursor: 'pointer' }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: 'var(--accent-secondary)', marginBottom: '0.5rem', fontSize: '0.9rem', fontWeight: 600 }}>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <UserCheck size={16} /> Unlinked Writers
-                  </span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><UserCheck size={16} /> Unlinked Writers</span>
                   <ExternalLink size={14} />
                 </div>
-                <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--accent-secondary)' }}>
-                  {summary.unlinked_writers}
-                </div>
-                <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
-                  Writers with no Discord ID linked
-                </div>
+                <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--accent-secondary)' }}>{summary.unlinked_writers}</div>
+                <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>Writers with no Discord ID linked</div>
               </div>
 
               <div
                 className="stat-card"
                 onClick={() => setTab('writers')}
-                style={{
-                  background: 'rgba(148, 163, 184, 0.08)',
-                  border: '1px solid rgba(148, 163, 184, 0.25)',
-                  padding: '1.25rem',
-                  borderRadius: '10px',
-                  cursor: 'pointer',
-                }}
+                style={{ background: 'rgba(148, 163, 184, 0.08)', border: '1px solid rgba(148, 163, 184, 0.25)', padding: '1.25rem', borderRadius: '10px', cursor: 'pointer' }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: 'var(--text-secondary)', marginBottom: '0.5rem', fontSize: '0.9rem', fontWeight: 600 }}>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <UserCheck size={16} /> Unassigned Chars
-                  </span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><UserCheck size={16} /> Unassigned Chars</span>
                   <ExternalLink size={14} />
                 </div>
-                <div style={{ fontSize: '1.75rem', fontWeight: 700 }}>
-                  {summary.unassigned_characters}
-                </div>
-                <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
-                  Characters without a writer
-                </div>
+                <div style={{ fontSize: '1.75rem', fontWeight: 700 }}>{summary.unassigned_characters}</div>
+                <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>Characters without a writer</div>
               </div>
-
-
             </div>
           </div>
         )}

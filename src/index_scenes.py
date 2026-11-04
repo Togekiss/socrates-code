@@ -31,8 +31,8 @@ This module indexes all the scenes of the server backup using a deterministic tw
              auto-splits, start tag flagging, and roster change detection).
 
 Main function: index_scenes()
-    Iterates through categories and channels, segments scenes, and persists them to SQLite
-    along with participants and detected curation issues (auto_split, soft_boundary).
+    Iterates through categories and channels, segments scenes, sessions, and events, and persists
+    them to SQLite along with participants and detected curation issues (auto_split, soft_boundary).
 """
 
 ################# Functions #################
@@ -703,9 +703,17 @@ def index_scenes(backup_id: Optional[str] = None, backup_path: Optional[str] = N
         full_scenes = []
         full_sessions = []
         full_flagged = []
+        event_cats = []
+
+        event_cat_names = set(getattr(c, "EVENT_CATEGORIES", []) or [])
+        chatroom_cat_names = set(getattr(c, "CHATROOM_CATEGORIES", []) or [])
 
         for category in backup.categories:
-            if category.name in c.CHATROOM_CATEGORIES:
+            if category.name in event_cat_names or category.id == "events_category" or category.name == "Events":
+                event_cats.append(category)
+                continue
+
+            if category.name in chatroom_cat_names:
                 from index_sessions import find_sessions_in_category
                 sessions = find_sessions_in_category(
                     category=category,
@@ -731,6 +739,17 @@ def index_scenes(backup_id: Optional[str] = None, backup_path: Optional[str] = N
             full_flagged.extend(flagged)
             t.log("info", f"  Found {len(scenes)} scenes in {category.path}, adding up to {len(full_scenes)} total scenes\n")
 
+        event_clusters = []
+        if event_cats:
+            from index_events import index_event_categories
+            event_clusters = index_event_categories(
+                event_categories=event_cats,
+                folder=c.DATA_FOLDER,
+                resolved_flags_map=resolved_flags_map,
+                resolved_decisions=resolved_decisions,
+            )
+            t.log("info", f"  Found {len(event_clusters)} events across {len(event_cats)} event category(s)\n")
+
         # sort the scenes by start time
         full_scenes.sort(key=lambda x: x["start"]["timestamp"])
 
@@ -747,6 +766,12 @@ def index_scenes(backup_id: Optional[str] = None, backup_path: Optional[str] = N
         )
 
         if has_sqlite_db(b_path):
+            from db.event_service import save_indexed_events
+            save_indexed_events(
+                b_id,
+                b_path,
+                event_clusters,
+            )
             save_flagged_messages(
                 backup_id=b_id,
                 base_path=b_path,
@@ -790,4 +815,3 @@ if __name__ == "__main__":
     except Exception as e:
         t.log("error", f"\n{exc.unwrap(e)}\n")
         sys.exit(1)
-    
