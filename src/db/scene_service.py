@@ -78,6 +78,34 @@ def save_indexed_scenes(
         ).update({"scene_pk": None, "next_scene_pk": None}, synchronize_session="fetch")
         session.flush()
 
+        # Capture surviving custom_name values across re-indexing runs (querying scalar tuples to avoid identity map collisions)
+        existing_custom_names = (
+            session.query(
+                SceneModel.channel_pk,
+                SceneModel.start_message_id,
+                SceneModel.end_message_id,
+                SceneModel.custom_name,
+            )
+            .filter(
+                SceneModel.backup_id == str(backup_id),
+                SceneModel.kind.in_(target_kinds),
+                SceneModel.custom_name.isnot(None),
+            )
+            .all()
+        )
+        chan_pk_to_discord = {
+            pk: did for pk, did in session.query(ChannelModel.pk, ChannelModel.discord_id).all()
+        }
+        custom_name_by_chan_start: Dict[Tuple[str, str], str] = {}
+        custom_name_by_chan_end: Dict[Tuple[str, str], str] = {}
+        for ch_pk, start_mid, end_mid, c_name in existing_custom_names:
+            chan_id = chan_pk_to_discord.get(ch_pk, str(ch_pk))
+            if c_name:
+                if start_mid:
+                    custom_name_by_chan_start[(chan_id, str(start_mid))] = c_name
+                if end_mid:
+                    custom_name_by_chan_end[(chan_id, str(end_mid))] = c_name
+
         # 2. Delete existing scene participants for target_kinds explicitly
         session.query(SceneParticipantModel).filter(
             SceneParticipantModel.scene_pk.in_(target_scene_pks_subquery)
@@ -159,11 +187,18 @@ def save_indexed_scenes(
                 end_message = str(s.get("end", {}).get("content", ""))
                 end_excerpt = end_message if len(end_message) <= EXCERPT_MAX_LEN else "..." + end_message[-(EXCERPT_MAX_LEN-3):]
 
+                restored_custom_name = (
+                    custom_name_by_chan_start.get((chan_discord_id, start_msg_id))
+                    or custom_name_by_chan_end.get((chan_discord_id, end_msg_id))
+                    or s.get("custom_name")
+                )
+
                 scene_model = SceneModel(
                     backup_id=str(backup_id),
                     scene_key=scene_key,
                     channel_pk=chan_model.pk,
                     category_pk=category_pk,
+                    custom_name=restored_custom_name,
                     kind=s.get("kind", SceneKind.SCENE.value),
                     status=lifecycle_status,
                     start_message_id=start_msg_id,
@@ -311,15 +346,17 @@ def query_scenes(
     status: str = "all",
     types: Optional[List[str]] = None,
     character_ids: Optional[List[int]] = None,
-    character_logic: str = "OR",
+    character_logic: str = "AND",
     writer_names: Optional[List[str]] = None,
-    writer_logic: str = "OR",
+    writer_logic: str = "AND",
     include_alter_egos: bool = False,
     include_familiars: bool = False,
     include_npcs: bool = False,
+    search: Optional[str] = None,
     search_folder: str = "",
     before: Optional[str] = None,
     after: Optional[str] = None,
+    sort: str = "asc",
     page: Optional[int] = None,
     per_page: int = 50,
     **kwargs
@@ -468,8 +505,28 @@ def query_scenes(
                     else:
                         return {"total_items": 0, "current_page": page or 1, "per_page": per_page, "total_pages": 0, "scenes": []} if page is not None else []
 
+        # Filter by search query (custom_name, scene_key, or channel name)
+        if search and isinstance(search, str) and search.strip():
+            s_term = search.strip().lower()
+            matching_chan_pks = session.query(ChannelModel.pk).filter(
+                func.lower(ChannelModel.name).contains(s_term)
+            )
+            query = query.filter(
+                or_(
+                    func.lower(SceneModel.custom_name).contains(s_term),
+                    func.lower(SceneModel.scene_key).contains(s_term),
+                    SceneModel.channel_pk.in_(matching_chan_pks),
+                )
+            )
+
         total_items = query.count()
-        query = query.order_by(SceneModel.start_at.asc(), SceneModel.pk.asc()).options(selectinload(SceneModel.issues))
+
+        if str(sort).lower() in ("desc", "start_desc", "newest"):
+            query = query.order_by(SceneModel.start_at.desc(), SceneModel.pk.desc())
+        else:
+            query = query.order_by(SceneModel.start_at.asc(), SceneModel.pk.asc())
+
+        query = query.options(selectinload(SceneModel.issues))
 
         if page is not None:
             total_pages = math.ceil(total_items / per_page) if per_page > 0 else 1
@@ -518,8 +575,11 @@ def query_scenes(
 
             formatted_scenes.append({
                 "id": s.scene_key,
+                "pk": s.pk,
+                "scene_pk": s.pk,
                 "index": (offset + idx + 1) if page is not None else (idx + 1),
                 "scene_key": s.scene_key,
+                "custom_name": s.custom_name,
                 "kind": s.kind,
                 "channelId": chan_discord_id,
                 "channel": chan_name,

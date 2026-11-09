@@ -28,6 +28,8 @@ import type {
   SceneIssuesResponse,
   ScenesResponse,
   SessionsResponse,
+  SceneMergeNeighborsResponse,
+  MergeSceneResponse,
   UnassignedCharacter,
   Writer,
   WriterDetailed,
@@ -198,6 +200,36 @@ export const api = {
 
   getSessions: (backupId: string, queryParams: URLSearchParams = new URLSearchParams()): Promise<SessionsResponse> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/sessions?${queryParams.toString()}`).then(res => res.json()),
+
+  updateSceneMetadata: (
+    backupId: string,
+    sceneId: string | number,
+    data: { custom_name?: string | null; name?: string | null }
+  ): Promise<{ status: string; pk: number; scene_pk: number; scene_key: string; custom_name?: string | null }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/scenes/${sceneId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }).then(res => res.json()),
+
+  getSceneMergeNeighbors: (
+    backupId: string,
+    sceneId: string | number
+  ): Promise<SceneMergeNeighborsResponse> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/scenes/${sceneId}/merge-neighbors`).then(res => res.json()),
+
+  mergeScene: (
+    backupId: string,
+    sceneId: string | number,
+    direction: 'prev' | 'next',
+    force: boolean = false,
+    note?: string | null
+  ): Promise<MergeSceneResponse> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/scenes/${sceneId}/merge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ direction, force, note }),
+    }).then(res => res.json()),
 
   getEvents: (backupId: string, queryParams: URLSearchParams = new URLSearchParams()): Promise<EventsResponse> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/events?${queryParams.toString()}`).then(res => res.json()),

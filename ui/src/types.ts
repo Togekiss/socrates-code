@@ -194,7 +194,10 @@ export interface SceneIssueRef {
 
 export interface Scene {
   id: number | string;
+  pk?: number;
+  scene_pk?: number;
   scene_key: string;
+  custom_name?: string | null;
   kind?: 'scene' | 'session' | 'event';
   category_name?: string;
   channel_name?: string;
@@ -219,8 +222,11 @@ export interface Scene {
 
 export interface ChatSession {
   id: string | number;
+  pk?: number;
+  scene_pk?: number;
   index?: number;
   scene_key: string;
+  custom_name?: string | null;
   kind: 'session';
   category: string;
   channel: string;
@@ -285,7 +291,7 @@ export interface SuggestedCharacter { char_id: number; name: string; writer_name
 
 export type IssueKind = 'auto_split' | 'soft_boundary';
 export type IssueResolution = 'split' | 'merged';
-export type IssueReason = 'separate_roster' | 'start_tag_roster_change' | 'start_tag_same_roster' | 'roster_change' | 'manual';
+export type IssueReason = 'separate_roster' | 'start_tag_roster_change' | 'start_tag_same_roster' | 'roster_change' | 'manual' | 'inactivity_gap' | 'tupper_end_tag';
 export type SceneStatus = 'open' | 'closed' | 'no_end_tag';
 export type FlaggedKind = 'failed_tupper' | 'ooc_boundary' | 'ooc_message' | 'manual';
 export type FlaggedResolution = 'override' | 'ignored' | 'kept';
@@ -298,7 +304,7 @@ export interface ManualSplitResponse {
 
 export interface SceneIssue {
   id: number; kind: IssueKind; reason: IssueReason | string; scene_pk: number | null; scene_key: string;
-  scene_kind?: 'scene' | 'session'; channel_name: string; channel_discord_id: string;
+  scene_kind?: 'scene' | 'session' | 'event'; channel_name: string; channel_discord_id: string;
   next_scene_pk?: number | null; next_scene_key?: string | null; candidate_message_id?: string | null;
   candidate_index?: number | null; candidate_excerpt?: string | null;
   previous_chars?: number[] | null; next_chars?: number[] | null;
@@ -345,3 +351,40 @@ export interface EventsResponse extends PaginatedResponse { events: EventRecord[
 export interface AdminTestActionResponse {
   status: 'success' | 'failed'; message: string; returncode?: number; output?: string; report?: Record<string, unknown>;
 }
+export interface SceneMergeNeighborInfo {
+  exists: boolean;
+  scene_pk: number | null;
+  scene_key: string | null;
+  custom_name: string | null;
+  can_merge: boolean;
+  disabled_reason: string | null;
+  is_curator_split: boolean;
+  issue_id: number | null;
+  warning: string | null;
+}
+
+export interface SceneMergeNeighborsResponse {
+  status: string;
+  scene_pk: number;
+  scene_key: string;
+  kind: string;
+  prev: SceneMergeNeighborInfo;
+  next: SceneMergeNeighborInfo;
+}
+
+export interface MergeSceneResponse {
+  status: 'success' | 'requires_confirmation';
+  warning?: string;
+  direction?: 'prev' | 'next';
+  target_scene_key?: string;
+  target_pk?: number;
+  issue_id?: number | null;
+  merged_scene?: {
+    pk: number;
+    scene_key: string;
+    custom_name: string | null;
+    kind: string;
+  };
+  deleted_scene_key?: string;
+}
+

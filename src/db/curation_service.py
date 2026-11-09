@@ -2,13 +2,14 @@ import math
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
-from sqlalchemy import func, case
+from sqlalchemy import func, case, and_, or_
 from sqlalchemy.orm import selectinload, joinedload
 
 import re
 from db.models import (
     BackupModel,
     ChannelModel,
+    EventModel,
     CharacterNameModel,
     CharacterGroupModel,
     CharacterModel,
@@ -351,6 +352,7 @@ def get_scene_issues(
     reason: Optional[str] = None,
     status: Optional[str] = "unresolved",
     channel_id: Optional[str] = None,
+    scene_type: Optional[str] = None,
     page: int = 1,
     per_page: int = 50,
 ) -> Dict[str, Any]:
@@ -363,6 +365,8 @@ def get_scene_issues(
         status = "unresolved"
     if not isinstance(channel_id, str):
         channel_id = None
+    if not isinstance(scene_type, str) or not scene_type.strip():
+        scene_type = None
     if not isinstance(page, int):
         page = 1
     if not isinstance(per_page, int):
@@ -392,6 +396,8 @@ def get_scene_issues(
             query = query.filter(SceneIssueModel.kind == kind)
         if reason:
             query = query.filter(SceneIssueModel.reason == reason)
+        if scene_type:
+            query = query.filter(SceneModel.kind == scene_type)
 
         if status == "unresolved":
             query = query.filter(SceneIssueModel.resolved_at.is_(None))
@@ -415,10 +421,13 @@ def get_scene_issues(
             counts_query = counts_query.filter(SceneIssueModel.kind == kind)
         if reason:
             counts_query = counts_query.filter(SceneIssueModel.reason == reason)
-        if channel_id:
+        if scene_type or channel_id:
             counts_query = counts_query.join(SceneModel, SceneIssueModel.scene_pk == SceneModel.pk)
-            counts_query = counts_query.join(ChannelModel, SceneModel.channel_pk == ChannelModel.pk)
-            counts_query = counts_query.filter(ChannelModel.discord_id == str(channel_id))
+            if scene_type:
+                counts_query = counts_query.filter(SceneModel.kind == scene_type)
+            if channel_id:
+                counts_query = counts_query.join(ChannelModel, SceneModel.channel_pk == ChannelModel.pk)
+                counts_query = counts_query.filter(ChannelModel.discord_id == str(channel_id))
 
         counts_row = counts_query.first()
         status_counts = {
@@ -670,6 +679,9 @@ def _merge_scenes(
     for pos, p in enumerate(all_merged_parts):
         p.position = pos
 
+    s1_event_pk = s1.event_pk
+    s2_event_pk = s2.event_pk
+
     # Re-link any other issues that were associated with s2 to s1
     session.query(SceneIssueModel).filter(
         SceneIssueModel.backup_id == str(backup_id),
@@ -685,26 +697,88 @@ def _merge_scenes(
     session.delete(s2)
     session.flush()
 
-    # Renumber scene keys (across event if event_pk is set, else within channel)
-    if s1.event_pk is not None:
+    # Renumber scene keys and recompute events
+    if s1_event_pk is not None:
         from db.models import EventModel
         from db.event_service import _recompute_event_from_scenes
-        ev = session.query(EventModel).filter_by(pk=s1.event_pk).first()
-        if ev:
-            ev_scenes = (
+
+        # Cross-event merge: s2 was from a different event
+        if s2_event_pk is not None and s2_event_pk != s1_event_pk:
+            ev2 = session.query(EventModel).filter_by(pk=s2_event_pk, backup_id=str(backup_id)).first()
+            if ev2:
+                ev2_scenes = (
+                    session.query(SceneModel)
+                    .filter_by(event_pk=ev2.pk, backup_id=str(backup_id))
+                    .order_by(SceneModel.start_at, SceneModel.pk)
+                    .all()
+                )
+                if ev2_scenes:
+                    for sc in ev2_scenes:
+                        sc.scene_key = f"tmp-ev-{sc.pk}"
+                    session.flush()
+                    for idx, sc in enumerate(ev2_scenes, start=1):
+                        sc.scene_key = f"{ev2.event_key}-{idx}"
+                    session.flush()
+                    _recompute_event_from_scenes(ev2, ev2_scenes)
+                    ev2.is_curated = True
+                    cleaned_ev2_movements = {}
+                    for cid_str, hops in (ev2.character_movements or {}).items():
+                        filtered = [h for h in hops if (h.get("scene_id") != s2_key and h.get("scene_key") != s2_key)]
+                        if filtered:
+                            cleaned_ev2_movements[str(cid_str)] = filtered
+                    ev2.character_movements = cleaned_ev2_movements
+                else:
+                    session.delete(ev2)
+                session.flush()
+
+        # Recompute ev1 (s1.event)
+        ev1 = session.query(EventModel).filter_by(pk=s1_event_pk, backup_id=str(backup_id)).first()
+        if ev1:
+            ev1_scenes = (
                 session.query(SceneModel)
-                .filter_by(event_pk=ev.pk, backup_id=str(backup_id))
+                .filter_by(event_pk=ev1.pk, backup_id=str(backup_id))
                 .order_by(SceneModel.start_at, SceneModel.pk)
                 .all()
             )
-            for sc in ev_scenes:
+            for sc in ev1_scenes:
                 sc.scene_key = f"tmp-ev-{sc.pk}"
             session.flush()
-            for idx, sc in enumerate(ev_scenes, start=1):
-                sc.scene_key = f"{ev.event_key}-{idx}"
+            for idx, sc in enumerate(ev1_scenes, start=1):
+                sc.scene_key = f"{ev1.event_key}-{idx}"
             session.flush()
-            _recompute_event_from_scenes(ev, ev_scenes)
+            _recompute_event_from_scenes(ev1, ev1_scenes)
+            ev1.is_curated = True
+
+            updated_ev1_movements = {}
+            for cid_str, hops in (ev1.character_movements or {}).items():
+                upd_hops = []
+                for h in hops:
+                    h_copy = dict(h)
+                    if h_copy.get("scene_id") == s2_key or h_copy.get("scene_key") == s2_key:
+                        h_copy["scene_id"] = s1.scene_key
+                        h_copy["scene_key"] = s1.scene_key
+                    upd_hops.append(h_copy)
+                updated_ev1_movements[str(cid_str)] = upd_hops
+            ev1.character_movements = updated_ev1_movements
     else:
+        if s2_event_pk is not None:
+            from db.models import EventModel
+            from db.event_service import _recompute_event_from_scenes
+            ev2 = session.query(EventModel).filter_by(pk=s2_event_pk, backup_id=str(backup_id)).first()
+            if ev2:
+                ev2_scenes = (
+                    session.query(SceneModel)
+                    .filter_by(event_pk=ev2.pk, backup_id=str(backup_id))
+                    .order_by(SceneModel.start_at, SceneModel.pk)
+                    .all()
+                )
+                if ev2_scenes:
+                    _recompute_event_from_scenes(ev2, ev2_scenes)
+                    ev2.is_curated = True
+                else:
+                    session.delete(ev2)
+                session.flush()
+
         channel_scenes = (
             session.query(SceneModel)
             .filter(
@@ -829,12 +903,53 @@ def _split_scene_at(
     cand_content = str(cand_msg.get("content", ""))
     cand_author_id = str(t.get_author_id(cand_msg) or cand_msg.get("author", {}).get("id", ""))
     cand_at = t.parse_datetime(cand_msg.get("timestamp")) or scene.start_at
+
+    orig_event_pk = scene.event_pk
+    new_ev = None
+    if orig_event_pk is not None:
+        from db.models import EventModel
+        from db.event_service import _recompute_event_from_scenes
+
+        orig_ev = session.query(EventModel).filter_by(pk=orig_event_pk, backup_id=str(backup_id)).first()
+
+        existing_keys = [
+            r[0] for r in session.query(EventModel.event_key).filter_by(backup_id=str(backup_id)).all()
+        ]
+        max_idx = 0
+        for k in existing_keys:
+            if k and k.startswith("ev-"):
+                try:
+                    num = int(k.split("-")[1])
+                    if num > max_idx:
+                        max_idx = num
+                except (ValueError, IndexError):
+                    pass
+        new_event_key = f"ev-{max_idx + 1}"
+
+        new_ev = EventModel(
+            backup_id=str(backup_id),
+            event_key=new_event_key,
+            name=None,
+            status=scene.status,
+            start_at=cand_at,
+            end_at=orig_end_at,
+            message_count=max(0, orig_end_index - cand_idx + 1),
+            is_curated=True,
+            character_movements={},
+        )
+        session.add(new_ev)
+        session.flush()
+        target_event_pk = new_ev.pk
+    else:
+        orig_ev = None
+        target_event_pk = None
+
     scene2 = SceneModel(
         backup_id=str(backup_id),
         scene_key="tmp-split-new",
         channel_pk=scene.channel_pk,
         category_pk=scene.category_pk,
-        event_pk=scene.event_pk,
+        event_pk=target_event_pk,
         custom_name=scene.custom_name,
         kind=scene.kind,
         status=orig_status,
@@ -885,25 +1000,64 @@ def _split_scene_at(
         ))
 
     # Renumber scenes (across event if event_pk is set, else within channel)
-    if scene.event_pk is not None:
+    if orig_event_pk is not None and new_ev is not None:
         session.flush()
         from db.models import EventModel
         from db.event_service import _recompute_event_from_scenes
-        ev = session.query(EventModel).filter_by(pk=scene.event_pk).first()
-        if ev:
-            ev_scenes = (
+
+        # Renumber orig_ev scenes
+        if orig_ev:
+            orig_ev_scenes = (
                 session.query(SceneModel)
-                .filter_by(event_pk=ev.pk, backup_id=str(backup_id))
+                .filter_by(event_pk=orig_ev.pk, backup_id=str(backup_id))
                 .order_by(SceneModel.start_at, SceneModel.pk)
                 .all()
             )
-            for sc in ev_scenes:
+            for sc in orig_ev_scenes:
                 sc.scene_key = f"tmp-ev-{sc.pk}"
             session.flush()
-            for idx, sc in enumerate(ev_scenes, start=1):
-                sc.scene_key = f"{ev.event_key}-{idx}"
+            for idx, sc in enumerate(orig_ev_scenes, start=1):
+                sc.scene_key = f"{orig_ev.event_key}-{idx}"
             session.flush()
-            _recompute_event_from_scenes(ev, ev_scenes)
+
+            # Renumber scene2 in new_ev
+            scene2.scene_key = f"{new_ev.event_key}-1"
+            session.flush()
+
+            # Partition character movements
+            orig_movements: Dict[str, List[Dict[str, Any]]] = {}
+            new_movements: Dict[str, List[Dict[str, Any]]] = {}
+            chan_id_str = str(channel.discord_id if channel else scene.channel_pk)
+
+            for cid_str, hops in (orig_ev.character_movements or {}).items():
+                rem_hops = []
+                ext_hops = []
+                for hop in hops:
+                    h_copy = dict(hop)
+                    first_at_dt = t.parse_datetime(hop.get("first_at"))
+                    if str(hop.get("channel_id") or "") == chan_id_str:
+                        if first_at_dt and scene2.start_at and first_at_dt >= scene2.start_at:
+                            h_copy["scene_id"] = scene2.scene_key
+                            h_copy["scene_key"] = scene2.scene_key
+                            ext_hops.append(h_copy)
+                        else:
+                            h_copy["scene_id"] = scene.scene_key
+                            h_copy["scene_key"] = scene.scene_key
+                            rem_hops.append(h_copy)
+                    else:
+                        rem_hops.append(h_copy)
+                if rem_hops:
+                    orig_movements[str(cid_str)] = rem_hops
+                if ext_hops:
+                    new_movements[str(cid_str)] = ext_hops
+
+            orig_ev.character_movements = orig_movements
+            new_ev.character_movements = new_movements
+            orig_ev.is_curated = True
+            new_ev.is_curated = True
+
+            _recompute_event_from_scenes(orig_ev, orig_ev_scenes)
+            _recompute_event_from_scenes(new_ev, [scene2])
     else:
         channel_scenes = (
             session.query(SceneModel)
@@ -2385,4 +2539,418 @@ def get_curation_summary(backup_id: str, base_path: str) -> Dict[str, int]:
                 "link_suggestions": len(suggestions),
             }
 
+
+def update_scene_metadata(
+    backup_id: str,
+    base_path: str,
+    scene_id: Any,
+    custom_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Updates custom_name on a SceneModel record (supports scenes, sessions, or event channels)."""
+    require_sqlite_db(base_path)
+    init_db(engine_or_backup_id=backup_id, backup_path=base_path)
+
+    clean_name = custom_name.strip() if isinstance(custom_name, str) and custom_name.strip() else None
+
+    with db_session(backup_id=backup_id, backup_path=base_path) as session:
+        query = session.query(SceneModel).filter(SceneModel.backup_id == str(backup_id))
+        s_str = str(scene_id).strip()
+        scene = None
+        if s_str.isdigit():
+            scene = query.filter((SceneModel.pk == int(s_str)) | (SceneModel.scene_key == s_str)).first()
+        else:
+            scene = query.filter(SceneModel.scene_key == s_str).first()
+
+        if not scene:
+            raise exc.NotFoundError(f"Scene '{scene_id}' not found in backup '{backup_id}'.")
+
+        scene.custom_name = clean_name
+        session.flush()
+
+        # If scene is associated with an event, keep character_movements in sync
+        if scene.event_pk:
+            ev = session.query(EventModel).filter(EventModel.pk == scene.event_pk).first()
+            if ev and ev.character_movements:
+                custom_by_key = {sc.scene_key: sc.custom_name for sc in ev.scenes}
+                custom_by_chan = {sc.channel.discord_id: sc.custom_name for sc in ev.scenes if sc.channel and sc.custom_name}
+                updated_moves = {}
+                for cid, hops in (ev.character_movements or {}).items():
+                    hop_list = []
+                    for h in hops:
+                        h_copy = dict(h)
+                        s_id = h_copy.get("scene_key") or h_copy.get("scene_id")
+                        ch_id = h_copy.get("channel_id")
+                        if s_id and s_id in custom_by_key:
+                            h_copy["custom_name"] = custom_by_key[s_id]
+                        elif ch_id and ch_id in custom_by_chan:
+                            h_copy["custom_name"] = custom_by_chan[ch_id]
+                        hop_list.append(h_copy)
+                    updated_moves[cid] = hop_list
+                ev.character_movements = updated_moves
+                session.flush()
+
+        return {
+            "status": "success",
+            "pk": scene.pk,
+            "scene_pk": scene.pk,
+            "scene_key": scene.scene_key,
+            "custom_name": scene.custom_name,
+        }
+def _find_scene_by_id(session, backup_id: str, scene_id: Any) -> SceneModel:
+    query = session.query(SceneModel).filter(SceneModel.backup_id == str(backup_id))
+    s_str = str(scene_id).strip()
+    scene = None
+    if s_str.isdigit():
+        scene = query.filter((SceneModel.pk == int(s_str)) | (SceneModel.scene_key == s_str)).first()
+    else:
+        scene = query.filter(SceneModel.scene_key == s_str).first()
+    if not scene:
+        raise exc.NotFoundError(f"Scene '{scene_id}' not found in backup '{backup_id}'.")
+    return scene
+
+
+def _find_issue_between_scenes(session, backup_id: str, s1: SceneModel, s2: SceneModel) -> Optional[SceneIssueModel]:
+    """Finds an issue (auto_split, soft_boundary, manual split) separating adjacent s1 and s2."""
+    return (
+        session.query(SceneIssueModel)
+        .filter(
+            SceneIssueModel.backup_id == str(backup_id),
+            or_(
+                and_(SceneIssueModel.scene_pk == s1.pk, SceneIssueModel.next_scene_pk == s2.pk),
+                and_(SceneIssueModel.scene_pk == s1.pk, SceneIssueModel.candidate_message_id == str(s2.start_message_id)),
+                and_(SceneIssueModel.next_scene_pk == s2.pk, SceneIssueModel.candidate_message_id == str(s2.start_message_id)),
+                and_(
+                    SceneIssueModel.candidate_message_id == str(s2.start_message_id),
+                    SceneIssueModel.candidate_index == s2.start_index,
+                ),
+                SceneIssueModel.candidate_message_id == str(s2.start_message_id),
+            ),
+        )
+        .order_by(SceneIssueModel.pk.desc())
+        .first()
+    )
+
+
+def _is_curator_split(issue: Optional[SceneIssueModel]) -> bool:
+    if not issue:
+        return False
+    # Manual split created by curator
+    if issue.reason in (IssueReason.MANUAL.value, "manual_split", "manual"):
+        return True
+    # Soft boundary explicitly set to split by curator
+    if issue.kind == IssueKind.SOFT_BOUNDARY.value and issue.resolution == IssueResolution.SPLIT.value:
+        return True
+    return False
+
+
+def _evaluate_scene_pair_merge(session, backup_id: str, s1: SceneModel, s2: SceneModel) -> Dict[str, Any]:
+    """
+    Evaluates whether earlier scene s1 and later scene s2 can be merged,
+    and whether they are separated by an issue or curator split.
+    """
+    can_merge = True
+    disabled_reason = None
+
+    if s1.channel_pk != s2.channel_pk:
+        can_merge = False
+        disabled_reason = "Scenes belong to different channels."
+    elif s2.start_index <= s1.end_index:
+        can_merge = False
+        disabled_reason = "Overlapping scenes cannot be merged."
+    else:
+        # Check for intervening scene
+        intervening = (
+            session.query(SceneModel)
+            .filter(
+                SceneModel.backup_id == str(backup_id),
+                SceneModel.channel_pk == s1.channel_pk,
+                SceneModel.start_index > s1.end_index,
+                SceneModel.start_index < s2.start_index,
+            )
+            .first()
+        )
+        if intervening:
+            can_merge = False
+            disabled_reason = f"Scene #{intervening.pk} ({intervening.scene_key}) intervenes between these scenes."
+
+    issue = _find_issue_between_scenes(session, backup_id, s1, s2)
+    curator_split = _is_curator_split(issue)
+    warning = None
+    if curator_split:
+        warning = (
+            "These scenes were separated by a curator (manual split or soft boundary set to split). "
+            "Merging them will combine the scenes and mark the issue as merged. Confirmation required."
+        )
+
+    return {
+        "can_merge": can_merge,
+        "disabled_reason": disabled_reason,
+        "issue_id": issue.pk if issue else None,
+        "is_curator_split": curator_split,
+        "warning": warning,
+    }
+
+
+def get_scene_merge_neighbors(
+    backup_id: str,
+    base_path: str,
+    scene_id: Any,
+) -> Dict[str, Any]:
+    """
+    Returns immediate previous and next scenes in the same channel,
+    along with merge eligibility and curator split status.
+    """
+    require_sqlite_db(base_path)
+    init_db(engine_or_backup_id=backup_id, backup_path=base_path)
+
+    with db_session(backup_id=backup_id, backup_path=base_path) as session:
+        scene = _find_scene_by_id(session, backup_id, scene_id)
+
+        # Immediate previous scene in same channel
+        prev_scene = (
+            session.query(SceneModel)
+            .filter(
+                SceneModel.backup_id == str(backup_id),
+                SceneModel.channel_pk == scene.channel_pk,
+                SceneModel.kind == scene.kind,
+                SceneModel.end_index < scene.start_index,
+            )
+            .order_by(SceneModel.start_index.desc())
+            .first()
+        )
+
+        # Immediate next scene in same channel
+        next_scene = (
+            session.query(SceneModel)
+            .filter(
+                SceneModel.backup_id == str(backup_id),
+                SceneModel.channel_pk == scene.channel_pk,
+                SceneModel.kind == scene.kind,
+                SceneModel.start_index > scene.end_index,
+            )
+            .order_by(SceneModel.start_index.asc())
+            .first()
+        )
+
+        prev_info = {
+            "exists": prev_scene is not None,
+            "scene_pk": prev_scene.pk if prev_scene else None,
+            "scene_key": prev_scene.scene_key if prev_scene else None,
+            "custom_name": prev_scene.custom_name if prev_scene else None,
+            "can_merge": False,
+            "disabled_reason": "First scene in channel" if prev_scene is None else None,
+            "is_curator_split": False,
+            "issue_id": None,
+            "warning": None,
+        }
+        if prev_scene:
+            pair_eval = _evaluate_scene_pair_merge(session, backup_id, prev_scene, scene)
+            prev_info.update(pair_eval)
+
+        next_info = {
+            "exists": next_scene is not None,
+            "scene_pk": next_scene.pk if next_scene else None,
+            "scene_key": next_scene.scene_key if next_scene else None,
+            "custom_name": next_scene.custom_name if next_scene else None,
+            "can_merge": False,
+            "disabled_reason": "Last scene in channel" if next_scene is None else None,
+            "is_curator_split": False,
+            "issue_id": None,
+            "warning": None,
+        }
+        if next_scene:
+            pair_eval = _evaluate_scene_pair_merge(session, backup_id, scene, next_scene)
+            next_info.update(pair_eval)
+
+        return {
+            "status": "success",
+            "scene_pk": scene.pk,
+            "scene_key": scene.scene_key,
+            "kind": scene.kind,
+            "prev": prev_info,
+            "next": next_info,
+        }
+
+
+def merge_adjacent_scene(
+    backup_id: str,
+    base_path: str,
+    scene_id: Any,
+    direction: str,
+    force: bool = False,
+    note: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Merges scene with either its immediate previous or immediate next neighbor in the same channel.
+    If separated by a curator split and not force, returns requires_confirmation.
+    If no scene issue existed between them, creates a resolved issue so it can be undone easily.
+    """
+    if direction not in ("prev", "next"):
+        raise exc.ValidationError(f"Invalid direction '{direction}'. Must be 'prev' or 'next'.")
+
+    require_sqlite_db(base_path)
+    init_db(engine_or_backup_id=backup_id, backup_path=base_path)
+
+    with db_session(backup_id=backup_id, backup_path=base_path) as session:
+        scene = _find_scene_by_id(session, backup_id, scene_id)
+
+        if direction == "prev":
+            prev_scene = (
+                session.query(SceneModel)
+                .filter(
+                    SceneModel.backup_id == str(backup_id),
+                    SceneModel.channel_pk == scene.channel_pk,
+                    SceneModel.kind == scene.kind,
+                    SceneModel.end_index < scene.start_index,
+                )
+                .order_by(SceneModel.start_index.desc())
+                .first()
+            )
+            if not prev_scene:
+                raise exc.ValidationError("Cannot merge with previous scene: this is the first scene in the channel.")
+            s1 = prev_scene
+            s2 = scene
+        else:
+            next_scene = (
+                session.query(SceneModel)
+                .filter(
+                    SceneModel.backup_id == str(backup_id),
+                    SceneModel.channel_pk == scene.channel_pk,
+                    SceneModel.kind == scene.kind,
+                    SceneModel.start_index > scene.end_index,
+                )
+                .order_by(SceneModel.start_index.asc())
+                .first()
+            )
+            if not next_scene:
+                raise exc.ValidationError("Cannot merge with next scene: this is the last scene in the channel.")
+            s1 = scene
+            s2 = next_scene
+
+        # Adjacency and validity check
+        pair_eval = _evaluate_scene_pair_merge(session, backup_id, s1, s2)
+        if not pair_eval["can_merge"]:
+            raise exc.ValidationError(pair_eval["disabled_reason"] or "Scenes cannot be merged.")
+
+        issue = _find_issue_between_scenes(session, backup_id, s1, s2)
+        curator_split = _is_curator_split(issue)
+
+        if curator_split and not force:
+            return {
+                "status": "requires_confirmation",
+                "warning": (
+                    "These scenes were separated by a curator (manual split or soft boundary set to split). "
+                    "Merging them will combine the scenes and mark the issue as merged. Please confirm to proceed."
+                ),
+                "direction": direction,
+                "target_scene_key": (s1.scene_key if direction == "prev" else s2.scene_key),
+                "target_pk": (s1.pk if direction == "prev" else s2.pk),
+                "issue_id": issue.pk if issue else None,
+            }
+
+        s2_start_mid = str(s2.start_message_id)
+        s2_start_idx = s2.start_index
+        s2_start_excerpt = s2.start_excerpt
+        s1_participants = list(s1.participants)
+        s2_participants = list(s2.participants)
+        s1_key = s1.scene_key
+        s2_key = s2.scene_key
+        s1_name = s1.custom_name
+        s2_name = s2.custom_name
+
+        # Resolve character char_id (Tupperbox/Discord ID) for participants, not internal SQLite character_pk
+        all_char_pks = {p.character_pk for p in s1_participants} | {p.character_pk for p in s2_participants}
+        char_pk_to_char_id = {}
+        if all_char_pks:
+            char_rows = (
+                session.query(CharacterModel.pk, CharacterModel.char_id)
+                .filter(CharacterModel.pk.in_(all_char_pks))
+                .all()
+            )
+            char_pk_to_char_id = {row.pk: row.char_id for row in char_rows}
+
+        previous_char_ids = sorted(list({
+            char_pk_to_char_id[p.character_pk]
+            for p in s1_participants
+            if p.character_pk in char_pk_to_char_id
+        }))
+        next_char_ids = sorted(list({
+            char_pk_to_char_id[p.character_pk]
+            for p in s2_participants
+            if p.character_pk in char_pk_to_char_id
+        }))
+
+        merged_s1 = _merge_scenes(session, backup_id, base_path, s1, s2)
+
+        # Preserve custom_name: keep s1's if present, else adopt s2's if present
+        if not merged_s1.custom_name and s2_name:
+            merged_s1.custom_name = s2_name
+
+        # Handle scene issue: update existing or create resolved one
+        resolved_note = note.strip() if note and note.strip() else f"Merged {s1_key} and {s2_key} by curator"
+        now_utc = datetime.now(timezone.utc)
+
+        if issue:
+            issue.resolution = IssueResolution.MERGED.value
+            issue.resolved_at = now_utc
+            issue.resolved_note = resolved_note
+            issue.scene_pk = merged_s1.pk
+            issue.next_scene_pk = None
+            if not issue.previous_chars and previous_char_ids:
+                issue.previous_chars = previous_char_ids
+            if not issue.next_chars and next_char_ids:
+                issue.next_chars = next_char_ids
+        else:
+            new_issue = SceneIssueModel(
+                backup_id=str(backup_id),
+                scene_pk=merged_s1.pk,
+                next_scene_pk=None,
+                kind=IssueKind.AUTO_SPLIT.value,
+                reason=IssueReason.MANUAL.value,
+                candidate_message_id=s2_start_mid,
+                candidate_index=s2_start_idx,
+                candidate_excerpt=s2_start_excerpt,
+                previous_chars=previous_char_ids,
+                next_chars=next_char_ids,
+                created_at=merged_s1.start_at or now_utc,
+                resolved_at=now_utc,
+                resolved_note=resolved_note,
+                resolution=IssueResolution.MERGED.value,
+            )
+            session.add(new_issue)
+
+        session.flush()
+
+        # If merged_s1 is associated with an event, keep character_movements in sync
+        if merged_s1.event_pk:
+            ev = session.query(EventModel).filter(EventModel.pk == merged_s1.event_pk).first()
+            if ev and ev.character_movements:
+                custom_by_key = {sc.scene_key: sc.custom_name for sc in ev.scenes}
+                custom_by_chan = {sc.channel.discord_id: sc.custom_name for sc in ev.scenes if sc.channel and sc.custom_name}
+                updated_moves = {}
+                for cid, hops in (ev.character_movements or {}).items():
+                    hop_list = []
+                    for h in hops:
+                        h_copy = dict(h)
+                        s_id = h_copy.get("scene_key") or h_copy.get("scene_id")
+                        ch_id = h_copy.get("channel_id")
+                        if s_id and s_id in custom_by_key:
+                            h_copy["custom_name"] = custom_by_key[s_id]
+                        elif ch_id and ch_id in custom_by_chan:
+                            h_copy["custom_name"] = custom_by_chan[ch_id]
+                        hop_list.append(h_copy)
+                    updated_moves[cid] = hop_list
+                ev.character_movements = updated_moves
+                session.flush()
+
+        return {
+            "status": "success",
+            "merged_scene": {
+                "pk": merged_s1.pk,
+                "scene_key": merged_s1.scene_key,
+                "custom_name": merged_s1.custom_name,
+                "kind": merged_s1.kind,
+            },
+            "deleted_scene_key": s2_key,
+        }
 

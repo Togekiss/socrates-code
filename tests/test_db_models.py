@@ -251,7 +251,7 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
         actual_statuses = {s.value for s in SceneStatus}
         self.assertEqual(actual_statuses, expected_statuses)
 
-        expected_reasons = {"separate_roster", "start_tag_roster_change", "start_tag_same_roster", "roster_change", "manual"}
+        expected_reasons = {"separate_roster", "start_tag_roster_change", "start_tag_same_roster", "roster_change", "manual", "inactivity_gap", "tupper_end_tag"}
         actual_reasons = {r.value for r in IssueReason}
         self.assertEqual(actual_reasons, expected_reasons)
 

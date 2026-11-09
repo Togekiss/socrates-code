@@ -12,7 +12,7 @@ import utils.tricks as t
 from models.backup_context import BackupContext
 from models import ServerBackup, Category, Channel, Thread, CharacterList
 from assign_ids import assign_ids_in_file
-from index_sessions import index_sessions
+from index_scenes import index_scenes
 from res import constants as c
 
 """
@@ -39,7 +39,7 @@ At any point:
 
 BACKUP_ID = "1"
 BACKUP_PATH = "Backups/Elysium"
-CATEGORY_NAME = "active event"
+CATEGORY_NAME = "Events"
 IS_EVENT = True  # Set to True when injecting an event category (e.g. EVENT, EVENT STORAGE, NSFW Events, Events)
 
 
@@ -203,34 +203,10 @@ def inject_category(
         char_list.save()
         print("-> Tupper characters resolved and saved to database.")
 
-        # 4. Index based on category type
-        if is_event:
-            print("\nDetecting and indexing events...")
-            from index_events import index_event_categories
-            from db.event_service import save_indexed_events
-
-            event_cats = [cat for cat in backup.categories if cat.id == "events_category" or cat.name == "Events"]
-            event_clusters = index_event_categories(
-                event_categories=event_cats,
-                folder=data_dir.as_posix(),
-            )
-            save_indexed_events(
-                backup_id,
-                backup_path,
-                event_clusters,
-            )
-            print(f"-> Done! {len(event_clusters)} events saved to backup.sqlite.")
-        else:
-            chatroom_cats = getattr(c, "CHATROOM_CATEGORIES", []) or []
-            if category_name in chatroom_cats:
-                print("\nDetecting and indexing chat sessions...")
-                sessions = index_sessions(backup_id=backup_id, backup_path=backup_path)
-                print(f"-> Done! {len(sessions)} chat sessions saved to backup.sqlite.")
-            else:
-                print("\nDetecting and indexing scenes...")
-                from index_scenes import index_scenes
-                index_scenes()
-                print("-> Done! Scenes saved to backup.sqlite.")
+        # 4. Index scenes across all categories (scenes, chat sessions, and events)
+        print("\nIndexing scenes...")
+        index_scenes(backup_id=backup_id, backup_path=backup_path)
+        print("-> Done! Scenes, sessions, and events indexed and saved to backup.sqlite.")
 
 
 if __name__ == "__main__":

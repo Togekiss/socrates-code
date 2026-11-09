@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ExternalLink, ChevronDown, ChevronRight, Check, AlertCircle } from 'lucide-react';
+import { ExternalLink, ChevronDown, ChevronRight, Check, AlertCircle, Edit3 } from 'lucide-react';
 import type { SceneIssueRef } from '../../types';
 
 interface SceneCardProps {
@@ -7,9 +7,10 @@ interface SceneCardProps {
   allCharacters: any[];
   charactersFilter: number[];
   setCharactersFilter: (filter: number[]) => void;
+  onEdit?: (scene: any) => void;
 }
 
-export const SceneCard: React.FC<SceneCardProps> = ({ scene, allCharacters, charactersFilter, setCharactersFilter }) => {
+export const SceneCard: React.FC<SceneCardProps> = ({ scene, allCharacters, charactersFilter, setCharactersFilter, onEdit }) => {
   const [expanded, setExpanded] = useState(false);
 
   const getCharName = (id: number) => {
@@ -49,14 +50,48 @@ export const SceneCard: React.FC<SceneCardProps> = ({ scene, allCharacters, char
       flexDirection: 'column' 
     }}>
       <div style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'baseline' }}>
-            <strong>{scene.category} &gt; {scene.channel}</strong> {scene.type === 'thread' && <span style={{ opacity: 0.7 }}>| {scene.thread_name || 'Thread'}</span>}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.5rem' }}>
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'baseline', flexWrap: 'wrap' }}>
+            {scene.custom_name ? (
+              <>
+                <strong style={{ fontSize: '0.98rem', color: 'var(--text-primary)' }}>{scene.custom_name}</strong>
+                <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                  ({scene.category} &gt; #{scene.channel}{scene.type === 'thread' ? ` | ${scene.thread_name || 'Thread'}` : ''})
+                </span>
+              </>
+            ) : (
+              <>
+                <strong>{scene.category} &gt; #{scene.channel}</strong> {scene.type === 'thread' && <span style={{ opacity: 0.7 }}>| {scene.thread_name || 'Thread'}</span>}
+              </>
+            )}
             <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
               {formatTimestamp(scene.start?.timestamp) || 'N/A'}
             </div>
           </div>
-          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+            {onEdit && (
+              <button
+                type="button"
+                onClick={() => onEdit(scene)}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.25rem',
+                  padding: '0.2rem 0.5rem',
+                  background: 'rgba(255,255,255,0.08)',
+                  border: '1px solid var(--border-color)',
+                  color: 'var(--text-primary)',
+                  borderRadius: '4px',
+                  fontSize: '0.75rem',
+                  cursor: 'pointer',
+                  fontWeight: 500,
+                }}
+                title="Edit custom name"
+              >
+                <Edit3 size={12} />
+                <span>Edit</span>
+              </button>
+            )}
             <span style={{ padding: '0.2rem 0.5rem', background: 'rgba(255,255,255,0.1)', borderRadius: '4px', fontSize: '0.8rem' }}>{scene.status}</span>
             {scene.issues && scene.issues.map((issue: SceneIssueRef) => {
               const isResolved = issue.resolved || Boolean(issue.resolved_at);

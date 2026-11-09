@@ -2,7 +2,8 @@ import { useEffect, useState, useMemo, useCallback } from 'react';
 import { api } from '../api';
 import { ScenesFilter } from './scenes/ScenesFilter';
 import { VirtualSceneList } from './scenes/VirtualSceneList';
-import { AlertCircle, ArrowRight } from 'lucide-react';
+import { SceneEditModal } from './scenes/SceneEditModal';
+import { AlertCircle, ArrowRight, Search, ArrowUpDown } from 'lucide-react';
 import type { Character, ChatSession, MyWriter } from '../types';
 
 interface ChatSessionsTabProps {
@@ -23,15 +24,16 @@ export const ChatSessionsTab = ({
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
+  const [editingSession, setEditingSession] = useState<ChatSession | null>(null);
 
   const [allCharacters, setAllCharacters] = useState<Character[]>([]);
   const [myWriter, setMyWriter] = useState<MyWriter | null>(initialMyWriter || null);
 
   // Filters: note that categoriesFilter is bound to channels for sessions mode
   const [charactersFilter, setCharactersFilter] = useState<number[]>([]);
-  const [characterLogic, setCharacterLogic] = useState<'AND' | 'OR'>('OR');
+  const [characterLogic, setCharacterLogic] = useState<'AND' | 'OR'>('AND');
   const [writersFilter, setWritersFilter] = useState<string[]>([]);
-  const [writerLogic, setWriterLogic] = useState<'AND' | 'OR'>('OR');
+  const [writerLogic, setWriterLogic] = useState<'AND' | 'OR'>('AND');
   const [channelsFilter, setChannelsFilter] = useState<string[]>([]);
   const [typesFilter, setTypesFilter] = useState<string[]>([]);
   const [statusesFilter, setStatusesFilter] = useState<string[]>([]);
@@ -41,6 +43,8 @@ export const ChatSessionsTab = ({
   const [before, setBefore] = useState('');
   const [after, setAfter] = useState('');
   const [byMe, setByMe] = useState(false);
+  const [search, setSearch] = useState('');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
 
   const [fetchedStatus, setFetchedStatus] = useState<string | null>(null);
 
@@ -90,6 +94,8 @@ export const ChatSessionsTab = ({
       const params = new URLSearchParams();
       params.append('page', targetPage.toString());
       params.append('per_page', '50');
+      params.append('sort', sortOrder);
+      if (search.trim()) params.append('search', search.trim());
 
       channelsFilter.forEach(ch => params.append('channels', ch));
       statusesFilter.forEach(s => params.append('statuses', s));
@@ -123,6 +129,8 @@ export const ChatSessionsTab = ({
       byMe,
       before,
       after,
+      search,
+      sortOrder,
     ]
   );
 
@@ -170,6 +178,8 @@ export const ChatSessionsTab = ({
     before,
     after,
     byMe,
+    search,
+    sortOrder,
     fetchSessions,
   ]);
 
@@ -240,6 +250,52 @@ export const ChatSessionsTab = ({
         </div>
       )}
 
+      {/* Search & Sort Bar */}
+      <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
+        <div style={{ position: 'relative', flex: '1 1 260px' }}>
+          <Search
+            size={16}
+            style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }}
+          />
+          <input
+            type="text"
+            placeholder="Search chat sessions or custom names..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '0.5rem 0.75rem 0.5rem 2.25rem',
+              background: 'var(--bg-secondary)',
+              border: '1px solid var(--border-color)',
+              color: 'white',
+              borderRadius: '6px',
+              fontSize: '0.88rem',
+              boxSizing: 'border-box',
+            }}
+          />
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '0.4rem',
+            padding: '0.5rem 0.85rem',
+            background: 'var(--bg-secondary)',
+            border: '1px solid var(--border-color)',
+            color: 'var(--text-primary)',
+            borderRadius: '6px',
+            fontSize: '0.85rem',
+            cursor: 'pointer',
+          }}
+        >
+          <ArrowUpDown size={15} />
+          {sortOrder === 'asc' ? 'Oldest First' : 'Newest First'}
+        </button>
+      </div>
+
       <ScenesFilter
         mode="sessions"
         charactersFilter={charactersFilter}
@@ -282,7 +338,31 @@ export const ChatSessionsTab = ({
         loadMore={loadMore}
         hasMore={hasMore}
         loading={loading}
+        onEdit={(item) => setEditingSession(item as ChatSession)}
       />
+
+      {editingSession && (
+        <SceneEditModal
+          backupId={backupId}
+          scene={editingSession}
+          onClose={() => setEditingSession(null)}
+          onUpdated={(updated) => {
+            if (updated) {
+              setSessions(prev =>
+                prev.map(s =>
+                  s.scene_key === updated.scene_key ||
+                  s.id === updated.scene_key ||
+                  (updated.pk && (s.pk === updated.pk || (s as any).scene_pk === updated.pk))
+                    ? { ...s, custom_name: updated.custom_name }
+                    : s
+                )
+              );
+            } else {
+              fetchSessions(1, true);
+            }
+          }}
+        />
+      )}
     </div>
   );
 };

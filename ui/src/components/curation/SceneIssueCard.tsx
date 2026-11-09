@@ -45,6 +45,12 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
     }
   };
 
+  const getSceneKindLabel = (kind?: string) => {
+    if (kind === 'event') return 'Event';
+    if (kind === 'session') return 'Session';
+    return 'Scene';
+  };
+
   const getReasonLabel = (reason: string) => {
     switch (reason) {
       case 'separate_roster':
@@ -57,6 +63,10 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
         return 'Some participants changed, but not all of them';
       case 'manual':
         return 'Manually split by curator';
+      case 'inactivity_gap':
+        return '48-hour inactivity gap between messages';
+      case 'tupper_end_tag':
+        return 'Tupperbox end tag, but conversation continued';
       default:
         return reason ? reason.replace(/_/g, ' ') : 'Boundary Anomaly';
     }
@@ -87,28 +97,35 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
     <div
       className="glass-panel"
       style={{
-        padding: '1.25rem',
         display: 'flex',
         flexDirection: 'column',
-        gap: '0.75rem',
-        borderLeft: isResolved
-          ? '4px solid var(--success)'
-          : issue.kind === 'auto_split'
-          ? '4px solid var(--warning)'
-          : '4px solid var(--accent-secondary)',
+        gap: '0.85rem',
+        borderLeft: `4px solid ${getKindBadgeColor(issue.kind)}`,
+        opacity: isResolved ? 0.75 : 1,
       }}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.75rem' }}>
+      {/* Top Bar: Kind Badge & Actions */}
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'flex-start',
+          flexWrap: 'wrap',
+          gap: '0.75rem',
+        }}
+      >
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
             <span
               style={{
-                background: getKindBadgeColor(issue.kind),
-                color: '#000',
+                background: issue.kind === 'auto_split' ? 'rgba(234, 179, 8, 0.2)' : 'rgba(139, 92, 246, 0.2)',
+                border: issue.kind === 'auto_split' ? '1px solid #eab308' : '1px solid #8b5cf6',
+                color: issue.kind === 'auto_split' ? '#fde047' : '#c4b5fd',
                 padding: '0.15rem 0.5rem',
                 borderRadius: '4px',
                 fontSize: '0.75rem',
                 fontWeight: 700,
+                letterSpacing: '0.04em',
                 textTransform: 'uppercase',
               }}
             >
@@ -156,11 +173,11 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
 
           <div style={{ marginTop: '0.35rem' }}>
             <h4 style={{ margin: 0, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', fontSize: '1rem' }}>
-              <span>{issue.scene_kind === 'session' ? 'Session' : 'Scene'} <code style={{ color: getKindBadgeColor(issue.kind) }}>{issue.scene_key}</code></span>
+              <span>{getSceneKindLabel(issue.scene_kind)} <code style={{ color: getKindBadgeColor(issue.kind) }}>{issue.scene_key}</code></span>
               {issue.next_scene_key && (
                 <>
                   <ArrowRight size={14} style={{ color: 'var(--text-muted)' }} />
-                  <span>Split into {issue.scene_kind === 'session' ? 'Session' : 'Scene'} <code style={{ color: getKindBadgeColor(issue.kind) }}>{issue.next_scene_key}</code></span>
+                  <span>Split into {getSceneKindLabel(issue.scene_kind)} <code style={{ color: getKindBadgeColor(issue.kind) }}>{issue.next_scene_key}</code></span>
                 </>
               )}
               <span style={{ color: 'var(--text-secondary)' }}>in #{issue.channel_name}</span>

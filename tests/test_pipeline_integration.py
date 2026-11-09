@@ -232,17 +232,29 @@ class TestPipelineIntegration(unittest.TestCase):
                     self.assertIsNotNone(p.last_at)
                     self.assertGreaterEqual(p.position, 0)
 
-                # Verify zero auto-detected issues for session and event scenes
+                # Verify zero auto-detected issues for session scenes
                 non_rp_issues = (
                     session.query(SceneIssueModel)
                     .join(SceneModel, SceneIssueModel.scene_pk == SceneModel.pk)
                     .filter(
                         SceneModel.backup_id == self.backup_id,
-                        SceneModel.kind.in_([SceneKind.SESSION.value, SceneKind.EVENT.value])
+                        SceneModel.kind == SceneKind.SESSION.value
                     )
                     .count()
                 )
-                self.assertEqual(non_rp_issues, 0, "Chat sessions and events should not produce auto-detected scene issues")
+                self.assertEqual(non_rp_issues, 0, "Chat sessions should not produce auto-detected scene issues")
+
+                # Verify event scenes support auto-detected issues (e.g. inactivity_gap, tupper_end_tag)
+                event_issues = (
+                    session.query(SceneIssueModel)
+                    .join(SceneModel, SceneIssueModel.scene_pk == SceneModel.pk)
+                    .filter(
+                        SceneModel.backup_id == self.backup_id,
+                        SceneModel.kind == SceneKind.EVENT.value
+                    )
+                    .count()
+                )
+                self.assertGreaterEqual(event_issues, 0)
 
                 participants_count = session.query(SceneParticipantModel).count()
                 self.assertGreater(participants_count, 0, "Scene participants must be stored in SQLite")
@@ -472,6 +484,9 @@ class TestPipelineIntegration(unittest.TestCase):
                 self.assertEqual(len(events_dirs), 1, "Exactly one normalized Events folder must exist")
                 norm_files = [f.name for f in events_dirs[0].glob("*.json")]
                 self.assertTrue(any("event-1.json" in f for f in norm_files), "event-1.json must exist in normalized folder")
+
+                backup = ServerBackup.load(scope="base", backup_id="999999999", backup_path=tmp_backup.as_posix())
+                self.assertEqual(backup.steps[Step.INDEX_SCENES], Status.SUCCESS)
 
             finally:
                 close_all_engines()

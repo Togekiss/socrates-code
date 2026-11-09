@@ -60,6 +60,9 @@ from server import (
     reopen_scene_issue,
     resolve_scene_issue,
     update_writer,
+    get_scene_merge_neighbors,
+    merge_scene,
+    MergeSceneRequest,
 )
 
 
@@ -371,6 +374,17 @@ class TestSceneIssuesReviewQueue(unittest.TestCase):
             self.assertIn(key, first_issue)
         self.assertIsInstance(first_issue["previous_char_names"], list)
         self.assertIsInstance(first_issue["next_char_names"], list)
+
+    def test_get_scene_issues_filtering_by_scene_type(self):
+        scene_res = get_scene_issues("1791895360", status="all", scene_type="scene")
+        self.assertIsInstance(scene_res, dict)
+        for iss in scene_res["issues"]:
+            self.assertEqual(iss["scene_kind"], "scene")
+
+        empty_res = get_scene_issues("1791895360", status="all", scene_type="nonexistent_type")
+        self.assertEqual(empty_res["total_items"], 0)
+        self.assertEqual(len(empty_res["issues"]), 0)
+        self.assertEqual(empty_res["status_counts"]["all"], 0)
 
     def test_resolve_and_reopen_issue_roundtrip(self):
         issues_res = get_scene_issues("1791895360", status="unresolved", per_page=1)
@@ -1359,6 +1373,663 @@ class TestEventsEngineAndCuration(unittest.TestCase):
         self.assertEqual(res_final["total_items"], 4)
         self.assertEqual(res_final["events"][0]["name"], "Reunited Gala")
         self.assertTrue(res_final["events"][0]["is_curated"])
+    def test_event_issue_flagging_auto_split_and_soft_boundary(self):
+        from index_events import detect_event_channel_segments
+        from db.models import IssueKind
+
+        synthetic_data = {
+            "channel": {
+                "id": "900002",
+                "name": "event-pool",
+                "categoryId": "events_category",
+                "category": "Events",
+                "type": "GuildTextChat",
+            },
+            "messages": [
+                {
+                    "id": "201",
+                    "timestamp": "2023-07-01T10:00:00+00:00",
+                    "content": "Aria walks near the water.",
+                    "author": {"id": "1", "name": "Aria", "isBot": True},
+                },
+                {
+                    "id": "202",
+                    "timestamp": "2023-07-01T10:30:00+00:00",
+                    "content": "Aria sits on the lounger. [END]",
+                    "author": {"id": "1", "name": "Aria", "isBot": True},
+                },
+                {
+                    "id": "203",
+                    "timestamp": "2023-07-01T11:00:00+00:00",
+                    "content": "Bastian jumps into the pool with a splash!",
+                    "author": {"id": "2", "name": "Bastian", "isBot": True},
+                },
+                {
+                    "id": "204",
+                    "timestamp": "2023-07-01T11:15:00+00:00",
+                    "content": "Bastian swims laps.",
+                    "author": {"id": "2", "name": "Bastian", "isBot": True},
+                },
+                # Inactivity gap >= 36 hours (40 hours later)
+                {
+                    "id": "205",
+                    "timestamp": "2023-07-03T03:15:00+00:00",
+                    "content": "Cedric arrives the next evening.",
+                    "author": {"id": "3", "name": "Cedric", "isBot": True},
+                },
+                {
+                    "id": "206",
+                    "timestamp": "2023-07-03T03:45:00+00:00",
+                    "content": "Cedric orders a drink.",
+                    "author": {"id": "3", "name": "Cedric", "isBot": True},
+                },
+            ],
+        }
+
+        # 1. Unresolved: flags soft_boundary at msg 202 and auto_split at msg 205
+        segs = detect_event_channel_segments(synthetic_data)
+        self.assertEqual(len(segs), 2)
+        seg1, seg2 = segs[0], segs[1]
+
+        # Segment 1 issues
+        issues1 = seg1.get("issues", [])
+        self.assertEqual(len(issues1), 2)
+
+        soft_iss = next(iss for iss in issues1 if iss["kind"] == IssueKind.SOFT_BOUNDARY.value)
+        self.assertEqual(soft_iss["reason"], "tupper_end_tag")
+        self.assertEqual(soft_iss["candidate_id"], "202")
+        self.assertIn(1, soft_iss["previous_chars"])
+        self.assertIn(2, soft_iss["next_chars"])
+
+        auto_iss = next(iss for iss in issues1 if iss["kind"] == IssueKind.AUTO_SPLIT.value)
+        self.assertEqual(auto_iss["reason"], "inactivity_gap")
+        self.assertEqual(auto_iss["candidate_id"], "205")
+        self.assertIn(1, auto_iss["previous_chars"])
+        self.assertIn(2, auto_iss["previous_chars"])
+        self.assertIn(3, auto_iss["next_chars"])
+
+        # 2. Resolved decision "merged" suppresses the silence-gap cut
+        segs_merged = detect_event_channel_segments(synthetic_data, resolved_decisions={"205": "merged"})
+        self.assertEqual(len(segs_merged), 1)
+        self.assertIn("205", segs_merged[0].get("resolved_inside", []))
+
+    def test_event_scene_split_and_cross_event_merge(self):
+        from db.models import EventModel, SceneModel
+        from db.curation_service import _split_scene_at, _merge_scenes
+        from assign_ids import assign_ids
+        from index_scenes import index_scenes
+        from models.backup_context import BackupContext
+
+        reset_test_backup()
+        migrate_for_tests("1791895360")
+        SceneManager.clear_cache()
+        close_all_engines()
+
+        ctx = BackupContext.create(backup_id="1791895360")
+        with BackupContext.activate(context=ctx):
+            assign_ids()
+            index_scenes()
+        SceneManager.clear_cache()
+        close_all_engines()
+
+        base_path = (DATA_ROOT / "Backups" / "Elysium-sql-tests").as_posix()
+
+        with db_session(backup_id="1791895360", backup_path=base_path) as session:
+            ev_scene = (
+                session.query(SceneModel)
+                .filter(
+                    SceneModel.backup_id == "1791895360",
+                    SceneModel.kind == "event",
+                    SceneModel.event_pk.isnot(None),
+                    (SceneModel.end_index - SceneModel.start_index) >= 2,
+                )
+                .first()
+            )
+            self.assertIsNotNone(ev_scene)
+            orig_ev_pk = ev_scene.event_pk
+            orig_ev = session.query(EventModel).filter_by(pk=orig_ev_pk).first()
+            orig_key = orig_ev.event_key
+            split_idx = ev_scene.start_index + 1
+
+            # 1. Split scene: scene2 should be assigned to a NEW event (preserving 1 scene per channel)
+            s1, s2 = _split_scene_at(
+                session,
+                "1791895360",
+                base_path,
+                ev_scene,
+                candidate_index=split_idx,
+            )
+
+            self.assertEqual(s1.event_pk, orig_ev_pk)
+            self.assertIsNotNone(s2.event_pk)
+            self.assertNotEqual(s2.event_pk, orig_ev_pk)
+
+            new_ev = session.query(EventModel).filter_by(pk=s2.event_pk).first()
+            self.assertIsNotNone(new_ev)
+            self.assertTrue(new_ev.event_key.startswith("ev-"))
+            self.assertNotEqual(new_ev.event_key, orig_key)
+            self.assertTrue(orig_ev.is_curated)
+            self.assertTrue(new_ev.is_curated)
+            self.assertEqual(s2.scene_key, f"{new_ev.event_key}-1")
+
+            # 2. Merge scene2 back into s1 (cross-event merge)
+            new_ev_pk = new_ev.pk
+            merged_s1 = _merge_scenes(
+                session,
+                "1791895360",
+                base_path,
+                s1,
+                s2,
+            )
+            self.assertEqual(merged_s1.pk, s1.pk)
+            deleted_ev = session.query(EventModel).filter_by(pk=new_ev_pk).first()
+            self.assertIsNone(deleted_ev, "Empty event after absorbing all scenes should be deleted")
+
+    def test_merge_events_channel_contiguity_and_validation(self):
+        from datetime import datetime, timezone
+        from db.models import EventModel, SceneModel, SceneIssueModel, ChannelModel
+        from db.event_service import _merge_events_in_session
+        from utils import exceptions as exc
+
+        reset_test_backup()
+        migrate_for_tests("1791895360")
+        SceneManager.clear_cache()
+        close_all_engines()
+
+        base_path = (DATA_ROOT / "Backups" / "Elysium-sql-tests").as_posix()
+
+        with db_session(backup_id="1791895360", backup_path=base_path) as session:
+            from db.models import ExportModel
+            export = session.query(ExportModel).filter_by(backup_id="1791895360").first()
+            export_pk = export.pk if export else None
+
+            # Create a dedicated test channel so existing channels do not collide
+            channel = ChannelModel(
+                export_pk=export_pk,
+                discord_id="999888777",
+                name="test-event-channel",
+                type="GuildTextChat",
+                position=999,
+                path="6# Events/999# test-event-channel.json",
+            )
+            session.add(channel)
+            session.flush()
+
+            ev1 = EventModel(
+                backup_id="1791895360",
+                event_key="ev-test-1",
+                start_at=datetime(2023, 1, 1, tzinfo=timezone.utc),
+                end_at=datetime(2023, 1, 2, tzinfo=timezone.utc),
+            )
+            ev2 = EventModel(
+                backup_id="1791895360",
+                event_key="ev-test-2",
+                start_at=datetime(2023, 1, 3, tzinfo=timezone.utc),
+                end_at=datetime(2023, 1, 4, tzinfo=timezone.utc),
+            )
+            session.add_all([ev1, ev2])
+            session.flush()
+
+            sc1 = SceneModel(
+                backup_id="1791895360",
+                scene_key="ev-test-1-1",
+                channel_pk=channel.pk,
+                category_pk=channel.pk,
+                event_pk=ev1.pk,
+                kind="event",
+                status="closed",
+                start_message_id="1000",
+                end_message_id="1001",
+                start_index=0,
+                end_index=2,
+                start_at=datetime(2023, 1, 1, tzinfo=timezone.utc),
+                end_at=datetime(2023, 1, 2, tzinfo=timezone.utc),
+                start_author_id="1",
+                end_author_id="1",
+            )
+            sc_intervene = SceneModel(
+                backup_id="1791895360",
+                scene_key="intervene-1",
+                channel_pk=channel.pk,
+                category_pk=channel.pk,
+                kind="scene",
+                status="closed",
+                start_message_id="1002",
+                end_message_id="1003",
+                start_index=3,
+                end_index=5,
+                start_at=datetime(2023, 1, 2, 12, 0, tzinfo=timezone.utc),
+                end_at=datetime(2023, 1, 2, 18, 0, tzinfo=timezone.utc),
+                start_author_id="2",
+                end_author_id="2",
+            )
+            sc2 = SceneModel(
+                backup_id="1791895360",
+                scene_key="ev-test-2-1",
+                channel_pk=channel.pk,
+                category_pk=channel.pk,
+                event_pk=ev2.pk,
+                kind="event",
+                status="closed",
+                start_message_id="1004",
+                end_message_id="1005",
+                start_index=6,
+                end_index=8,
+                start_at=datetime(2023, 1, 3, tzinfo=timezone.utc),
+                end_at=datetime(2023, 1, 4, tzinfo=timezone.utc),
+                start_author_id="1",
+                end_author_id="1",
+            )
+            session.add_all([sc1, sc_intervene, sc2])
+            session.flush()
+
+            # Merging ev1 and ev2 should fail because sc_intervene sits between sc1 and sc2
+            with self.assertRaises(exc.ValidationError) as ctx_err:
+                _merge_events_in_session(session, "1791895360", [ev1.pk, ev2.pk], base_path=base_path)
+            self.assertIn("cannot be merged because another scene intervenes between them", str(ctx_err.exception))
+
+            # Delete the intervening scene
+            session.delete(sc_intervene)
+            session.flush()
+
+            # Now merging ev1 and ev2 should succeed and merge sc1 and sc2 into 1 scene
+            res = _merge_events_in_session(session, "1791895360", [ev1.pk, ev2.pk], base_path=base_path)
+            self.assertEqual(res["status"], "success")
+
+            surviving_scenes = session.query(SceneModel).filter_by(event_pk=ev1.pk).all()
+            self.assertEqual(len(surviving_scenes), 1)
+            self.assertEqual(surviving_scenes[0].start_index, 0)
+            self.assertEqual(surviving_scenes[0].end_index, 8)
+
+            iss = session.query(SceneIssueModel).filter_by(candidate_message_id="1004").first()
+            self.assertIsNotNone(iss)
+            self.assertEqual(iss.resolution, "merged")
+
+
+
+
+
+
+class TestSceneCustomNameCuration(unittest.TestCase):
+    """Tests setting, updating, clearing, and re-indexing preservation of scene and session custom_name."""
+
+    def setUp(self):
+        reset_test_backup()
+        migrate_for_tests("1791895360")
+        SceneManager.clear_cache()
+        close_all_engines()
+
+    @classmethod
+    def tearDownClass(cls):
+        SceneManager.clear_cache()
+        close_all_engines()
+        reset_test_backup()
+        migrate_for_tests("1791895360")
+
+    def test_update_scene_custom_name_endpoint_and_query(self):
+        from server import get_scenes, update_scene, UpdateSceneMetadataRequest
+        # 1. Fetch scenes to find a target scene
+        res = get_scenes("1791895360")
+        scenes = res.get("scenes", [])
+        self.assertTrue(len(scenes) > 0, "Expected at least one scene in test backup")
+
+        target = scenes[0]
+        s_key = target["scene_key"]
+        s_pk = target.get("pk") or target.get("scene_pk")
+        self.assertIsNotNone(s_pk)
+
+        # 2. Update custom_name by scene_key
+        put_res = update_scene(
+            backup_id="1791895360",
+            scene_id=s_key,
+            req=UpdateSceneMetadataRequest(custom_name="The Grand Opening")
+        )
+        self.assertEqual(put_res["status"], "success")
+        self.assertEqual(put_res["custom_name"], "The Grand Opening")
+        self.assertEqual(put_res["scene_key"], s_key)
+
+        # Verify via get_scenes
+        verify_res = get_scenes("1791895360")
+        matched = [s for s in verify_res["scenes"] if s["scene_key"] == s_key]
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0]["custom_name"], "The Grand Opening")
+        self.assertEqual(matched[0]["pk"], s_pk)
+
+        # 3. Update custom_name by numeric pk
+        put_pk_res = update_scene(
+            backup_id="1791895360",
+            scene_id=str(s_pk),
+            req=UpdateSceneMetadataRequest(custom_name="The Grand Reopening")
+        )
+        self.assertEqual(put_pk_res["custom_name"], "The Grand Reopening")
+
+        # 4. Clear custom_name with empty string
+        clear_res = update_scene(
+            backup_id="1791895360",
+            scene_id=s_key,
+            req=UpdateSceneMetadataRequest(custom_name="")
+        )
+        self.assertIsNone(clear_res["custom_name"])
+
+    def test_update_session_custom_name_endpoint_and_query(self):
+        from server import get_sessions, update_scene, UpdateSceneMetadataRequest, get_backup_path
+        base_path = get_backup_path("1791895360")
+        with db_session(backup_id="1791895360", backup_path=base_path) as session:
+            scene = session.query(SceneModel).filter(
+                SceneModel.backup_id == "1791895360",
+            ).first()
+            self.assertIsNotNone(scene)
+            scene.kind = "session"
+            session.commit()
+            s_key = scene.scene_key
+
+        # 1. Fetch sessions
+        res = get_sessions("1791895360")
+        sessions = res.get("sessions", [])
+        self.assertTrue(len(sessions) > 0, "Expected at least one session in test backup")
+
+        target = [s for s in sessions if s["scene_key"] == s_key][0]
+
+        # 2. Update custom_name
+        put_res = update_scene(
+            backup_id="1791895360",
+            scene_id=s_key,
+            req=UpdateSceneMetadataRequest(custom_name="Late Night Banter")
+        )
+        self.assertEqual(put_res["custom_name"], "Late Night Banter")
+
+        # 3. Verify via get_sessions
+        verify_res = get_sessions("1791895360")
+        matched = [s for s in verify_res["sessions"] if s["scene_key"] == s_key]
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0]["custom_name"], "Late Night Banter")
+
+    def test_update_scene_not_found(self):
+        from server import update_scene, UpdateSceneMetadataRequest
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            update_scene(
+                backup_id="1791895360",
+                scene_id="invalid-key-9999",
+                req=UpdateSceneMetadataRequest(custom_name="Does Not Matter")
+            )
+        self.assertEqual(ctx.exception.status_code, 404)
+        self.assertIn("not found", ctx.exception.detail.lower())
+
+    def test_search_scenes_by_custom_name(self):
+        from server import get_scenes, update_scene, UpdateSceneMetadataRequest
+        # Fetch scenes
+        scenes = get_scenes("1791895360")["scenes"]
+        self.assertTrue(len(scenes) >= 2)
+        s_target = scenes[0]
+        update_scene(
+            backup_id="1791895360",
+            scene_id=s_target["scene_key"],
+            req=UpdateSceneMetadataRequest(custom_name="Super Secret Rendezvous")
+        )
+
+        # Search matching custom_name
+        search_res = get_scenes("1791895360", search="Secret")
+        self.assertEqual(len(search_res["scenes"]), 1)
+        self.assertEqual(search_res["scenes"][0]["scene_key"], s_target["scene_key"])
+        self.assertEqual(search_res["scenes"][0]["custom_name"], "Super Secret Rendezvous")
+
+        # Search with non-matching term
+        empty_res = get_scenes("1791895360", search="TermThatDoesNotExistAnywhere123")
+        self.assertEqual(len(empty_res["scenes"]), 0)
+        self.assertEqual(empty_res["total_items"], 0)
+
+    def test_sort_scenes_and_sessions(self):
+        from server import get_scenes, get_sessions, get_backup_path
+        # Sort scenes asc vs desc
+        asc_res = get_scenes("1791895360", sort="asc")["scenes"]
+        desc_res = get_scenes("1791895360", sort="desc")["scenes"]
+        self.assertTrue(len(asc_res) >= 2)
+        self.assertEqual(len(asc_res), len(desc_res))
+        self.assertLessEqual(asc_res[0]["start"]["timestamp"], asc_res[-1]["start"]["timestamp"])
+        self.assertGreaterEqual(desc_res[0]["start"]["timestamp"], desc_res[-1]["start"]["timestamp"])
+        self.assertEqual(asc_res[0]["scene_key"], desc_res[-1]["scene_key"])
+
+        # Convert 2 scenes to session to verify session sorting as well
+        base_path = get_backup_path("1791895360")
+        with db_session(backup_id="1791895360", backup_path=base_path) as session:
+            scs = session.query(SceneModel).filter(SceneModel.backup_id == "1791895360").limit(2).all()
+            for sc in scs:
+                sc.kind = "session"
+            session.commit()
+
+        sess_desc = get_sessions("1791895360", sort="desc")["sessions"]
+        self.assertEqual(len(sess_desc), 2)
+        self.assertGreaterEqual(sess_desc[0]["start"]["timestamp"], sess_desc[-1]["start"]["timestamp"])
+
+    def test_scene_custom_name_preserved_across_reindexing(self):
+        from server import get_backup_path
+        from db.models import ChannelModel
+        base_path = get_backup_path("1791895360")
+        with db_session(backup_id="1791895360", backup_path=base_path) as session:
+            scene = session.query(SceneModel).filter(
+                SceneModel.backup_id == "1791895360",
+                SceneModel.kind == "scene",
+            ).first()
+            self.assertIsNotNone(scene)
+            scene.custom_name = "Preserved Scene Title"
+            target_chan_pk = scene.channel_pk
+            target_start_mid = scene.start_message_id
+            target_end_mid = scene.end_message_id
+            target_start_idx = scene.start_index
+            target_end_idx = scene.end_index
+            target_start_at = scene.start_at
+            target_end_at = scene.end_at
+            target_start_author = scene.start_author_id
+            target_end_author = scene.end_author_id
+            chan = session.query(ChannelModel).filter_by(pk=target_chan_pk).first()
+            chan_discord_id = chan.discord_id
+            session.commit()
+
+        # Simulate re-indexing by invoking save_indexed_scenes with matching message boundaries
+        dummy_indexed = [{
+            "kind": "scene",
+            "channelId": chan_discord_id,
+            "status": "closed",
+            "start": {
+                "id": target_start_mid,
+                "timestamp": target_start_at.isoformat(),
+                "index": target_start_idx,
+                "authorID": target_start_author,
+                "content": "Start message",
+            },
+            "end": {
+                "id": target_end_mid,
+                "timestamp": target_end_at.isoformat(),
+                "index": target_end_idx,
+                "authorID": target_end_author,
+                "content": "End message",
+            },
+            "characters": [],
+        }]
+
+        from db.scene_service import save_indexed_scenes
+        save_indexed_scenes("1791895360", base_path, dummy_indexed)
+
+        # Check that the custom_name was preserved on the freshly saved scene!
+        with db_session(backup_id="1791895360", backup_path=base_path) as session:
+            restored = session.query(SceneModel).filter(
+                SceneModel.backup_id == "1791895360",
+                SceneModel.kind == "scene",
+                SceneModel.start_message_id == target_start_mid,
+            ).first()
+            self.assertIsNotNone(restored)
+            self.assertEqual(restored.custom_name, "Preserved Scene Title")
+
+
+class TestSceneMergeAdjacentCuration(unittest.TestCase):
+    """Tests merging adjacent scenes/sessions, neighbor boundary checks, issue resolution, and curator warnings."""
+
+    def setUp(self):
+        from datetime import datetime, timezone
+        reset_test_backup()
+        migrate_for_tests("1791895360")
+        base_path = t.get_backup_path("1791895360")
+        with db_session(backup_id="1791895360", backup_path=base_path) as session:
+            sc1 = session.query(SceneModel).filter_by(backup_id="1791895360", scene_key="14-1-1").first()
+            sc2 = session.query(SceneModel).filter_by(backup_id="1791895360", scene_key="14-1-2").first()
+            if sc1 and sc2:
+                session.add(SceneIssueModel(
+                    backup_id="1791895360",
+                    scene_pk=sc1.pk,
+                    next_scene_pk=sc2.pk,
+                    kind="auto_split",
+                    reason="separate_roster",
+                    candidate_message_id=str(sc2.start_message_id),
+                    candidate_index=sc2.start_index,
+                    candidate_excerpt=sc2.start_excerpt,
+                    created_at=sc1.start_at or datetime.now(timezone.utc),
+                ))
+            session.commit()
+
+    def test_merge_neighbors_first_and_last_scenes(self):
+        base_path = t.get_backup_path("1791895360")
+        with db_session(backup_id="1791895360", backup_path=base_path) as session:
+            sc1 = session.query(SceneModel).filter_by(backup_id="1791895360", scene_key="14-1-1").first()
+            sc4 = session.query(SceneModel).filter_by(backup_id="1791895360", scene_key="14-1-4").first()
+            sc1_id = str(sc1.pk)
+            sc4_id = str(sc4.pk)
+
+        # Scene 1 is first in channel 2
+        res1 = get_scene_merge_neighbors("1791895360", sc1_id)
+        self.assertEqual(res1["status"], "success")
+        self.assertFalse(res1["prev"]["exists"])
+        self.assertFalse(res1["prev"]["can_merge"])
+        self.assertEqual(res1["prev"]["disabled_reason"], "First scene in channel")
+        self.assertTrue(res1["next"]["exists"])
+        self.assertTrue(res1["next"]["can_merge"])
+
+        # Scene 4 is last in channel 2
+        res4 = get_scene_merge_neighbors("1791895360", sc4_id)
+        self.assertEqual(res4["status"], "success")
+        self.assertTrue(res4["prev"]["exists"])
+        self.assertTrue(res4["prev"]["can_merge"])
+        self.assertFalse(res4["next"]["exists"])
+        self.assertFalse(res4["next"]["can_merge"])
+        self.assertEqual(res4["next"]["disabled_reason"], "Last scene in channel")
+
+        # Merging first scene with 'prev' must fail
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx_prev:
+            merge_scene("1791895360", sc1_id, MergeSceneRequest(direction="prev"))
+        self.assertEqual(ctx_prev.exception.status_code, 400)
+
+        # Merging last scene with 'next' must fail
+        with self.assertRaises(HTTPException) as ctx_next:
+            merge_scene("1791895360", sc4_id, MergeSceneRequest(direction="next"))
+        self.assertEqual(ctx_next.exception.status_code, 400)
+
+    def test_merge_adjacent_resolves_existing_issue(self):
+        base_path = t.get_backup_path("1791895360")
+        with db_session(backup_id="1791895360", backup_path=base_path) as session:
+            sc1 = session.query(SceneModel).filter_by(backup_id="1791895360", scene_key="14-1-1").first()
+            sc1_id = str(sc1.pk)
+            iss = session.query(SceneIssueModel).filter_by(backup_id="1791895360").first()
+            iss_pk = iss.pk
+
+        # Scene 1 and Scene 2 are separated by existing auto_split issue
+        res = merge_scene("1791895360", sc1_id, MergeSceneRequest(direction="next"))
+        self.assertEqual(res["status"], "success")
+        self.assertEqual(res["merged_scene"]["pk"], int(sc1_id))
+
+        with db_session(backup_id="1791895360", backup_path=base_path) as session:
+            updated_iss = session.query(SceneIssueModel).filter_by(pk=iss_pk).first()
+            self.assertIsNotNone(updated_iss)
+            self.assertEqual(updated_iss.resolution, "merged")
+            self.assertIsNotNone(updated_iss.resolved_at)
+            self.assertEqual(updated_iss.scene_pk, int(sc1_id))
+            self.assertIsNone(updated_iss.next_scene_pk)
+
+    def test_merge_adjacent_without_issue_creates_resolved_issue_and_can_undo(self):
+        base_path = t.get_backup_path("1791895360")
+        with db_session(backup_id="1791895360", backup_path=base_path) as session:
+            sc2 = session.query(SceneModel).filter_by(backup_id="1791895360", scene_key="14-1-2").first()
+            sc3 = session.query(SceneModel).filter_by(backup_id="1791895360", scene_key="14-1-3").first()
+            sc2_id = str(sc2.pk)
+            sc3_start_mid = str(sc3.start_message_id)
+
+        # Merge Scene 2 with next (Scene 3) where no issue currently exists
+        res = merge_scene("1791895360", sc2_id, MergeSceneRequest(direction="next"))
+        self.assertEqual(res["status"], "success")
+
+        # Verify a resolved issue was created connecting them
+        with db_session(backup_id="1791895360", backup_path=base_path) as session:
+            new_iss = (
+                session.query(SceneIssueModel)
+                .filter(
+                    SceneIssueModel.backup_id == "1791895360",
+                    SceneIssueModel.candidate_message_id == sc3_start_mid,
+                )
+                .first()
+            )
+            self.assertIsNotNone(new_iss)
+            self.assertEqual(new_iss.resolution, "merged")
+            self.assertEqual(new_iss.reason, "manual")
+            self.assertIsNotNone(new_iss.resolved_at)
+            self.assertEqual(new_iss.scene_pk, int(sc2_id))
+            self.assertIsNone(new_iss.next_scene_pk)
+            # Verify participants are character char_id (not internal SQLite character_pk)
+            self.assertIsInstance(new_iss.previous_chars, list)
+            self.assertIsInstance(new_iss.next_chars, list)
+            created_iss_pk = new_iss.pk
+
+        # Check get_scene_issues returns resolved issue with correct reason and mapped character names
+        issues_resp = get_scene_issues("1791895360", status="resolved")
+        matching = [i for i in issues_resp["issues"] if i["id"] == created_iss_pk]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]["reason"], "manual")
+        self.assertIsInstance(matching[0]["previous_char_names"], list)
+        self.assertIsInstance(matching[0]["next_char_names"], list)
+
+        # Ensure repeated calls do not mutate or shuffle participants across page loads
+        issues_resp_second = get_scene_issues("1791895360", status="resolved")
+        matching_second = [i for i in issues_resp_second["issues"] if i["id"] == created_iss_pk]
+        self.assertEqual(matching[0]["previous_char_names"], matching_second[0]["previous_char_names"])
+        self.assertEqual(matching[0]["next_char_names"], matching_second[0]["next_char_names"])
+
+        # Test undoing the merge via reopen_scene_issue
+        reopen_res = reopen_scene_issue("1791895360", created_iss_pk)
+        self.assertEqual(reopen_res["status"], "success")
+        self.assertTrue(reopen_res.get("reopened") or reopen_res.get("action_performed") is not None)
+
+        with db_session(backup_id="1791895360", backup_path=base_path) as session:
+            reopened_iss = session.query(SceneIssueModel).filter_by(pk=created_iss_pk).first()
+            self.assertIsNone(reopened_iss.resolved_at)
+            self.assertIsNone(reopened_iss.resolution)
+
+    def test_merge_curator_split_requires_confirmation_and_force(self):
+        base_path = t.get_backup_path("1791895360")
+        with db_session(backup_id="1791895360", backup_path=base_path) as session:
+            sc1 = session.query(SceneModel).filter_by(backup_id="1791895360", scene_key="14-1-1").first()
+            sc1_id = str(sc1.pk)
+            iss = session.query(SceneIssueModel).filter_by(backup_id="1791895360").first()
+            iss.reason = "manual"
+            iss.resolution = "split"
+            iss_pk = iss.pk
+            session.commit()
+
+        # Check neighbors endpoint detects curator split
+        neighbors = get_scene_merge_neighbors("1791895360", sc1_id)
+        self.assertTrue(neighbors["next"]["is_curator_split"])
+        self.assertIsNotNone(neighbors["next"]["warning"])
+
+        # Attempting merge without force returns requires_confirmation
+        warn_res = merge_scene("1791895360", sc1_id, MergeSceneRequest(direction="next", force=False))
+        self.assertEqual(warn_res["status"], "requires_confirmation")
+        self.assertIn("separated by a curator", warn_res["warning"])
+
+        # Merging with force=True proceeds successfully
+        force_res = merge_scene("1791895360", sc1_id, MergeSceneRequest(direction="next", force=True))
+        self.assertEqual(force_res["status"], "success")
+
+        with db_session(backup_id="1791895360", backup_path=base_path) as session:
+            merged_iss = session.query(SceneIssueModel).filter_by(pk=iss_pk).first()
+            self.assertEqual(merged_iss.resolution, "merged")
 
 
 if __name__ == "__main__":

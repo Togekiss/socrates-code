@@ -111,6 +111,17 @@ class ResolveFlaggedMessageRequest(BaseModel):
     override_author: Optional[Dict[str, Any]] = None
 
 
+class UpdateSceneMetadataRequest(BaseModel):
+    custom_name: Optional[str] = None
+    name: Optional[str] = None
+
+
+class MergeSceneRequest(BaseModel):
+    direction: str
+    force: bool = False
+    note: Optional[str] = None
+
+
 class UpdateEventMetadataRequest(BaseModel):
     name: Optional[str] = None
     channel_names: Optional[Dict[Any, Optional[str]]] = None
@@ -798,15 +809,17 @@ def get_scenes(
     statuses: Optional[List[str]] = Query(None),
     types: Optional[List[str]] = Query(None),
     characters: Optional[List[int]] = Query(None),
-    character_logic: str = Query('OR'),
+    character_logic: str = Query('AND'),
     writers: Optional[List[str]] = Query(None),
-    writer_logic: str = Query('OR'),
+    writer_logic: str = Query('AND'),
     include_alter_egos: bool = Query(True),
     include_familiars: bool = Query(True),
     include_npcs: bool = Query(True),
     before: Optional[str] = Query(None),
     after: Optional[str] = Query(None),
     by_me: bool = Query(False),
+    search: Optional[str] = Query(None),
+    sort: str = Query("asc"),
     request: Request = None
 ):
     base_path = get_backup_path(backup_id)
@@ -817,14 +830,16 @@ def get_scenes(
     if not isinstance(statuses, (list, tuple, set)): statuses = None
     if not isinstance(types, (list, tuple, set)): types = None
     if not isinstance(characters, (list, tuple, set)): characters = None
-    if not isinstance(character_logic, str): character_logic = 'OR'
+    if not isinstance(character_logic, str): character_logic = 'AND'
     if not isinstance(writers, (list, tuple, set)): writers = None
-    if not isinstance(writer_logic, str): writer_logic = 'OR'
+    if not isinstance(writer_logic, str): writer_logic = 'AND'
     if not isinstance(include_alter_egos, bool): include_alter_egos = True
     if not isinstance(include_familiars, bool): include_familiars = True
     if not isinstance(include_npcs, bool): include_npcs = True
     if not isinstance(before, str): before = None
     if not isinstance(after, str): after = None
+    if not isinstance(search, str): search = None
+    if not isinstance(sort, str): sort = "asc"
 
     if by_me and request:
         user = get_optional_user(request)
@@ -867,8 +882,93 @@ def get_scenes(
         include_familiars=include_familiars,
         include_npcs=include_npcs,
         before=before,
-        after=after
+        after=after,
+        search=search,
+        sort=sort,
     )
+
+
+@app.put("/api/backups/{backup_id}/scenes/{scene_id}")
+def update_scene(backup_id: str, scene_id: str, req: UpdateSceneMetadataRequest):
+    api_log(backup_id, "info", f"Updating scene #{scene_id} metadata...")
+    base_path = get_backup_path(backup_id)
+    try:
+        check_not_indexing(backup_id, base_path)
+        custom_name = req.custom_name if req.custom_name is not None else req.name
+        res = curation_service.update_scene_metadata(
+            backup_id,
+            base_path,
+            scene_id=scene_id,
+            custom_name=custom_name,
+        )
+        from models import SceneManager
+        SceneManager.clear_cache(backup_id)
+        api_log(backup_id, "base", f"Scene #{scene_id} metadata updated successfully.")
+        return res
+    except exc.ConflictError as e:
+        api_log(backup_id, "error", f"Scene update conflict: {e}")
+        raise HTTPException(status_code=409, detail=str(e))
+    except exc.NotFoundError as e:
+        api_log(backup_id, "error", f"Scene not found: {e}")
+        raise HTTPException(status_code=404, detail=str(e))
+    except (exc.ValidationError, ValueError) as e:
+        api_log(backup_id, "error", f"Scene update validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        api_log(backup_id, "error", f"Scene update failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/backups/{backup_id}/scenes/{scene_id}/merge-neighbors")
+def get_scene_merge_neighbors(backup_id: str, scene_id: str):
+    api_log(backup_id, "info", f"Fetching merge neighbors for scene '{scene_id}'...")
+    base_path = get_backup_path(backup_id)
+    try:
+        check_not_indexing(backup_id, base_path)
+        res = curation_service.get_scene_merge_neighbors(backup_id, base_path, scene_id)
+        return res
+    except exc.NotFoundError as e:
+        api_log(backup_id, "error", f"Scene merge neighbors not found: {e}")
+        raise HTTPException(status_code=404, detail=str(e))
+    except (exc.ValidationError, ValueError) as e:
+        api_log(backup_id, "error", f"Scene merge neighbors validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        api_log(backup_id, "error", f"Fetch scene merge neighbors failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/backups/{backup_id}/scenes/{scene_id}/merge")
+def merge_scene(backup_id: str, scene_id: str, req: MergeSceneRequest):
+    api_log(backup_id, "info", f"Merging scene '{scene_id}' in direction '{req.direction}' (force={req.force})...")
+    base_path = get_backup_path(backup_id)
+    try:
+        check_not_indexing(backup_id, base_path)
+        res = curation_service.merge_adjacent_scene(
+            backup_id,
+            base_path,
+            scene_id,
+            direction=req.direction,
+            force=req.force,
+            note=req.note,
+        )
+        if res.get("status") == "success":
+            from models import SceneManager
+            SceneManager.clear_cache(backup_id)
+            api_log(backup_id, "base", f"Scene '{scene_id}' merged successfully with {req.direction} scene.")
+        return res
+    except exc.ConflictError as e:
+        api_log(backup_id, "error", f"Scene merge conflict: {e}")
+        raise HTTPException(status_code=409, detail=str(e))
+    except exc.NotFoundError as e:
+        api_log(backup_id, "error", f"Scene merge not found: {e}")
+        raise HTTPException(status_code=404, detail=str(e))
+    except (exc.ValidationError, ValueError) as e:
+        api_log(backup_id, "error", f"Scene merge validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        api_log(backup_id, "error", f"Scene merge failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/backups/{backup_id}/sessions")
@@ -879,15 +979,17 @@ def get_sessions(
     channels: Optional[List[str]] = Query(None),
     statuses: Optional[List[str]] = Query(None),
     characters: Optional[List[int]] = Query(None),
-    character_logic: str = Query('OR'),
+    character_logic: str = Query('AND'),
     writers: Optional[List[str]] = Query(None),
-    writer_logic: str = Query('OR'),
+    writer_logic: str = Query('AND'),
     include_alter_egos: bool = Query(True),
     include_familiars: bool = Query(True),
     include_npcs: bool = Query(True),
     before: Optional[str] = Query(None),
     after: Optional[str] = Query(None),
     by_me: bool = Query(False),
+    search: Optional[str] = Query(None),
+    sort: str = Query("asc"),
     request: Request = None
 ):
     base_path = get_backup_path(backup_id)
@@ -896,14 +998,16 @@ def get_sessions(
     if not isinstance(channels, (list, tuple, set)): channels = None
     if not isinstance(statuses, (list, tuple, set)): statuses = None
     if not isinstance(characters, (list, tuple, set)): characters = None
-    if not isinstance(character_logic, str): character_logic = 'OR'
+    if not isinstance(character_logic, str): character_logic = 'AND'
     if not isinstance(writers, (list, tuple, set)): writers = None
-    if not isinstance(writer_logic, str): writer_logic = 'OR'
+    if not isinstance(writer_logic, str): writer_logic = 'AND'
     if not isinstance(include_alter_egos, bool): include_alter_egos = True
     if not isinstance(include_familiars, bool): include_familiars = True
     if not isinstance(include_npcs, bool): include_npcs = True
     if not isinstance(before, str): before = None
     if not isinstance(after, str): after = None
+    if not isinstance(search, str): search = None
+    if not isinstance(sort, str): sort = "asc"
 
     if by_me and request:
         user = get_optional_user(request)
@@ -946,7 +1050,9 @@ def get_sessions(
         include_familiars=include_familiars,
         include_npcs=include_npcs,
         before=before,
-        after=after
+        after=after,
+        search=search,
+        sort=sort,
     )
 
 
@@ -962,10 +1068,10 @@ def get_events(
     statuses: Optional[List[str]] = Query(None),
     status: str = Query("all"),
     characters: Optional[List[int]] = Query(None),
-    character_logic: str = Query("OR"),
+    character_logic: str = Query("AND"),
     character_name: Optional[str] = Query(None),
     writers: Optional[List[str]] = Query(None),
-    writer_logic: str = Query("OR"),
+    writer_logic: str = Query("AND"),
     include_alter_egos: bool = Query(True),
     include_familiars: bool = Query(True),
     include_npcs: bool = Query(True),
@@ -985,10 +1091,10 @@ def get_events(
     if not isinstance(statuses, (list, tuple, set)): statuses = None
     if not isinstance(status, str): status = "all"
     if not isinstance(characters, (list, tuple, set)): characters = None
-    if not isinstance(character_logic, str): character_logic = "OR"
+    if not isinstance(character_logic, str): character_logic = "AND"
     if not isinstance(character_name, str): character_name = None
     if not isinstance(writers, (list, tuple, set)): writers = None
-    if not isinstance(writer_logic, str): writer_logic = "OR"
+    if not isinstance(writer_logic, str): writer_logic = "AND"
     if not isinstance(include_alter_egos, bool): include_alter_egos = True
     if not isinstance(include_familiars, bool): include_familiars = True
     if not isinstance(include_npcs, bool): include_npcs = True
@@ -1339,6 +1445,8 @@ def get_scene_issues(
     reason: Optional[str] = Query(None),
     status: Optional[str] = Query("unresolved"),
     channel_id: Optional[str] = Query(None),
+    scene_type: Optional[str] = Query(None),
+    scene_kind: Optional[str] = Query(None),
     page: int = Query(1),
     per_page: int = Query(50)
 ):
@@ -1351,6 +1459,7 @@ def get_scene_issues(
             reason=reason,
             status=status,
             channel_id=channel_id,
+            scene_type=scene_type or scene_kind,
             page=page,
             per_page=per_page
         )

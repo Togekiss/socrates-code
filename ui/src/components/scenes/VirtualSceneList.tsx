@@ -13,10 +13,11 @@ interface VirtualSceneListProps {
   hasMore: boolean;
   loading: boolean;
   mode?: 'scenes' | 'sessions';
+  onEdit?: (item: Scene | ChatSession) => void;
 }
 
 export const VirtualSceneList: React.FC<VirtualSceneListProps> = ({ 
-  scenes, allCharacters, charactersFilter, setCharactersFilter, loadMore, hasMore, loading, mode = 'scenes'
+  scenes, allCharacters, charactersFilter, setCharactersFilter, loadMore, hasMore, loading, mode = 'scenes', onEdit
 }) => {
   const parentRef = useRef<HTMLDivElement>(null);
 
@@ -91,6 +92,7 @@ export const VirtualSceneList: React.FC<VirtualSceneListProps> = ({
                   allCharacters={allCharacters}
                   charactersFilter={charactersFilter}
                   setCharactersFilter={setCharactersFilter}
+                  onEdit={onEdit}
                 />
               ) : (
                 <SceneCard 
@@ -98,6 +100,7 @@ export const VirtualSceneList: React.FC<VirtualSceneListProps> = ({
                   allCharacters={allCharacters}
                   charactersFilter={charactersFilter}
                   setCharactersFilter={setCharactersFilter}
+                  onEdit={onEdit}
                 />
               )}
             </div>

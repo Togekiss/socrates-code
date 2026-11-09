@@ -33,6 +33,7 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
   });
   const [statusFilter, setStatusFilter] = useState<'unresolved' | 'resolved' | 'all'>('unresolved');
   const [kindFilter, setKindFilter] = useState<string>('');
+  const [sceneTypeFilter, setSceneTypeFilter] = useState<string>('');
   const [reasonFilter, setReasonFilter] = useState<string>('');
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
@@ -61,6 +62,7 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
     params.append('per_page', '50');
     if (statusFilter !== 'all') params.append('status', statusFilter);
     if (kindFilter) params.append('kind', kindFilter);
+    if (sceneTypeFilter) params.append('scene_type', sceneTypeFilter);
     if (reasonFilter) params.append('reason', reasonFilter);
 
     api
@@ -76,7 +78,7 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
         setLoading(false);
         if (onRefreshSummary) onRefreshSummary();
       });
-  }, [backupId, statusFilter, kindFilter, reasonFilter, page, onRefreshSummary]);
+  }, [backupId, statusFilter, kindFilter, sceneTypeFilter, reasonFilter, page, onRefreshSummary]);
 
   useEffect(() => {
     fetchIssues();
@@ -126,6 +128,11 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
         kindFilter={kindFilter}
         onKindChange={k => {
           setKindFilter(k);
+          setPage(1);
+        }}
+        sceneTypeFilter={sceneTypeFilter}
+        onSceneTypeChange={t => {
+          setSceneTypeFilter(t);
           setPage(1);
         }}
         reasonFilter={reasonFilter}

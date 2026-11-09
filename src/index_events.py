@@ -96,6 +96,9 @@ def _build_segment_from_messages(
     parent_channel_id: Optional[str],
     category_name: str,
     seg_index: int,
+    issues: Optional[List[Dict[str, Any]]] = None,
+    resolved_start: Optional[str] = None,
+    resolved_inside: Optional[List[str]] = None,
 ) -> Optional[EventSegment]:
     if not msgs_with_idx:
         return None
@@ -149,7 +152,7 @@ def _build_segment_from_messages(
     characters = [p["char_id"] for p in participant_details]
     seg_id = f"ev-seg-{channel_id}-{seg_index}"
 
-    return EventSegment({
+    seg = EventSegment({
         "id": seg_id,
         "scene_key": seg_id,
         "kind": "event",
@@ -178,6 +181,7 @@ def _build_segment_from_messages(
         "participants": participant_details,
         "participant_details": participant_details,
         "messages": [m for _, m in msgs_with_idx],
+        "issues": issues or [],
         "start": {
             "id": str(first_msg.get("id", "")),
             "timestamp": start_dt.isoformat(),
@@ -193,6 +197,11 @@ def _build_segment_from_messages(
             "content": end_excerpt,
         },
     })
+    if resolved_start:
+        seg["resolved_start"] = resolved_start
+    if resolved_inside:
+        seg["resolved_inside"] = resolved_inside
+    return seg
 
 
 def find_all_event_segments_in_channel(
@@ -224,22 +233,28 @@ def find_all_event_segments_in_channel(
         return []
 
     if is_thread:
-        raw_thread_chunks: List[Tuple[List[Tuple[int, Dict[str, Any]]], str]] = []
+        raw_thread_chunks: List[Tuple[List[Tuple[int, Dict[str, Any]]], str, Optional[str], List[str]]] = []
         cur_chunk: List[Tuple[int, Dict[str, Any]]] = []
+        cur_resolved_start: Optional[str] = None
+        cur_resolved_inside: List[str] = []
         for idx, msg in default_msgs:
             m_id = str(msg.get("id", ""))
             if cur_chunk and resolved_decisions.get(m_id) == "split":
-                raw_thread_chunks.append((cur_chunk, "closed"))
+                raw_thread_chunks.append((cur_chunk, "closed", cur_resolved_start, cur_resolved_inside))
                 cur_chunk = []
+                cur_resolved_start = m_id
+                cur_resolved_inside = []
             cur_chunk.append((idx, msg))
             if m_id in manual_splits:
-                raw_thread_chunks.append((cur_chunk, "closed"))
+                raw_thread_chunks.append((cur_chunk, "closed", cur_resolved_start, cur_resolved_inside))
                 cur_chunk = []
+                cur_resolved_start = None
+                cur_resolved_inside = []
         if cur_chunk:
-            raw_thread_chunks.append((cur_chunk, "open"))
+            raw_thread_chunks.append((cur_chunk, "open", cur_resolved_start, cur_resolved_inside))
 
         segments: List[EventSegment] = []
-        for seg_idx, (chunk_msgs, st) in enumerate(raw_thread_chunks, start=1):
+        for seg_idx, (chunk_msgs, st, res_start, res_inside) in enumerate(raw_thread_chunks, start=1):
             seg = _build_segment_from_messages(
                 msgs_with_idx=chunk_msgs,
                 status=st,
@@ -249,6 +264,9 @@ def find_all_event_segments_in_channel(
                 parent_channel_id=parent_channel_id,
                 category_name=category_name,
                 seg_index=seg_idx,
+                issues=[],
+                resolved_start=res_start,
+                resolved_inside=res_inside,
             )
             if seg is not None:
                 segments.append(seg)
@@ -257,8 +275,11 @@ def find_all_event_segments_in_channel(
     # GuildTextChat segmentation
     raw_segments: List[Dict[str, Any]] = []
     current_msgs: List[Tuple[int, Dict[str, Any]]] = []
+    current_res_start: Optional[str] = None
+    current_res_inside: List[str] = []
+    current_issues: List[Dict[str, Any]] = []
 
-    for idx, msg in default_msgs:
+    for cur_pos, (idx, msg) in enumerate(default_msgs):
         msg_id = str(msg.get("id", ""))
         msg_dt = t.parse_datetime(msg.get("timestamp"))
 
@@ -268,20 +289,77 @@ def find_all_event_segments_in_channel(
                     "msgs": current_msgs,
                     "status": "closed",
                     "closed_by_manual": True,
+                    "resolved_start": current_res_start,
+                    "resolved_inside": current_res_inside,
+                    "issues": current_issues,
                 })
                 current_msgs = []
+                current_res_start = msg_id
+                current_res_inside = []
+                current_issues = []
             else:
                 prev_dt = t.parse_datetime(current_msgs[-1][1].get("timestamp"))
                 gap_hours = ((msg_dt - prev_dt).total_seconds() / 3600.0) if (msg_dt and prev_dt) else 0.0
-                if gap_hours >= EVENT_CHANNEL_GAP_HOURS or (
-                    gap_hours >= EVENT_BANNER_GAP_HOURS and is_banner_message(msg)
-                ):
-                    raw_segments.append({
-                        "msgs": current_msgs,
-                        "status": "open",
-                        "closed_by_manual": False,
-                    })
-                    current_msgs = []
+                is_banner = is_banner_message(msg)
+                is_gap_split = gap_hours >= EVENT_CHANNEL_GAP_HOURS or (
+                    gap_hours >= EVENT_BANNER_GAP_HOURS and is_banner
+                )
+                if is_gap_split:
+                    if resolved_decisions and resolved_decisions.get(msg_id) == "merged":
+                        # Suppress the silence-gap split so that a previously resolved merge is preserved across re-indexing
+                        current_res_inside.append(msg_id)
+                    else:
+                        prev_is_end = is_event_end_tag(current_msgs[-1][1])
+                        if not prev_is_end and not is_banner:
+                            # Automated silence-gap cut without explicit narrative ending or start
+                            prev_chars = sorted({
+                                int(aid)
+                                for _, m_p in current_msgs
+                                if is_tupper_Id(aid := t.get_author_id(m_p))
+                            })
+                            next_chars_set = set()
+                            for j in range(cur_pos, len(default_msgs)):
+                                _, m_next = default_msgs[j]
+                                if j > cur_pos:
+                                    nxt_id = str(m_next.get("id", ""))
+                                    if (resolved_decisions and resolved_decisions.get(nxt_id) == "split") or nxt_id in manual_splits:
+                                        break
+                                    dt_j = t.parse_datetime(m_next.get("timestamp"))
+                                    dt_p = t.parse_datetime(default_msgs[j - 1][1].get("timestamp"))
+                                    g = ((dt_j - dt_p).total_seconds() / 3600.0) if (dt_j and dt_p) else 0.0
+                                    if g >= EVENT_CHANNEL_GAP_HOURS and not (resolved_decisions and resolved_decisions.get(nxt_id) == "merged"):
+                                        break
+                                aid_next = t.get_author_id(m_next)
+                                if is_tupper_Id(aid_next):
+                                    next_chars_set.add(int(aid_next))
+
+                            cand_content = str(msg.get("content", "") or "")
+                            cand_excerpt = cand_content if len(cand_content) <= EXCERPT_MAX_LEN else cand_content[:EXCERPT_MAX_LEN - 3] + "..."
+                            cand_raw_idx = int(msg.get("raw_index", idx))
+
+                            from db.models import IssueKind
+                            current_issues.append({
+                                "kind": IssueKind.AUTO_SPLIT.value,
+                                "reason": "inactivity_gap",
+                                "candidate_index": cand_raw_idx,
+                                "candidate_id": msg_id,
+                                "candidate_excerpt": cand_excerpt,
+                                "previous_chars": prev_chars,
+                                "next_chars": sorted(next_chars_set),
+                            })
+
+                        raw_segments.append({
+                            "msgs": current_msgs,
+                            "status": "open",
+                            "closed_by_manual": False,
+                            "resolved_start": current_res_start,
+                            "resolved_inside": current_res_inside,
+                            "issues": current_issues,
+                        })
+                        current_msgs = []
+                        current_res_start = None
+                        current_res_inside = []
+                        current_issues = []
 
         if not current_msgs and is_event_end_tag(msg):
             # Delayed cleanup end tag closes the previous finalized segment in this channel
@@ -296,14 +374,23 @@ def find_all_event_segments_in_channel(
                 "msgs": current_msgs,
                 "status": "closed",
                 "closed_by_manual": msg_id in manual_splits,
+                "resolved_start": current_res_start,
+                "resolved_inside": current_res_inside,
+                "issues": current_issues,
             })
             current_msgs = []
+            current_res_start = None
+            current_res_inside = []
+            current_issues = []
 
     if current_msgs:
         raw_segments.append({
             "msgs": current_msgs,
             "status": "open",
             "closed_by_manual": False,
+            "resolved_start": current_res_start,
+            "resolved_inside": current_res_inside,
+            "issues": current_issues,
         })
 
     # 1-Message Setup Banner Merge Post-Pass
@@ -322,10 +409,56 @@ def find_all_event_segments_in_channel(
                 setup_gap_hours = (nxt_dt - cur_dt).total_seconds() / 3600.0
                 if 0.0 <= setup_gap_hours <= EVENT_SETUP_MERGE_HOURS:
                     raw_segments[i + 1]["msgs"] = cur["msgs"] + raw_segments[i + 1]["msgs"]
+                    raw_segments[i + 1]["issues"] = cur.get("issues", []) + raw_segments[i + 1].get("issues", [])
+                    raw_segments[i + 1]["resolved_inside"] = cur.get("resolved_inside", []) + raw_segments[i + 1].get("resolved_inside", [])
+                    if cur.get("resolved_start"):
+                        raw_segments[i + 1]["resolved_start"] = cur["resolved_start"]
                     i += 1
                     continue
         merged_raw_segments.append(cur)
         i += 1
+
+    # Tupperbox [END] tags within an ongoing channel (soft boundary detection)
+    from db.models import IssueKind
+    for raw_seg in merged_raw_segments:
+        s_msgs = raw_seg["msgs"]
+        seg_issues = raw_seg.setdefault("issues", [])
+        seg_res_inside = raw_seg.setdefault("resolved_inside", [])
+        for k in range(len(s_msgs) - 1):
+            k_idx, m = s_msgs[k]
+            m_aid = t.get_author_id(m)
+            if not is_tupper_Id(m_aid):
+                continue
+            m_content = str(m.get("content", "") or "").strip()
+            if MOD_END_PAT.search(m_content):
+                m_id = str(m.get("id", ""))
+                if resolved_decisions and resolved_decisions.get(m_id) == "merged":
+                    if m_id not in seg_res_inside:
+                        seg_res_inside.append(m_id)
+                elif resolved_decisions and resolved_decisions.get(m_id) == "split":
+                    pass
+                else:
+                    prev_c = sorted({
+                        int(a)
+                        for _, p_m in s_msgs[:k + 1]
+                        if is_tupper_Id(a := t.get_author_id(p_m))
+                    })
+                    next_c = sorted({
+                        int(a)
+                        for _, n_m in s_msgs[k + 1:]
+                        if is_tupper_Id(a := t.get_author_id(n_m))
+                    })
+                    cand_exc = m_content if len(m_content) <= EXCERPT_MAX_LEN else m_content[:EXCERPT_MAX_LEN - 3] + "..."
+                    cand_raw = int(m.get("raw_index", k_idx))
+                    seg_issues.append({
+                        "kind": IssueKind.SOFT_BOUNDARY.value,
+                        "reason": "tupper_end_tag",
+                        "candidate_index": cand_raw,
+                        "candidate_id": m_id,
+                        "candidate_excerpt": cand_exc,
+                        "previous_chars": prev_c,
+                        "next_chars": next_c,
+                    })
 
     finalized_segments: List[EventSegment] = []
     for seg_idx, raw_seg in enumerate(merged_raw_segments, start=1):
@@ -338,6 +471,9 @@ def find_all_event_segments_in_channel(
             parent_channel_id=None,
             category_name=category_name,
             seg_index=seg_idx,
+            issues=raw_seg.get("issues", []),
+            resolved_start=raw_seg.get("resolved_start"),
+            resolved_inside=raw_seg.get("resolved_inside", []),
         )
         if seg is not None:
             finalized_segments.append(seg)

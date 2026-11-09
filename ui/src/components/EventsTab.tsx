@@ -33,9 +33,9 @@ export const EventsTab = ({
 
   // Filters
   const [charactersFilter, setCharactersFilter] = useState<number[]>([]);
-  const [characterLogic, setCharacterLogic] = useState<'AND' | 'OR'>('OR');
+  const [characterLogic, setCharacterLogic] = useState<'AND' | 'OR'>('AND');
   const [writersFilter, setWritersFilter] = useState<string[]>([]);
-  const [writerLogic, setWriterLogic] = useState<'AND' | 'OR'>('OR');
+  const [writerLogic, setWriterLogic] = useState<'AND' | 'OR'>('AND');
   const [channelsFilter, setChannelsFilter] = useState<string[]>([]);
   const [typesFilter, setTypesFilter] = useState<string[]>([]);
   const [statusesFilter, setStatusesFilter] = useState<string[]>([]);

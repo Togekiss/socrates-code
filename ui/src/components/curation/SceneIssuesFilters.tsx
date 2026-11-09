@@ -7,18 +7,27 @@ const KIND_OPTIONS = [
   { value: 'soft_boundary', label: 'Soft Boundary' },
 ] as const;
 
-const REASON_OPTIONS = [
+const SCENE_TYPE_OPTIONS = [
   { value: '', label: 'All' },
+  { value: 'scene', label: 'Scene' },
+  { value: 'session', label: 'Chat Session' },
+  { value: 'event', label: 'Event' },
+] as const;
+
+const REASON_OPTIONS = [
+  { value: '', label: 'All Reasons' },
   { value: 'separate_roster', label: 'Separate Roster' },
   { value: 'start_tag_roster_change', label: 'Start Tag, Roster Change' },
   { value: 'start_tag_same_roster', label: 'Start Tag, Same Roster' },
   { value: 'roster_change', label: 'Roster Change' },
+  { value: 'inactivity_gap', label: 'Inactivity Gap' },
+  { value: 'tupper_end_tag', label: 'Tupper End Tag' },
   { value: 'manual', label: 'Manual Split' },
 ] as const;
 
 const KIND_TO_REASONS: Record<string, string[]> = {
-  auto_split: ['separate_roster', 'start_tag_roster_change'],
-  soft_boundary: ['start_tag_same_roster', 'roster_change', 'manual'],
+  auto_split: ['separate_roster', 'start_tag_roster_change', 'inactivity_gap', 'manual'],
+  soft_boundary: ['start_tag_same_roster', 'roster_change', 'manual', 'tupper_end_tag'],
 };
 
 export interface SceneIssuesFiltersProps {
@@ -28,6 +37,8 @@ export interface SceneIssuesFiltersProps {
   statusCounts: { unresolved: number; resolved: number; all: number };
   kindFilter: string;
   onKindChange: (kind: string) => void;
+  sceneTypeFilter?: string;
+  onSceneTypeChange?: (sceneType: string) => void;
   reasonFilter: string;
   onReasonChange: (reason: string) => void;
   onOpenManualSplit?: () => void;
@@ -40,6 +51,8 @@ export const SceneIssuesFilters: React.FC<SceneIssuesFiltersProps> = ({
   statusCounts,
   kindFilter,
   onKindChange,
+  sceneTypeFilter = '',
+  onSceneTypeChange,
   reasonFilter,
   onReasonChange,
   onOpenManualSplit,
@@ -56,10 +69,30 @@ export const SceneIssuesFilters: React.FC<SceneIssuesFiltersProps> = ({
     }
   };
 
-  const handleReasonClick = (value: string) => {
-    const nextReason = reasonFilter === value ? '' : value;
-    onReasonChange(nextReason);
+  const handleSceneTypeClick = (value: string) => {
+    if (!onSceneTypeChange) return;
+    const nextType = sceneTypeFilter === value ? '' : value;
+    onSceneTypeChange(nextType);
   };
+
+  const handleReasonChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    onReasonChange(e.target.value);
+  };
+
+  const visibleReasonOptions = REASON_OPTIONS.filter(opt => {
+    if (!opt.value) return true;
+    if (!kindFilter) return true;
+    return KIND_TO_REASONS[kindFilter]?.includes(opt.value);
+  });
+
+  React.useEffect(() => {
+    if (kindFilter && reasonFilter) {
+      const allowed = KIND_TO_REASONS[kindFilter] || [];
+      if (!allowed.includes(reasonFilter)) {
+        onReasonChange('');
+      }
+    }
+  }, [kindFilter, reasonFilter, onReasonChange]);
 
   return (
     <div
@@ -168,7 +201,7 @@ export const SceneIssuesFilters: React.FC<SceneIssuesFiltersProps> = ({
         </div>
       </div>
 
-      {/* Filter Rows: Kind and Reason */}
+      {/* Filter Rows: Kind, Scene Type, Reason */}
       <div
         style={{
           display: 'flex',
@@ -180,77 +213,98 @@ export const SceneIssuesFilters: React.FC<SceneIssuesFiltersProps> = ({
           borderTop: '1px solid var(--border-color)',
         }}
       >
-        {/* Kind Buttons */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 500 }}>Kind:</span>
-          <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
-            {KIND_OPTIONS.map(opt => {
-              const isActive = kindFilter === opt.value;
-              return (
-                <button
-                  key={opt.value}
-                  onClick={() => handleKindClick(opt.value)}
-                  style={{
-                    padding: '0.35rem 0.75rem',
-                    borderRadius: '6px',
-                    fontSize: '0.85rem',
-                    border: isActive ? '1px solid var(--accent-secondary)' : '1px solid var(--border-color)',
-                    background: isActive ? 'rgba(109, 40, 217, 0.25)' : 'var(--bg-tertiary)',
-                    color: isActive ? '#fff' : 'var(--text-secondary)',
-                    fontWeight: isActive ? 600 : 400,
-                    cursor: 'pointer',
-                    transition: 'all var(--transition-fast)',
-                  }}
-                >
-                  {opt.label}
-                </button>
-              );
-            })}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem', flexWrap: 'wrap' }}>
+          {/* Kind Buttons */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 500 }}>Kind:</span>
+            <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
+              {KIND_OPTIONS.map(opt => {
+                const isActive = kindFilter === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    onClick={() => handleKindClick(opt.value)}
+                    style={{
+                      padding: '0.35rem 0.75rem',
+                      borderRadius: '6px',
+                      fontSize: '0.85rem',
+                      border: isActive ? '1px solid var(--accent-secondary)' : '1px solid var(--border-color)',
+                      background: isActive ? 'rgba(109, 40, 217, 0.25)' : 'var(--bg-tertiary)',
+                      color: isActive ? '#fff' : 'var(--text-secondary)',
+                      fontWeight: isActive ? 600 : 400,
+                      cursor: 'pointer',
+                      transition: 'all var(--transition-fast)',
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Scene Type Buttons */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 500 }}>Scene type:</span>
+            <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
+              {SCENE_TYPE_OPTIONS.map(opt => {
+                const isActive = sceneTypeFilter === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    onClick={() => handleSceneTypeClick(opt.value)}
+                    style={{
+                      padding: '0.35rem 0.75rem',
+                      borderRadius: '6px',
+                      fontSize: '0.85rem',
+                      border: isActive ? '1px solid var(--accent-secondary)' : '1px solid var(--border-color)',
+                      background: isActive ? 'rgba(109, 40, 217, 0.25)' : 'var(--bg-tertiary)',
+                      color: isActive ? '#fff' : 'var(--text-secondary)',
+                      fontWeight: isActive ? 600 : 400,
+                      cursor: 'pointer',
+                      transition: 'all var(--transition-fast)',
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
 
-        {/* Reason Buttons */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+        {/* Reason Dropdown */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 500 }}>Reason:</span>
-          <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
-            {REASON_OPTIONS.map(opt => {
-              const isActive = reasonFilter === opt.value;
-              const isDisabled =
-                opt.value !== '' &&
-                kindFilter !== '' &&
-                !KIND_TO_REASONS[kindFilter]?.includes(opt.value);
-
-              return (
-                <button
-                  key={opt.value}
-                  disabled={isDisabled}
-                  onClick={() => {
-                    if (isDisabled) return;
-                    handleReasonClick(opt.value);
-                  }}
-                  style={{
-                    padding: '0.35rem 0.75rem',
-                    borderRadius: '6px',
-                    fontSize: '0.85rem',
-                    border: isActive ? '1px solid var(--accent-secondary)' : '1px solid var(--border-color)',
-                    background: isActive ? 'rgba(109, 40, 217, 0.25)' : 'var(--bg-tertiary)',
-                    color: isDisabled ? 'var(--text-muted)' : isActive ? '#fff' : 'var(--text-secondary)',
-                    fontWeight: isActive ? 600 : 400,
-                    cursor: isDisabled ? 'not-allowed' : 'pointer',
-                    opacity: isDisabled ? 0.35 : 1,
-                    transition: 'all var(--transition-fast)',
-                  }}
-                  title={
-                    isDisabled
-                      ? `Not applicable to ${kindFilter === 'auto_split' ? 'Auto Split' : 'Soft Boundary'}`
-                      : undefined
-                  }
-                >
-                  {opt.label}
-                </button>
-              );
-            })}
-          </div>
+          <select
+            value={reasonFilter}
+            onChange={handleReasonChange}
+            style={{
+              padding: '0.35rem 0.75rem',
+              borderRadius: '6px',
+              fontSize: '0.85rem',
+              border: reasonFilter ? '1px solid var(--accent-secondary)' : '1px solid var(--border-color)',
+              background: reasonFilter ? 'rgba(109, 40, 217, 0.25)' : 'var(--bg-tertiary)',
+              color: reasonFilter ? '#fff' : 'var(--text-secondary)',
+              fontWeight: reasonFilter ? 600 : 400,
+              cursor: 'pointer',
+              outline: 'none',
+              transition: 'all var(--transition-fast)',
+            }}
+          >
+            {visibleReasonOptions.map(opt => (
+              <option
+                key={opt.value}
+                value={opt.value}
+                style={{
+                  background: 'var(--bg-secondary)',
+                  color: 'var(--text-primary)',
+                }}
+              >
+                {opt.label}
+              </option>
+            ))}
+          </select>
         </div>
       </div>
     </div>

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ExternalLink, ChevronDown, ChevronRight, Check, AlertCircle, Users } from 'lucide-react';
+import { ExternalLink, ChevronDown, ChevronRight, Check, AlertCircle, Users, Edit3 } from 'lucide-react';
 import type { Character, ChatSession, Scene, SceneIssueRef, SceneParticipantDetail } from '../../types';
 
 interface SessionCardProps {
@@ -7,6 +7,7 @@ interface SessionCardProps {
   allCharacters: Character[];
   charactersFilter: number[];
   setCharactersFilter: (filter: number[]) => void;
+  onEdit?: (session: ChatSession | Scene) => void;
 }
 
 export const SessionCard: React.FC<SessionCardProps> = ({
@@ -14,6 +15,7 @@ export const SessionCard: React.FC<SessionCardProps> = ({
   allCharacters,
   charactersFilter,
   setCharactersFilter,
+  onEdit,
 }) => {
   const [expanded, setExpanded] = useState(false);
 
@@ -111,9 +113,20 @@ export const SessionCard: React.FC<SessionCardProps> = ({
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.5rem' }}>
           <div>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'baseline', flexWrap: 'wrap' }}>
-              <strong style={{ fontSize: '0.95rem', color: 'var(--text-primary)' }}>
-                {session.category} &gt; #{session.channel}
-              </strong>
+              {session.custom_name ? (
+                <>
+                  <strong style={{ fontSize: '1rem', color: 'var(--text-primary)' }}>
+                    {session.custom_name}
+                  </strong>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                    ({session.category} &gt; #{session.channel})
+                  </span>
+                </>
+              ) : (
+                <strong style={{ fontSize: '0.95rem', color: 'var(--text-primary)' }}>
+                  {session.category} &gt; #{session.channel}
+                </strong>
+              )}
               {duration && (
                 <span
                   title={duration.tooltip}
@@ -136,6 +149,29 @@ export const SessionCard: React.FC<SessionCardProps> = ({
           </div>
 
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+            {onEdit && (
+              <button
+                type="button"
+                onClick={() => onEdit(session)}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.25rem',
+                  padding: '0.2rem 0.5rem',
+                  background: 'rgba(255,255,255,0.08)',
+                  border: '1px solid var(--border-color)',
+                  color: 'var(--text-primary)',
+                  borderRadius: '4px',
+                  fontSize: '0.75rem',
+                  cursor: 'pointer',
+                  fontWeight: 500,
+                }}
+                title="Edit custom name"
+              >
+                <Edit3 size={12} />
+                <span>Edit</span>
+              </button>
+            )}
             <span
               style={{
                 padding: '0.2rem 0.5rem',

@@ -66,6 +66,8 @@ class IssueReason(StrEnum):
     START_TAG_SAME_ROSTER = "start_tag_same_roster"
     ROSTER_CHANGE = "roster_change"
     MANUAL = "manual"
+    INACTIVITY_GAP = "inactivity_gap"
+    TUPPER_END_TAG = "tupper_end_tag"
 
 
 class IssueResolution(StrEnum):
