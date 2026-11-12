@@ -6,7 +6,6 @@ import {
   Navigate,
   useNavigate,
   useSearchParams,
-  useLocation,
 } from 'react-router-dom';
 import { api } from './api';
 import {
@@ -51,7 +50,7 @@ function AuthCallback() {
     api
       .authDiscord(code)
       .then(res => {
-        if (res.status === 'success') navigate('/status', { replace: true });
+        if (res.status === 'success') navigate('/', { replace: true });
         else setError('Authentication failed. Please try again.');
       })
       .catch(err => {
@@ -70,7 +69,7 @@ function AuthCallback() {
             <p className="login-desc">{error}</p>
             <button
               type="button"
-              onClick={() => navigate('/status', { replace: true })}
+              onClick={() => navigate('/', { replace: true })}
               className="btn btn-secondary"
             >
               Return to Home
@@ -264,7 +263,6 @@ function RequireBackup({
 }
 
 function AppContent() {
-  const location = useLocation();
   const navigate = useNavigate();
 
   const [backups, setBackups] = useState<BackupInfo[]>([]);
@@ -275,9 +273,6 @@ function AppContent() {
   const [backupInfo, setBackupInfo] = useState<BackupInfo | null>(null);
   const [myWriter, setMyWriter] = useState<MyWriter | null>(null);
   const [isUpgrading, setIsUpgrading] = useState(false);
-
-  // If we are currently on the Discord OAuth callback route, let AuthCallback render immediately
-  const isAuthCallback = location.pathname === '/auth/callback';
 
   const handleSelectBackup = useCallback((id: string | null) => {
     setSelectedBackupId(id);
@@ -407,7 +402,7 @@ function AppContent() {
   // Map legacy TabType to new router URL paths
   const handleNavigateTab = (tab: TabType) => {
     const pathToTab: Record<TabType, string> = {
-      status: '/status',
+      status: '/',
       run: '/system/pipeline',
       writers: '/writers',
       characters: '/characters',
@@ -419,15 +414,10 @@ function AppContent() {
       admin: '/system/admin',
       new_backup: '/backups/new',
     };
-    navigate(pathToTab[tab] || '/status');
+    navigate(pathToTab[tab] || '/');
   };
 
-  // 1. Auth Callback route bypasses loading/login gates
-  if (isAuthCallback) {
-    return <AuthCallback />;
-  }
-
-  // 2. Loading screen guard
+  // 1. Loading screen guard
   if (isLoadingAuth) {
     return (
       <div className="loading-screen">
@@ -514,11 +504,10 @@ function AppContent() {
         </div>
       )}
 
-      <ErrorBoundary fallbackTab={() => navigate('/status')}>
+      <ErrorBoundary fallbackTab={() => navigate('/')}>
         <Routes>
-          <Route path="/" element={<Navigate to="/status" replace />} />
           <Route
-            path="/status"
+            path="/"
             element={
               <RequireBackup
                 backupId={selectedBackupId}
@@ -536,6 +525,7 @@ function AppContent() {
               </RequireBackup>
             }
           />
+          <Route path="/status" element={<Navigate to="/" replace />} />
           <Route
             path="/characters"
             element={
@@ -680,7 +670,7 @@ function AppContent() {
                   <button
                     type="button"
                     className="btn btn-secondary"
-                    onClick={() => navigate('/status')}
+                    onClick={() => navigate('/')}
                   >
                     Return to Status
                   </button>
@@ -704,13 +694,13 @@ function AppContent() {
                       })
                       .catch(console.error);
                   }, 1000);
-                  navigate('/status');
+                  navigate('/');
                 }}
-                onCancel={() => navigate('/status')}
+                onCancel={() => navigate('/')}
               />
             }
           />
-          <Route path="*" element={<Navigate to="/status" replace />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </ErrorBoundary>
     </AppShell>
@@ -720,7 +710,10 @@ function AppContent() {
 export default function App() {
   return (
     <BrowserRouter>
-      <AppContent />
+      <Routes>
+        <Route path="/auth/callback" element={<AuthCallback />} />
+        <Route path="/*" element={<AppContent />} />
+      </Routes>
     </BrowserRouter>
   );
 }

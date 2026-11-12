@@ -119,7 +119,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {
           id: 'status',
           label: 'Status',
-          path: '/status',
+          path: '/',
           icon: Database,
         },
       ],
@@ -242,7 +242,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* Sidebar Header: Brand & Collapse Toggle */}
       <div className="sidebar-header">
         {!collapsed && (
-          <NavLink to="/status" className="sidebar-brand" onClick={handleNavLinkClick}>
+          <NavLink to="/" className="sidebar-brand" onClick={handleNavLinkClick}>
             <span>Socrates</span>
           </NavLink>
         )}
@@ -352,6 +352,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   <NavLink
                     key={item.id}
                     to={item.path}
+                    end={item.path === '/'}
                     className={({ isActive }) =>
                       `sidebar-nav-item ${isActive ? 'is-active' : ''}`
                     }
