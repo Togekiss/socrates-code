@@ -1,17 +1,17 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { api, API_BASE } from '../api';
 import {
   AlertTriangle,
   CheckCircle,
   Clock,
   XCircle,
-  Terminal,
   Play,
   RotateCw,
   Sliders,
   StopCircle,
 } from 'lucide-react';
 import { BackupForm } from './BackupForm';
+import { PanelSurface, DataCard, Button, Badge, LogConsole } from './ui';
 import type { BackupConfig, BackupInfo, GlobalConfig } from '../types';
 
 interface RunTabProps {
@@ -28,8 +28,6 @@ export const RunTab = ({ backupId, onRefreshSummary }: RunTabProps) => {
   const [streamActive, setStreamActive] = useState(false);
   const [isPolling, setIsPolling] = useState(false);
   const [isUpgrading, setIsUpgrading] = useState(false);
-
-  const backupLogsEndRef = useRef<HTMLDivElement>(null);
 
   const fetchConfig = useCallback(() => {
     api.getGlobalConfig().then(setGlobalConfig).catch(console.error);
@@ -65,10 +63,6 @@ export const RunTab = ({ backupId, onRefreshSummary }: RunTabProps) => {
     setIsFormOpen(false);
   }, [backupId, fetchBackupData]);
 
-  useEffect(() => {
-    backupLogsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [backupLogs]);
-
   const isAnyRunning =
     isUpgrading ||
     backupInfo?.status === 'pending' ||
@@ -98,7 +92,7 @@ export const RunTab = ({ backupId, onRefreshSummary }: RunTabProps) => {
     es.onmessage = e => {
       setBackupLogs(prev => {
         const newLogs = [...prev, e.data];
-        if (newLogs.length > 20) return newLogs.slice(newLogs.length - 20);
+        if (newLogs.length > 50) return newLogs.slice(newLogs.length - 50);
         return newLogs;
       });
       if (
@@ -118,7 +112,7 @@ export const RunTab = ({ backupId, onRefreshSummary }: RunTabProps) => {
   }, [backupId, streamActive, fetchBackupData]);
 
   const renderStatusIcon = (status?: string) => {
-    if (status === 'success') return <CheckCircle size={16} style={{ color: 'var(--success)' }} />;
+    if (status === 'success') return <CheckCircle size={16} className="text-success" />;
     if (status === 'failed') return <XCircle size={16} style={{ color: 'var(--danger)' }} />;
     if (status === 'pending' || status === 'running')
       return (
@@ -217,46 +211,10 @@ export const RunTab = ({ backupId, onRefreshSummary }: RunTabProps) => {
   const isFixMessagesRunning = !isUpdateRunning && backupInfo?.steps?.fix_messages === 'running';
   const isIndexScenesRunning = !isUpdateRunning && backupInfo?.steps?.index_scenes === 'running';
 
-  const renderLogLine = (log: string, index: number) => {
-    const match = log.match(/^\[(.*?)\](.*?):\s*(.*)$/);
-    if (!match) {
-      return (
-        <div key={index} style={{ color: '#94a3b8', marginBottom: '0.2rem' }}>
-          {log}
-        </div>
-      );
-    }
-
-    const [, time, level, msg] = match;
-    let color = '#94a3b8';
-    if (level === 'error') color = '#ef4444';
-    else if (level === 'base') color = '#10b981';
-    else if (level === 'info') color = '#38bdf8';
-    else if (level === 'debug') color = '#a855f7';
-    else if (level === 'console' || level === 'log') color = '#64748b';
-
-    return (
-      <div
-        key={index}
-        style={{
-          marginBottom: '0.2rem',
-          whiteSpace: 'nowrap',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-        }}
-      >
-        <span style={{ color: '#64748b', marginRight: '0.5rem' }}>[{time}]</span>
-        <span style={{ color, fontWeight: level === 'base' || level === 'error' ? 'bold' : 'normal' }}>
-          {msg}
-        </span>
-      </div>
-    );
-  };
-
   if (!backupInfo) {
     return (
-      <div className="glass-panel" style={{ textAlign: 'center', padding: '3rem' }}>
-        <p style={{ color: 'var(--text-secondary)' }}>Select a backup to view pipeline execution.</p>
+      <div className="empty-state">
+        <p className="empty-state-desc">Select a backup to view pipeline execution.</p>
       </div>
     );
   }
@@ -264,286 +222,167 @@ export const RunTab = ({ backupId, onRefreshSummary }: RunTabProps) => {
   const title = backupInfo.name || backupInfo.server_name || backupId;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-      <div className="glass-panel">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+    <div className="flex-col gap-lg">
+      <PanelSurface className="flex-col gap-md">
+        {/* Header */}
+        <div className="flex-row items-center justify-between flex-wrap gap-md">
           <div>
-            <h2 style={{ margin: 0, fontSize: '1.4rem', color: 'var(--text-primary)' }}>{title}</h2>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem' }}>
+            <h2 style={{ margin: 0, fontSize: '1.35rem', color: 'var(--text-primary)' }}>{title}</h2>
+            <div className="flex-row items-center gap-xs" style={{ marginTop: '0.25rem' }}>
               {renderStatusIcon(backupInfo.status)}
-              <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: 600 }}>
+              <Badge
+                variant={
+                  backupInfo.status === 'success'
+                    ? 'success'
+                    : backupInfo.status === 'failed'
+                    ? 'danger'
+                    : 'warning'
+                }
+              >
                 {isUpdateRunning ? 'UPDATING...' : backupInfo.status.toUpperCase()}
-              </span>
+              </Badge>
             </div>
           </div>
 
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => setIsFormOpen(true)}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              padding: '0.5rem 1rem',
-              background: 'var(--bg-tertiary)',
-              border: '1px solid var(--border-color)',
-              color: 'var(--text-primary)',
-              borderRadius: '6px',
-              cursor: 'pointer',
-              fontSize: '0.9rem',
-              fontWeight: 500,
-            }}
+            icon={<Sliders size={15} />}
           >
-            <Sliders size={16} /> Edit Configuration
-          </button>
+            Edit Configuration
+          </Button>
         </div>
 
-        {/* Pipeline Step Indicators */}
+        {/* Pipeline Step Indicators Grid */}
         {backupInfo.steps && (
-          <div
-            style={{
-              display: 'flex',
-              flexWrap: 'wrap',
-              gap: '0.75rem',
-              marginBottom: '1.5rem',
-              background: 'var(--bg-tertiary)',
-              padding: '1rem',
-              borderRadius: '8px',
-              border: '1px solid var(--border-color)',
-            }}
-          >
-            {Object.entries(backupInfo.steps).map(([step, status]) => (
-              <div
-                key={step}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.4rem',
-                  fontSize: '0.85rem',
-                  padding: '0.25rem 0.6rem',
-                  background: 'var(--bg-secondary)',
-                  borderRadius: '6px',
-                  border: '1px solid var(--border-color)',
-                }}
-              >
-                {renderStatusIcon(status)}
-                <span style={{ color: 'var(--text-secondary)', textTransform: 'capitalize' }}>
-                  {step.replace(/_/g, ' ')}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Live Stream Console */}
-        {streamActive && (
-          <div style={{ marginBottom: '1.5rem' }}>
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                marginBottom: '0.5rem',
-              }}
-            >
-              <strong
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.5rem',
-                  color: 'var(--accent-secondary)',
-                  fontSize: '0.9rem',
-                }}
-              >
-                <Terminal size={16} /> Live Execution Stream
-              </strong>
-              <button
-                onClick={() => {
-                  window.open(`${API_BASE}/backups/${backupId}/logs/raw`, '_blank');
-                }}
-                style={{
-                  padding: '0.25rem 0.75rem',
-                  background: 'var(--bg-tertiary)',
-                  color: 'white',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  fontSize: '0.8rem',
-                }}
-              >
-                View full raw log
-              </button>
-            </div>
-            <div
-              style={{
-                background: '#090a0f',
-                padding: '1rem',
-                borderRadius: '8px',
-                fontFamily: 'monospace',
-                fontSize: '0.8rem',
-                height: '200px',
-                overflowY: 'auto',
-                border: '1px solid var(--border-color)',
-              }}
-            >
-              {backupLogs.map((log, i) => renderLogLine(log, i))}
-              <div ref={backupLogsEndRef} />
+          <div className="flex-col gap-xs" style={{ marginTop: '0.5rem' }}>
+            <span className="sidebar-group-title" style={{ padding: 0 }}>Pipeline Steps</span>
+            <div className="stat-cards-grid">
+              {Object.entries(backupInfo.steps).map(([step, status]) => (
+                <DataCard
+                  key={step}
+                  accent={
+                    status === 'success'
+                      ? 'success'
+                      : status === 'failed'
+                      ? 'danger'
+                      : status === 'running'
+                      ? 'accent'
+                      : undefined
+                  }
+                  className="flex-row items-center gap-sm"
+                  style={{ padding: '0.65rem 0.85rem' }}
+                >
+                  {renderStatusIcon(status)}
+                  <div className="flex-col">
+                    <span style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--text-primary)' }}>
+                      {step.replace(/_/g, ' ')}
+                    </span>
+                    <span className="form-hint" style={{ textTransform: 'uppercase', fontSize: '0.7rem' }}>
+                      {status}
+                    </span>
+                  </div>
+                </DataCard>
+              ))}
             </div>
           </div>
         )}
 
-        {/* Action Buttons Bar */}
-        <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'center' }}>
+        {/* Action Buttons Toolbar */}
+        <div className="flex-row items-center gap-sm flex-wrap" style={{ marginTop: '0.5rem' }}>
           {/* Cancel button */}
-          <button
+          <Button
+            variant="danger"
+            size="sm"
             onClick={cancelRun}
-            title="Cancel the running pipeline subprocess"
             disabled={!isAnyRunning && backupInfo.status !== 'failed'}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.4rem',
-              padding: '0.5rem 1rem',
-              background: backupInfo.status === 'failed' ? 'var(--danger)' : 'var(--bg-tertiary)',
-              color: 'white',
-              border: '1px solid var(--border-color)',
-              borderRadius: '6px',
-              cursor: backupInfo.status === 'failed' || isAnyRunning ? 'pointer' : 'not-allowed',
-              opacity: backupInfo.status === 'failed' || isAnyRunning ? 1 : 0.45,
-              fontSize: '0.9rem',
-            }}
+            icon={<StopCircle size={15} />}
           >
-            <StopCircle size={16} /> Cancel pipeline
-          </button>
+            Cancel pipeline
+          </Button>
 
           {/* Update / Run button */}
-          <button
+          <Button
+            variant={backupInfo.steps?.update === 'failed' ? 'danger' : 'primary'}
+            size="sm"
             onClick={handleUpdate}
             disabled={isAnyRunning}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.4rem',
-              padding: '0.5rem 1.25rem',
-              background: backupInfo.steps?.update === 'failed' ? 'var(--danger)' : 'var(--accent-primary)',
-              color: '#fff',
-              border: 'none',
-              borderRadius: '6px',
-              cursor: isAnyRunning ? 'not-allowed' : 'pointer',
-              fontWeight: 600,
-              fontSize: '0.9rem',
-              opacity: isAnyRunning ? 0.6 : 1,
-            }}
+            loading={isUpdateRunning}
+            icon={<Play size={15} />}
           >
-            <Play size={16} />
             {isUpdateRunning
               ? 'Updating...'
               : backupInfo.steps?.update === 'failed'
               ? 'Retry update'
               : 'Update now'}
-          </button>
+          </Button>
 
           {/* Granular Step Re-run Buttons */}
           <div
+            className="flex-row items-center gap-xs flex-wrap"
             style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              paddingLeft: '1rem',
+              paddingLeft: '0.75rem',
               borderLeft: '1px solid var(--border-color)',
-              flexWrap: 'wrap',
             }}
           >
-            <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Re-run step:</span>
-            <button
+            <span className="form-hint" style={{ marginRight: '0.25rem' }}>Re-run step:</span>
+
+            <Button
+              variant={isAssignIdsRunning ? 'primary' : 'secondary'}
+              size="xs"
               onClick={() => handleAction('reapply_characters')}
               disabled={isAnyRunning}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.35rem',
-                padding: '0.35rem 0.75rem',
-                fontSize: '0.8rem',
-                background: isAssignIdsRunning ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
-                border: '1px solid var(--border-color)',
-                color: 'var(--text-primary)',
-                borderRadius: '6px',
-                cursor: isAnyRunning ? 'not-allowed' : 'pointer',
-                opacity: isAnyRunning && !isAssignIdsRunning ? 0.45 : 1,
-                fontWeight: isAssignIdsRunning ? 700 : 500,
-              }}
+              loading={isAssignIdsRunning}
+              icon={<RotateCw size={12} />}
             >
-              <RotateCw size={12} className={isAssignIdsRunning ? 'animate-spin' : ''} />
-              {isAssignIdsRunning ? 'Reapplying...' : 'Reapply characters'}
-            </button>
+              Reapply characters
+            </Button>
 
-            <button
+            <Button
+              variant={isFixMessagesRunning ? 'primary' : 'secondary'}
+              size="xs"
               onClick={() => handleAction('fix_messages')}
               disabled={isAnyRunning}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.35rem',
-                padding: '0.35rem 0.75rem',
-                fontSize: '0.8rem',
-                background: isFixMessagesRunning ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
-                border: '1px solid var(--border-color)',
-                color: 'var(--text-primary)',
-                borderRadius: '6px',
-                cursor: isAnyRunning ? 'not-allowed' : 'pointer',
-                opacity: isAnyRunning && !isFixMessagesRunning ? 0.45 : 1,
-                fontWeight: isFixMessagesRunning ? 700 : 500,
-              }}
+              loading={isFixMessagesRunning}
+              icon={<RotateCw size={12} />}
             >
-              <RotateCw size={12} className={isFixMessagesRunning ? 'animate-spin' : ''} />
-              {isFixMessagesRunning ? 'Fixing...' : 'Fix messages'}
-            </button>
+              Fix messages
+            </Button>
 
-            <button
+            <Button
+              variant={isUpgrading ? 'primary' : 'secondary'}
+              size="xs"
               onClick={handleUpgradeDatabase}
               disabled={isAnyRunning}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.35rem',
-                padding: '0.35rem 0.75rem',
-                fontSize: '0.8rem',
-                background: isUpgrading ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
-                border: '1px solid var(--border-color)',
-                color: 'var(--text-primary)',
-                borderRadius: '6px',
-                cursor: isAnyRunning ? 'not-allowed' : 'pointer',
-                opacity: isAnyRunning && !isUpgrading ? 0.45 : 1,
-                fontWeight: isUpgrading ? 700 : 500,
-              }}
+              loading={isUpgrading}
+              icon={<RotateCw size={12} />}
             >
-              <RotateCw size={12} className={isUpgrading ? 'animate-spin' : ''} />
-              {isUpgrading ? 'Upgrading...' : 'Upgrade database'}
-            </button>
+              Upgrade database
+            </Button>
 
-            <button
+            <Button
+              variant={isIndexScenesRunning ? 'primary' : 'secondary'}
+              size="xs"
               onClick={() => handleAction('reindex')}
               disabled={isAnyRunning}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.35rem',
-                padding: '0.35rem 0.75rem',
-                fontSize: '0.8rem',
-                background: isIndexScenesRunning ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
-                border: '1px solid var(--border-color)',
-                color: 'var(--text-primary)',
-                borderRadius: '6px',
-                cursor: isAnyRunning ? 'not-allowed' : 'pointer',
-                opacity: isAnyRunning && !isIndexScenesRunning ? 0.45 : 1,
-                fontWeight: isIndexScenesRunning ? 700 : 500,
-              }}
+              loading={isIndexScenesRunning}
+              icon={<RotateCw size={12} />}
             >
-              <RotateCw size={12} className={isIndexScenesRunning ? 'animate-spin' : ''} />
-              {isIndexScenesRunning ? 'Reindexing...' : 'Reindex scenes'}
-            </button>
+              Reindex scenes
+            </Button>
           </div>
         </div>
-      </div>
+      </PanelSurface>
+
+      {/* Live Stream / Execution Log Console */}
+      <LogConsole
+        logs={backupLogs}
+        title="Live Execution Console"
+        downloadFilename={`backup-${backupId}-execution.log`}
+        onClear={() => setBackupLogs([])}
+        emptyMessage={streamActive ? 'Waiting for pipeline output...' : 'Console idle. Start an update or step to view live logs.'}
+      />
 
       {/* Configuration Modal */}
       {isFormOpen && (

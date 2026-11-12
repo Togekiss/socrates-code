@@ -1,17 +1,10 @@
 import React from 'react';
-import { AlertTriangle, Plus } from 'lucide-react';
+import { Plus } from 'lucide-react';
+import { CollapsibleFilterBar, SegmentedControl, FilterChip, Badge, Button } from '../ui';
 
 const KIND_OPTIONS = [
-  { value: '', label: 'All' },
   { value: 'auto_split', label: 'Auto Split' },
   { value: 'soft_boundary', label: 'Soft Boundary' },
-] as const;
-
-const SCENE_TYPE_OPTIONS = [
-  { value: '', label: 'All' },
-  { value: 'scene', label: 'Scene' },
-  { value: 'session', label: 'Chat Session' },
-  { value: 'event', label: 'Event' },
 ] as const;
 
 const REASON_OPTIONS = [
@@ -35,6 +28,7 @@ export interface SceneIssuesFiltersProps {
   statusFilter: 'unresolved' | 'resolved' | 'all';
   onStatusChange: (status: 'unresolved' | 'resolved' | 'all') => void;
   statusCounts: { unresolved: number; resolved: number; all: number };
+  scopeCounts?: Record<string, number>;
   kindFilter: string;
   onKindChange: (kind: string) => void;
   sceneTypeFilter?: string;
@@ -49,6 +43,7 @@ export const SceneIssuesFilters: React.FC<SceneIssuesFiltersProps> = ({
   statusFilter,
   onStatusChange,
   statusCounts,
+  scopeCounts,
   kindFilter,
   onKindChange,
   sceneTypeFilter = '',
@@ -69,16 +64,6 @@ export const SceneIssuesFilters: React.FC<SceneIssuesFiltersProps> = ({
     }
   };
 
-  const handleSceneTypeClick = (value: string) => {
-    if (!onSceneTypeChange) return;
-    const nextType = sceneTypeFilter === value ? '' : value;
-    onSceneTypeChange(nextType);
-  };
-
-  const handleReasonChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    onReasonChange(e.target.value);
-  };
-
   const visibleReasonOptions = REASON_OPTIONS.filter(opt => {
     if (!opt.value) return true;
     if (!kindFilter) return true;
@@ -94,219 +79,147 @@ export const SceneIssuesFilters: React.FC<SceneIssuesFiltersProps> = ({
     }
   }, [kindFilter, reasonFilter, onReasonChange]);
 
+  const activeCount =
+    (statusFilter !== 'all' ? 1 : 0) +
+    (sceneTypeFilter ? 1 : 0) +
+    (kindFilter ? 1 : 0) +
+    (reasonFilter ? 1 : 0);
+
+  const handleClearAll = () => {
+    onStatusChange('unresolved');
+    if (onSceneTypeChange) onSceneTypeChange('');
+    onKindChange('');
+    onReasonChange('');
+  };
+
+  const scopeOptions = [
+    { value: '', label: 'All', count: scopeCounts?.all },
+    { value: 'scene', label: 'Scene', count: scopeCounts?.scene },
+    { value: 'session', label: 'Session', count: scopeCounts?.session },
+    { value: 'event', label: 'Event', count: scopeCounts?.event },
+  ];
+
+  const statusOptions = [
+    { value: 'unresolved' as const, label: 'Unresolved', count: statusCounts.unresolved },
+    { value: 'resolved' as const, label: 'Resolved', count: statusCounts.resolved },
+    { value: 'all' as const, label: 'All', count: statusCounts.all },
+  ];
+
+  const summaryPills = (
+    <div className="flex-row items-center gap-xs flex-wrap">
+      <Badge variant="accent">
+        {statusFilter === 'unresolved'
+          ? 'Unresolved'
+          : statusFilter === 'resolved'
+          ? 'Resolved'
+          : 'All Statuses'}
+      </Badge>
+      {sceneTypeFilter && (
+        <Badge variant="neutral">
+          Scope:{' '}
+          {sceneTypeFilter === 'scene'
+            ? 'Scenes'
+            : sceneTypeFilter === 'session'
+            ? 'Sessions'
+            : 'Events'}
+        </Badge>
+      )}
+      {kindFilter && (
+        <Badge variant="neutral">
+          Kind: {kindFilter === 'auto_split' ? 'Auto Split' : 'Soft Boundary'}
+        </Badge>
+      )}
+      {reasonFilter && (
+        <Badge variant="neutral">Reason: {reasonFilter.replace(/_/g, ' ')}</Badge>
+      )}
+    </div>
+  );
+
   return (
-    <div
-      className="glass-panel"
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '1.15rem',
-      }}
-    >
-      {/* Top: Header Info & Status Filter & Manual Split */}
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          flexWrap: 'wrap',
-          gap: '1rem',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <div
-            style={{
-              width: '40px',
-              height: '40px',
-              borderRadius: '8px',
-              background: 'rgba(239, 68, 68, 0.15)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: 'var(--danger)',
-            }}
+    <CollapsibleFilterBar
+      title={`Scene Issues Review Queue (${totalItems})`}
+      activeCount={activeCount}
+      summaryPills={summaryPills}
+      onClearAll={handleClearAll}
+      actions={
+        onOpenManualSplit && (
+          <Button
+            variant="secondary"
+            size="xs"
+            onClick={onOpenManualSplit}
+            icon={<Plus size={13} />}
+            title="Create manual scene split"
           >
-            <AlertTriangle size={22} />
-          </div>
-          <div>
-            <h2 style={{ margin: 0, fontSize: '1.25rem', color: 'var(--text-primary)' }}>
-              Scene Issues Review Queue
-            </h2>
-            <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-              Anomalous scenes flagged during pipeline indexing ({statusCounts.all || totalItems} total)
-            </p>
-          </div>
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-          {/* Status Buttons */}
-          <div style={{ display: 'flex', gap: '0.35rem' }}>
-            {(['unresolved', 'resolved', 'all'] as const).map(st => (
-              <button
-                key={st}
-                onClick={() => onStatusChange(st)}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '0.45rem',
-                  padding: '0.35rem 0.8rem',
-                  borderRadius: '6px',
-                  fontSize: '0.85rem',
-                  border: statusFilter === st ? '1px solid var(--accent-secondary)' : '1px solid var(--border-color)',
-                  background: statusFilter === st ? 'rgba(109, 40, 217, 0.25)' : 'var(--bg-tertiary)',
-                  color: statusFilter === st ? '#fff' : 'var(--text-secondary)',
-                  fontWeight: statusFilter === st ? 600 : 400,
-                  cursor: 'pointer',
-                  transition: 'all var(--transition-fast)',
-                }}
-              >
-                <span style={{ textTransform: 'capitalize' }}>{st}</span>
-                <span
-                  style={{
-                    padding: '0.1rem 0.45rem',
-                    borderRadius: '10px',
-                    fontSize: '0.75rem',
-                    fontWeight: 700,
-                    background: statusFilter === st ? 'rgba(255, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.08)',
-                    color: statusFilter === st ? '#fff' : 'var(--text-muted)',
-                  }}
-                >
-                  {statusCounts[st] ?? 0}
-                </span>
-              </button>
-            ))}
+            Manual Split
+          </Button>
+        )
+      }
+      className="mb-md"
+    >
+      <div className="flex-col gap-md pt-xs">
+        {/* Prominent Controls: Status & Archive Scope Segmented Controls */}
+        <div className="flex-row justify-between items-center flex-wrap gap-md">
+          {/* Status Segmented Control */}
+          <div className="flex-col gap-xs">
+            <label className="text-secondary text-sm font-semibold">Status</label>
+            <SegmentedControl<'unresolved' | 'resolved' | 'all'>
+              options={statusOptions}
+              value={statusFilter}
+              onChange={onStatusChange}
+              ariaLabel="Issue Status Filter"
+            />
           </div>
 
-          {/* Manual Split Button */}
-          {onOpenManualSplit && (
-            <button
-              onClick={onOpenManualSplit}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '0.4rem',
-                padding: '0.35rem 0.85rem',
-                borderRadius: '6px',
-                fontSize: '0.85rem',
-                border: '1px solid var(--accent-secondary)',
-                background: 'var(--accent-secondary)',
-                color: '#fff',
-                fontWeight: 600,
-                cursor: 'pointer',
-              }}
-            >
-              <Plus size={15} /> Manual Split
-            </button>
+          {/* Archive Scope Segmented Control */}
+          {onSceneTypeChange && (
+            <div className="flex-col gap-xs">
+              <label className="text-secondary text-sm font-semibold">Archive Scope</label>
+              <SegmentedControl<string>
+                options={scopeOptions}
+                value={sceneTypeFilter}
+                onChange={onSceneTypeChange}
+                ariaLabel="Archive Scope Filter"
+              />
+            </div>
           )}
         </div>
-      </div>
 
-      {/* Filter Rows: Kind, Scene Type, Reason */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          flexWrap: 'wrap',
-          gap: '1rem',
-          paddingTop: '0.85rem',
-          borderTop: '1px solid var(--border-color)',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem', flexWrap: 'wrap' }}>
-          {/* Kind Buttons */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 500 }}>Kind:</span>
-            <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
-              {KIND_OPTIONS.map(opt => {
-                const isActive = kindFilter === opt.value;
-                return (
-                  <button
-                    key={opt.value}
-                    onClick={() => handleKindClick(opt.value)}
-                    style={{
-                      padding: '0.35rem 0.75rem',
-                      borderRadius: '6px',
-                      fontSize: '0.85rem',
-                      border: isActive ? '1px solid var(--accent-secondary)' : '1px solid var(--border-color)',
-                      background: isActive ? 'rgba(109, 40, 217, 0.25)' : 'var(--bg-tertiary)',
-                      color: isActive ? '#fff' : 'var(--text-secondary)',
-                      fontWeight: isActive ? 600 : 400,
-                      cursor: 'pointer',
-                      transition: 'all var(--transition-fast)',
-                    }}
-                  >
-                    {opt.label}
-                  </button>
-                );
-              })}
+        {/* Independent Kind & Reason Toggles */}
+        <div className="flex-row items-center justify-between flex-wrap gap-md pt-xs border-t border-color">
+          {/* Issue Kind Chips */}
+          <div className="flex-col gap-xs">
+            <label className="text-secondary text-sm font-semibold">Issue Kind</label>
+            <div className="flex-row items-center gap-xs flex-wrap">
+              {KIND_OPTIONS.map(opt => (
+                <FilterChip
+                  key={opt.value}
+                  active={kindFilter === opt.value}
+                  onClick={() => handleKindClick(opt.value)}
+                >
+                  {opt.label}
+                </FilterChip>
+              ))}
             </div>
           </div>
 
-          {/* Scene Type Buttons */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 500 }}>Scene type:</span>
-            <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
-              {SCENE_TYPE_OPTIONS.map(opt => {
-                const isActive = sceneTypeFilter === opt.value;
-                return (
-                  <button
-                    key={opt.value}
-                    onClick={() => handleSceneTypeClick(opt.value)}
-                    style={{
-                      padding: '0.35rem 0.75rem',
-                      borderRadius: '6px',
-                      fontSize: '0.85rem',
-                      border: isActive ? '1px solid var(--accent-secondary)' : '1px solid var(--border-color)',
-                      background: isActive ? 'rgba(109, 40, 217, 0.25)' : 'var(--bg-tertiary)',
-                      color: isActive ? '#fff' : 'var(--text-secondary)',
-                      fontWeight: isActive ? 600 : 400,
-                      cursor: 'pointer',
-                      transition: 'all var(--transition-fast)',
-                    }}
-                  >
-                    {opt.label}
-                  </button>
-                );
-              })}
-            </div>
+          {/* Reason Filter Dropdown */}
+          <div className="flex-col gap-xs" style={{ minWidth: '220px' }}>
+            <label className="text-secondary text-sm font-semibold">Trigger Reason</label>
+            <select
+              value={reasonFilter}
+              onChange={e => onReasonChange(e.target.value)}
+              className="select"
+              style={{ padding: '0.35rem 0.6rem', fontSize: '0.82rem' }}
+            >
+              {visibleReasonOptions.map(opt => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
           </div>
         </div>
-
-        {/* Reason Dropdown */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 500 }}>Reason:</span>
-          <select
-            value={reasonFilter}
-            onChange={handleReasonChange}
-            style={{
-              padding: '0.35rem 0.75rem',
-              borderRadius: '6px',
-              fontSize: '0.85rem',
-              border: reasonFilter ? '1px solid var(--accent-secondary)' : '1px solid var(--border-color)',
-              background: reasonFilter ? 'rgba(109, 40, 217, 0.25)' : 'var(--bg-tertiary)',
-              color: reasonFilter ? '#fff' : 'var(--text-secondary)',
-              fontWeight: reasonFilter ? 600 : 400,
-              cursor: 'pointer',
-              outline: 'none',
-              transition: 'all var(--transition-fast)',
-            }}
-          >
-            {visibleReasonOptions.map(opt => (
-              <option
-                key={opt.value}
-                value={opt.value}
-                style={{
-                  background: 'var(--bg-secondary)',
-                  color: 'var(--text-primary)',
-                }}
-              >
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </div>
       </div>
-    </div>
+    </CollapsibleFilterBar>
   );
 };

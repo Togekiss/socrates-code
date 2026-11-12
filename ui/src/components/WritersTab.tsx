@@ -5,20 +5,14 @@ import {
   Search,
   Sparkles,
   Check,
-  AlertCircle,
   Users,
   Loader2,
 } from 'lucide-react';
 import { api } from '../api';
 import { WriterEditModal } from './curation/WriterEditModal';
-import { AssignWriterModal } from './curation/AssignWriterModal';
 import { WriterCard } from './curation/WriterCard';
-import { UnassignedCharacterCard } from './curation/UnassignedCharacterCard';
-import type {
-  UnassignedCharacter,
-  WriterDetailed,
-  WriterLinkSuggestion,
-} from '../types';
+import { PanelSurface, Button, Badge } from './ui';
+import type { WriterDetailed, WriterLinkSuggestion } from '../types';
 
 interface WritersTabProps {
   backupId: string;
@@ -26,9 +20,7 @@ interface WritersTabProps {
 }
 
 export const WritersTab = ({ backupId, onRefreshSummary }: WritersTabProps) => {
-  const [activeSection, setActiveSection] = useState<'writers' | 'unassigned'>('writers');
   const [writers, setWriters] = useState<WriterDetailed[]>([]);
-  const [unassignedChars, setUnassignedChars] = useState<UnassignedCharacter[]>([]);
   const [suggestions, setSuggestions] = useState<WriterLinkSuggestion[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -36,7 +28,6 @@ export const WritersTab = ({ backupId, onRefreshSummary }: WritersTabProps) => {
   // Modals state
   const [editingWriter, setEditingWriter] = useState<WriterDetailed | null>(null);
   const [isCreatingWriter, setIsCreatingWriter] = useState(false);
-  const [assigningChar, setAssigningChar] = useState<UnassignedCharacter | null>(null);
   const [linkingSuggestionId, setLinkingSuggestionId] = useState<number | null>(null);
 
   const fetchData = useCallback(() => {
@@ -44,12 +35,10 @@ export const WritersTab = ({ backupId, onRefreshSummary }: WritersTabProps) => {
     setLoading(true);
     Promise.all([
       api.getWritersDetailed(backupId),
-      api.getUnassignedCharacters(backupId),
       api.getWriterLinkSuggestions(backupId).catch(() => []),
     ])
-      .then(([wData, uData, sData]) => {
+      .then(([wData, sData]) => {
         setWriters(Array.isArray(wData) ? wData : []);
-        setUnassignedChars(Array.isArray(uData) ? uData : []);
         setSuggestions(Array.isArray(sData) ? sData : []);
       })
       .catch(console.error)
@@ -90,34 +79,17 @@ export const WritersTab = ({ backupId, onRefreshSummary }: WritersTabProps) => {
     return hasNameMatch || hasAliasMatch || hasCharMatch;
   });
 
-  const filteredUnassigned = unassignedChars.filter(c => {
-    if (!search.trim()) return true;
-    const q = search.toLowerCase();
-    const hasNameMatch = (c.name || c.names?.[0] || '').toLowerCase().includes(q);
-    const hasIdMatch = String(c.id).includes(q);
-    return hasNameMatch || hasIdMatch;
-  });
-
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+    <div className="flex-col gap-lg">
       {/* Header Bar */}
-      <div
-        className="glass-panel"
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          flexWrap: 'wrap',
-          gap: '1rem',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+      <PanelSurface className="flex-row items-center justify-between flex-wrap gap-md">
+        <div className="flex-row items-center gap-sm">
           <div
             style={{
               width: '40px',
               height: '40px',
-              borderRadius: '8px',
-              background: 'rgba(109, 40, 217, 0.15)',
+              borderRadius: 'var(--radius-sm)',
+              background: 'var(--accent-subtle)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -128,7 +100,7 @@ export const WritersTab = ({ backupId, onRefreshSummary }: WritersTabProps) => {
           </div>
           <div>
             <h2 style={{ margin: 0, fontSize: '1.25rem', color: 'var(--text-primary)' }}>
-              Writers & Attribution
+              Writers &amp; Attribution
             </h2>
             <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-muted)' }}>
               Manage writer profiles, Discord snowflake links, and character assignments
@@ -136,61 +108,39 @@ export const WritersTab = ({ backupId, onRefreshSummary }: WritersTabProps) => {
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-            <Search size={14} style={{ position: 'absolute', left: '0.75rem', color: 'var(--text-muted)' }} />
+        <div className="flex-row items-center gap-sm flex-wrap">
+          <div className="search-input-wrapper" style={{ width: '220px' }}>
+            <Search size={14} />
             <input
               type="text"
-              placeholder={activeSection === 'writers' ? 'Search writers...' : 'Search unassigned...'}
+              className="input"
+              placeholder="Search writers..."
               value={search}
               onChange={e => setSearch(e.target.value)}
-              style={{
-                padding: '0.45rem 0.75rem 0.45rem 2.2rem',
-                background: 'var(--bg-tertiary)',
-                border: '1px solid var(--border-color)',
-                borderRadius: '6px',
-                color: 'white',
-                fontSize: '0.85rem',
-                width: '200px',
-              }}
             />
           </div>
 
-          <button
+          <Button
+            variant="primary"
+            size="sm"
             onClick={() => setIsCreatingWriter(true)}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.4rem',
-              padding: '0.5rem 1rem',
-              background: 'var(--accent-primary)',
-              color: '#fff',
-              border: 'none',
-              borderRadius: '6px',
-              fontWeight: 600,
-              fontSize: '0.85rem',
-              cursor: 'pointer',
-            }}
+            icon={<Plus size={15} />}
           >
-            <Plus size={16} /> New Writer
-          </button>
+            New Writer
+          </Button>
         </div>
-      </div>
+      </PanelSurface>
 
-      {/* Heuristic Link Suggestions Banner */}
-      {suggestions.length > 0 && activeSection === 'writers' && (
-        <div
+      {/* Discord Link Suggestions Banner */}
+      {suggestions.length > 0 && (
+        <PanelSurface
+          className="flex-col gap-sm"
           style={{
             background: 'rgba(109, 40, 217, 0.12)',
             border: '1px solid rgba(139, 92, 246, 0.35)',
-            borderRadius: '10px',
-            padding: '1rem 1.25rem',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '0.75rem',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--accent-secondary)' }}>
+          <div className="flex-row items-center gap-xs" style={{ color: 'var(--accent-secondary)' }}>
             <Sparkles size={18} />
             <strong style={{ fontSize: '0.95rem' }}>
               Discord Link Suggestions ({suggestions.length})
@@ -200,7 +150,7 @@ export const WritersTab = ({ backupId, onRefreshSummary }: WritersTabProps) => {
             Socrates detected matching Discord users for the following unlinked writers based on dialogue authorship:
           </p>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.25rem' }}>
+          <div className="flex-col gap-xs" style={{ marginTop: '0.25rem' }}>
             {suggestions.map(s => {
               const writerId = s.writer_id ?? s.writer_pk ?? 0;
               const discordId = s.suggested_discord_id ?? s.suggested_discord_user_id ?? '';
@@ -224,19 +174,12 @@ export const WritersTab = ({ backupId, onRefreshSummary }: WritersTabProps) => {
               return (
                 <div
                   key={writerId || s.display_name}
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    background: 'var(--bg-secondary)',
-                    padding: '0.6rem 0.9rem',
-                    borderRadius: '6px',
-                    border: '1px solid var(--border-color)',
-                  }}
+                  className="panel-surface flex-row items-center justify-between flex-wrap gap-sm"
+                  style={{ padding: '0.6rem 0.9rem' }}
                 >
-                  <div>
-                    <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{s.display_name}</span>
-                    <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginLeft: '0.5rem' }}>
+                  <div className="flex-row items-center gap-xs flex-wrap">
+                    <strong style={{ color: 'var(--text-primary)' }}>{s.display_name}</strong>
+                    <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
                       → Discord:{' '}
                       <span title={discordId ? `Snowflake ID: ${discordId}` : undefined}>
                         {username ? (
@@ -251,143 +194,63 @@ export const WritersTab = ({ backupId, onRefreshSummary }: WritersTabProps) => {
                           <code style={{ color: 'var(--accent-secondary)' }}>{discordId}</code>
                         ) : null}
                       </span>{' '}
-                      ({confPct}% match: {s.reason})
+                      <Badge variant="accent">
+                        {confPct}% match
+                      </Badge>
+                      <span className="form-hint" style={{ marginLeft: '0.35rem' }}>
+                        ({s.reason})
+                      </span>
                     </span>
                   </div>
-                  <button
+
+                  <Button
+                    variant="primary"
+                    size="xs"
                     onClick={() => handleAcceptSuggestion(s)}
-                    disabled={linkingSuggestionId === writerId}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.35rem',
-                      padding: '0.35rem 0.75rem',
-                      background: 'var(--accent-primary)',
-                      color: '#fff',
-                      border: 'none',
-                      borderRadius: '4px',
-                      fontSize: '0.8rem',
-                      fontWeight: 600,
-                      cursor: linkingSuggestionId === writerId ? 'not-allowed' : 'pointer',
-                    }}
+                    loading={linkingSuggestionId === writerId}
+                    icon={<Check size={12} />}
                   >
-                    {linkingSuggestionId === writerId ? (
-                      <Loader2 size={12} className="animate-spin" />
-                    ) : (
-                      <Check size={12} />
-                    )}
                     Accept Link
-                  </button>
+                  </Button>
                 </div>
               );
             })}
           </div>
-        </div>
+        </PanelSurface>
       )}
 
-      {/* Sub-Navigation: Writers Roster vs Unassigned Characters */}
-      <div style={{ display: 'flex', gap: '0.5rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.5rem' }}>
-        <button
-          onClick={() => setActiveSection('writers')}
-          style={{
-            padding: '0.45rem 1rem',
-            background: activeSection === 'writers' ? 'var(--bg-tertiary)' : 'transparent',
-            border: 'none',
-            borderBottom: activeSection === 'writers' ? '2px solid var(--accent-primary)' : '2px solid transparent',
-            color: activeSection === 'writers' ? 'var(--text-primary)' : 'var(--text-secondary)',
-            fontWeight: activeSection === 'writers' ? 600 : 500,
-            fontSize: '0.9rem',
-            cursor: 'pointer',
-            borderRadius: '6px 6px 0 0',
-          }}
-        >
-          Writers Roster ({writers.length})
-        </button>
-        <button
-          onClick={() => setActiveSection('unassigned')}
-          style={{
-            padding: '0.45rem 1rem',
-            background: activeSection === 'unassigned' ? 'var(--bg-tertiary)' : 'transparent',
-            border: 'none',
-            borderBottom: activeSection === 'unassigned' ? '2px solid var(--accent-primary)' : '2px solid transparent',
-            color: activeSection === 'unassigned' ? 'var(--text-primary)' : 'var(--text-secondary)',
-            fontWeight: activeSection === 'unassigned' ? 600 : 500,
-            fontSize: '0.9rem',
-            cursor: 'pointer',
-            borderRadius: '6px 6px 0 0',
-          }}
-        >
-          Unassigned Characters ({unassignedChars.length})
-        </button>
-      </div>
-
-      {/* Body Content */}
+      {/* Writers Roster Grid */}
       {loading ? (
-        <div className="glass-panel" style={{ textAlign: 'center', padding: '3rem' }}>
+        <PanelSurface style={{ textAlign: 'center', padding: '3rem' }}>
           <Loader2 size={32} className="animate-spin" style={{ color: 'var(--accent-secondary)', margin: '0 auto 1rem auto' }} />
           <p style={{ color: 'var(--text-secondary)' }}>Loading writers data...</p>
+        </PanelSurface>
+      ) : filteredWriters.length === 0 ? (
+        <div className="empty-state">
+          <Users size={40} className="empty-state-icon" />
+          <h3 className="empty-state-title">No writers found</h3>
+          <p className="empty-state-desc">
+            {search ? `No writers match your search "${search}".` : 'No writer profiles exist yet.'}
+          </p>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setIsCreatingWriter(true)}
+            icon={<Plus size={14} />}
+          >
+            Create Writer
+          </Button>
         </div>
-      ) : activeSection === 'writers' ? (
-        filteredWriters.length === 0 ? (
-          <div className="glass-panel" style={{ textAlign: 'center', padding: '3rem' }}>
-            <Users size={36} style={{ color: 'var(--text-muted)', marginBottom: '0.5rem', opacity: 0.5 }} />
-            <p style={{ color: 'var(--text-secondary)' }}>No writers found.</p>
-          </div>
-        ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '1rem' }}>
-            {filteredWriters.map(writer => (
-              <WriterCard
-                key={writer.id}
-                writer={writer}
-                onEdit={setEditingWriter}
-              />
-            ))}
-          </div>
-        )
       ) : (
-        /* Unassigned Characters Queue */
-        filteredUnassigned.length === 0 ? (
-          <div className="glass-panel" style={{ textAlign: 'center', padding: '3rem' }}>
-            <UserCheck size={36} style={{ color: 'var(--success)', marginBottom: '0.5rem' }} />
-            <h3 style={{ margin: '0 0 0.5rem 0', color: 'var(--text-primary)' }}>
-              All characters are assigned!
-            </h3>
-            <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-              Every character in this backup has a designated writer.
-            </p>
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            <div
-              style={{
-                background: 'rgba(245, 158, 11, 0.08)',
-                border: '1px solid rgba(245, 158, 11, 0.25)',
-                borderRadius: '8px',
-                padding: '0.85rem 1.25rem',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.5rem',
-                color: 'var(--warning)',
-                fontSize: '0.85rem',
-              }}
-            >
-              <AlertCircle size={16} />
-              <span>
-                These characters do not belong to any writer yet. Assigning a writer associates scene statistics and credits.
-              </span>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '0.75rem' }}>
-              {filteredUnassigned.map(char => (
-                <UnassignedCharacterCard
-                  key={char.id}
-                  char={char}
-                  onAssign={setAssigningChar}
-                />
-              ))}
-            </div>
-          </div>
-        )
+        <div className="writers-grid">
+          {filteredWriters.map(writer => (
+            <WriterCard
+              key={writer.id}
+              writer={writer}
+              onEdit={setEditingWriter}
+            />
+          ))}
+        </div>
       )}
 
       {/* Writer Edit / Create Modal */}
@@ -400,17 +263,6 @@ export const WritersTab = ({ backupId, onRefreshSummary }: WritersTabProps) => {
             setEditingWriter(null);
           }}
           onSaved={fetchData}
-        />
-      )}
-
-      {/* Assign Writer Modal */}
-      {assigningChar && (
-        <AssignWriterModal
-          backupId={backupId}
-          character={assigningChar}
-          writers={writers}
-          onClose={() => setAssigningChar(null)}
-          onAssigned={fetchData}
         />
       )}
     </div>

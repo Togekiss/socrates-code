@@ -5,23 +5,13 @@ import { PromoteMessageModal } from './curation/PromoteMessageModal';
 import { AddFlaggedMessageModal } from './curation/AddFlaggedMessageModal';
 import { FlaggedMessageCard } from './curation/FlaggedMessageCard';
 import { FlaggedMessagesFilters } from './curation/FlaggedMessagesFilters';
+import { Pagination } from './ui';
 import type { FlaggedMessage, FlaggedMessagesResponse, FlaggedResolution } from '../types';
 
 interface FlaggedMessagesTabProps {
   backupId: string;
   onRefreshSummary?: () => void;
 }
-
-const pageBtn = (disabled: boolean): React.CSSProperties => ({
-  padding: '0.4rem 0.85rem',
-  background: 'var(--bg-tertiary)',
-  border: '1px solid var(--border-color)',
-  color: 'white',
-  borderRadius: '6px',
-  cursor: disabled ? 'not-allowed' : 'pointer',
-  opacity: disabled ? 0.45 : 1,
-  fontSize: '0.85rem',
-});
 
 export const FlaggedMessagesTab = ({ backupId, onRefreshSummary }: FlaggedMessagesTabProps) => {
   const [data, setData] = useState<FlaggedMessagesResponse>({
@@ -38,6 +28,7 @@ export const FlaggedMessagesTab = ({ backupId, onRefreshSummary }: FlaggedMessag
   });
 
   const [statusFilter, setStatusFilter] = useState<'unresolved' | 'resolved' | 'all'>('unresolved');
+  const [sceneTypeFilter, setSceneTypeFilter] = useState<string>('');
   const [kindFilter, setKindFilter] = useState<string>('');
   const [resolutionFilter, setResolutionFilter] = useState<string>('');
   const [page, setPage] = useState(1);
@@ -56,6 +47,7 @@ export const FlaggedMessagesTab = ({ backupId, onRefreshSummary }: FlaggedMessag
     params.append('page', page.toString());
     params.append('per_page', '50');
     if (statusFilter !== 'all') params.append('status', statusFilter);
+    if (sceneTypeFilter) params.append('scene_type', sceneTypeFilter);
     if (kindFilter) params.append('kind', kindFilter);
     if (resolutionFilter && statusFilter !== 'unresolved') params.append('resolution', resolutionFilter);
 
@@ -72,7 +64,7 @@ export const FlaggedMessagesTab = ({ backupId, onRefreshSummary }: FlaggedMessag
         setLoading(false);
         if (onRefreshSummary) onRefreshSummary();
       });
-  }, [backupId, statusFilter, kindFilter, resolutionFilter, page, onRefreshSummary]);
+  }, [backupId, statusFilter, sceneTypeFilter, kindFilter, resolutionFilter, page, onRefreshSummary]);
 
   useEffect(() => {
     fetchMessages();
@@ -103,7 +95,7 @@ export const FlaggedMessagesTab = ({ backupId, onRefreshSummary }: FlaggedMessag
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+    <div className="flex-col gap-md">
       {/* Header & Filter Controls */}
       <FlaggedMessagesFilters
         totalItems={data.total_items}
@@ -113,6 +105,12 @@ export const FlaggedMessagesTab = ({ backupId, onRefreshSummary }: FlaggedMessag
           setPage(1);
         }}
         statusCounts={statusCounts}
+        scopeCounts={data.scope_counts}
+        sceneTypeFilter={sceneTypeFilter}
+        onSceneTypeChange={t => {
+          setSceneTypeFilter(t);
+          setPage(1);
+        }}
         kindFilter={kindFilter}
         onKindChange={k => {
           setKindFilter(k);
@@ -128,31 +126,22 @@ export const FlaggedMessagesTab = ({ backupId, onRefreshSummary }: FlaggedMessag
 
       {/* Main Content Area */}
       {loading ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: '4rem', color: 'var(--text-muted)' }}>
-          <Loader2 className="spin" size={32} />
+        <div className="glass-panel text-center p-xl">
+          <Loader2 size={32} className="animate-spin text-accent" style={{ margin: '0 auto 1rem auto' }} />
+          <p className="text-secondary">Loading flagged messages...</p>
         </div>
       ) : data.messages.length === 0 ? (
-        <div
-          className="glass-panel"
-          style={{
-            padding: '3rem 2rem',
-            textAlign: 'center',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            gap: '0.75rem',
-          }}
-        >
-          <CheckCircle size={36} color="var(--success)" />
-          <h3 style={{ margin: 0, color: 'var(--text-primary)' }}>No flagged messages found</h3>
-          <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.9rem', maxWidth: '420px' }}>
+        <div className="glass-panel text-center p-xl">
+          <CheckCircle size={36} className="text-success mb-xs" style={{ margin: '0 auto' }} />
+          <h3 className="text-primary mt-xs mb-xs">No flagged messages found</h3>
+          <p className="text-secondary text-md">
             {statusFilter === 'unresolved'
               ? 'All flagged messages in this backup have been resolved or dismissed.'
               : 'No messages match the current status and filter criteria.'}
           </p>
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+        <div className="flex-col gap-sm">
           {data.messages.map(msg => (
             <FlaggedMessageCard
               key={msg.id}
@@ -166,37 +155,12 @@ export const FlaggedMessagesTab = ({ backupId, onRefreshSummary }: FlaggedMessag
           ))}
 
           {/* Pagination Controls */}
-          {data.total_pages > 1 && (
-            <div
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                padding: '0.75rem 0',
-                marginTop: '0.5rem',
-              }}
-            >
-              <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                Showing page {data.current_page} of {data.total_pages} ({data.total_items} items)
-              </span>
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <button
-                  style={pageBtn(data.current_page <= 1)}
-                  disabled={data.current_page <= 1}
-                  onClick={() => setPage(p => Math.max(1, p - 1))}
-                >
-                  Previous
-                </button>
-                <button
-                  style={pageBtn(data.current_page >= data.total_pages)}
-                  disabled={data.current_page >= data.total_pages}
-                  onClick={() => setPage(p => Math.min(data.total_pages, p + 1))}
-                >
-                  Next
-                </button>
-              </div>
-            </div>
-          )}
+          <Pagination
+            currentPage={data.current_page}
+            totalPages={data.total_pages}
+            totalItems={data.total_items}
+            onPageChange={setPage}
+          />
         </div>
       )}
 
@@ -216,7 +180,6 @@ export const FlaggedMessagesTab = ({ backupId, onRefreshSummary }: FlaggedMessag
           onClose={() => setIsAddModalOpen(false)}
           onSuccess={newMsg => {
             fetchMessages();
-            // Automatically open promote modal if user wants to attribute immediately
             setPromotingMsg(newMsg);
           }}
         />

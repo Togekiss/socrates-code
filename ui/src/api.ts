@@ -45,16 +45,42 @@ export interface ApiError extends Error {
   response?: { detail?: string };
 }
 
+// In-flight GET request deduplication cache
+const inFlightGetRequests = new Map<string, Promise<Response>>();
+
 const fetchWithAuth = async (url: string, options: RequestInit = {}): Promise<Response> => {
-  const res = await fetch(url, { ...options, credentials: 'include' });
-  if (!res.ok) {
-    const errorBody = await res.json().catch(() => ({ detail: res.statusText }));
-    const error = new Error(errorBody.detail || `Request failed with status ${res.status}`) as ApiError;
-    error.status = res.status;
-    error.response = errorBody;
-    throw error;
+  const method = (options.method || 'GET').toUpperCase();
+  const isGet = method === 'GET';
+
+  if (isGet) {
+    const existing = inFlightGetRequests.get(url);
+    if (existing) {
+      const res = await existing;
+      return res.clone();
+    }
   }
-  return res;
+
+  const requestPromise = (async () => {
+    const res = await fetch(url, { ...options, credentials: 'include' });
+    if (!res.ok) {
+      const errorBody = await res.json().catch(() => ({ detail: res.statusText }));
+      const error = new Error(errorBody.detail || `Request failed with status ${res.status}`) as ApiError;
+      error.status = res.status;
+      error.response = errorBody;
+      throw error;
+    }
+    return res;
+  })();
+
+  if (isGet) {
+    inFlightGetRequests.set(url, requestPromise);
+    requestPromise.finally(() => {
+      inFlightGetRequests.delete(url);
+    });
+  }
+
+  const res = await requestPromise;
+  return isGet ? res.clone() : res;
 };
 
 export const api = {
@@ -71,6 +97,9 @@ export const api = {
 
   getMe: (): Promise<MeResponse> =>
     fetchWithAuth(`${API_BASE}/auth/me`).then(res => res.json()),
+
+  devLogin: (): Promise<AuthResponse> =>
+    fetchWithAuth(`${API_BASE}/auth/dev-login`, { method: 'POST' }).then(res => res.json()),
 
   logout: (): Promise<{ status: string }> =>
     fetchWithAuth(`${API_BASE}/auth/logout`, { method: 'POST' }).then(res => res.json()),

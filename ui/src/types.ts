@@ -58,6 +58,7 @@ export interface BackupInfo {
   number_of_sessions?: number;
   number_of_events?: number;
   number_of_characters?: number;
+  number_of_writers?: number;
   number_of_categories?: number;
   number_of_channels?: number;
   number_of_threads?: number;
@@ -117,7 +118,8 @@ export interface CurationSummary {
 export interface CharacterVersion {
   id: number;
   name: string;
-  version_type: string;
+  names?: string[];
+  version_type?: string;
   origin?: string | null;
   activity?: string | null;
 }
@@ -135,8 +137,13 @@ export interface Character {
   group_name?: string | null;
   tags?: string[];
   versions?: CharacterVersion[];
+  other_versions?: CharacterVersion[];
   parent_id?: number | null;
+  _parent?: Character;
   version_type?: string | null;
+  scene_count?: number;
+  last_active_at?: string | null;
+  last_channel_name?: string | null;
 }
 
 export interface CharacterGroupMember { id: number; name: string; }
@@ -166,7 +173,16 @@ export interface WriterLinkSuggestion {
 }
 
 export interface MyWriter { id: number; display_name: string; discord_user_id: string; aliases: string[]; character_ids: number[]; }
-export interface UnassignedCharacter { id: number; name: string; names: string[]; origin?: string | null; activity?: string | null; }
+export interface UnassignedCharacter {
+  id: number;
+  name: string;
+  names: string[];
+  origin?: string | null;
+  activity?: string | null;
+  scene_count?: number;
+  last_active_at?: string | null;
+  last_channel_name?: string | null;
+}
 export interface SceneParticipant { character_id: number; character_name: string; writer_name?: string; message_count: number; }
 
 export interface SceneParticipantDetail {
@@ -216,6 +232,8 @@ export interface Scene {
   thread_name?: string | null;
   characters?: number[];
   issues?: SceneIssueRef[];
+  start_excerpt?: string;
+  end_excerpt?: string;
   start?: { id?: string; timestamp?: string; index?: number; authorID?: string; content?: string; excerpt?: string; link?: string };
   end?: { id?: string; timestamp?: string; index?: number; authorID?: string; content?: string; excerpt?: string; link?: string };
 }
@@ -237,6 +255,8 @@ export interface ChatSession {
   characters: number[];
   participants: SceneParticipantDetail[];
   issues?: SceneIssueRef[];
+  start_excerpt?: string;
+  end_excerpt?: string;
   start: { id: string; timestamp: string; index: number; authorID: string; content: string; link: string };
   end: { id: string; timestamp: string; index: number; authorID: string; content: string; link: string };
 }
@@ -336,11 +356,15 @@ export interface PaginatedResponse {
 }
 
 export interface SceneIssuesResponse extends PaginatedResponse {
-  issues: SceneIssue[]; status_counts?: { unresolved: number; resolved: number; all: number };
+  issues: SceneIssue[];
+  status_counts?: { unresolved: number; resolved: number; all: number };
+  scope_counts?: Record<string, number>;
 }
 
 export interface FlaggedMessagesResponse extends PaginatedResponse {
-  messages: FlaggedMessage[]; status_counts?: { unresolved: number; resolved: number; all: number };
+  messages: FlaggedMessage[];
+  status_counts?: { unresolved: number; resolved: number; all: number };
+  scope_counts?: Record<string, number>;
 }
 
 export interface MessageOverridesResponse extends PaginatedResponse { overrides: MessageOverride[]; }

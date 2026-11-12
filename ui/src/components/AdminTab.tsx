@@ -1,17 +1,14 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../api';
 import {
-  RefreshCw,
-  Download,
-  Trash2,
   RotateCcw,
   Database,
   Play,
-  Loader2,
   CheckCircle,
   XCircle,
   FlaskConical,
 } from 'lucide-react';
+import { PanelSurface, Button, LogConsole } from './ui';
 import type { AdminTestActionResponse, GlobalConfig } from '../types';
 
 interface AdminTabProps {
@@ -25,8 +22,6 @@ export const AdminTab = ({ onRefreshSummary }: AdminTabProps) => {
 
   const [activeTestAction, setActiveTestAction] = useState<'reset' | 'migrate' | 'suite' | 'upgrade-all' | null>(null);
   const [testResult, setTestResult] = useState<AdminTestActionResponse | null>(null);
-
-  const logsEndRef = useRef<HTMLDivElement>(null);
 
   const fetchLogs = () => {
     setLoadingLogs(true);
@@ -44,20 +39,6 @@ export const AdminTab = ({ onRefreshSummary }: AdminTabProps) => {
     fetchLogs();
     fetchConfig();
   }, []);
-
-  useEffect(() => {
-    logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [logs]);
-
-  const downloadLogs = () => {
-    const blob = new Blob([logs.join('\n')], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'global-log.txt';
-    a.click();
-    URL.revokeObjectURL(url);
-  };
 
   const clearLogs = () => {
     api.clearGlobalLogs().then(() => setLogs([])).catch(console.error);
@@ -112,165 +93,84 @@ export const AdminTab = ({ onRefreshSummary }: AdminTabProps) => {
   const isTestBusy = activeTestAction !== null;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+    <div className="flex-col gap-lg">
       {/* Testing & Verification Section */}
-      <div className="glass-panel">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.5rem' }}>
+      <PanelSurface className="flex-col gap-md">
+        <div className="flex-row items-center gap-sm">
           <FlaskConical size={20} style={{ color: 'var(--accent-secondary)' }} />
-          <h2 style={{ margin: 0, color: 'var(--text-primary)' }}>Testing & Verification</h2>
+          <h2 style={{ margin: 0, fontSize: '1.25rem', color: 'var(--text-primary)' }}>
+            Testing &amp; Verification
+          </h2>
         </div>
-        <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '1.25rem' }}>
+        <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', margin: 0 }}>
           Manage the reversible testing dataset (<code>Elysium-sql-tests</code>) and run the automated Python test suite.
         </p>
 
-        <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'center' }}>
-          <button
+        <div className="flex-row items-center gap-sm flex-wrap">
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => handleTestAction('reset')}
             disabled={isTestBusy}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              padding: '0.55rem 1.1rem',
-              background: 'var(--bg-tertiary)',
-              border: '1px solid var(--border-color)',
-              color: 'var(--text-primary)',
-              borderRadius: '6px',
-              cursor: isTestBusy ? 'not-allowed' : 'pointer',
-              opacity: isTestBusy && activeTestAction !== 'reset' ? 0.5 : 1,
-              fontSize: '0.9rem',
-              fontWeight: 500,
-            }}
+            loading={activeTestAction === 'reset'}
+            icon={<RotateCcw size={15} />}
           >
-            {activeTestAction === 'reset' ? (
-              <Loader2 size={16} className="animate-spin" style={{ color: 'var(--accent-secondary)' }} />
-            ) : (
-              <RotateCcw size={16} />
-            )}
-            {activeTestAction === 'reset' ? 'Resetting...' : 'Reset Testing Backup'}
-          </button>
+            Reset Testing Backup
+          </Button>
 
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => handleTestAction('migrate')}
             disabled={isTestBusy}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              padding: '0.55rem 1.1rem',
-              background: 'var(--bg-tertiary)',
-              border: '1px solid var(--border-color)',
-              color: 'var(--text-primary)',
-              borderRadius: '6px',
-              cursor: isTestBusy ? 'not-allowed' : 'pointer',
-              opacity: isTestBusy && activeTestAction !== 'migrate' ? 0.5 : 1,
-              fontSize: '0.9rem',
-              fontWeight: 500,
-            }}
+            loading={activeTestAction === 'migrate'}
+            icon={<Database size={15} />}
           >
-            {activeTestAction === 'migrate' ? (
-              <Loader2 size={16} className="animate-spin" style={{ color: 'var(--accent-secondary)' }} />
-            ) : (
-              <Database size={16} />
-            )}
-            {activeTestAction === 'migrate' ? 'Migrating...' : 'Migrate Testing Backup'}
-          </button>
+            Migrate Testing Backup
+          </Button>
 
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => handleTestAction('upgrade-all')}
             disabled={isTestBusy}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              padding: '0.55rem 1.1rem',
-              background: 'var(--bg-tertiary)',
-              border: '1px solid var(--border-color)',
-              color: 'var(--text-primary)',
-              borderRadius: '6px',
-              cursor: isTestBusy ? 'not-allowed' : 'pointer',
-              opacity: isTestBusy && activeTestAction !== 'upgrade-all' ? 0.5 : 1,
-              fontSize: '0.9rem',
-              fontWeight: 500,
-            }}
+            loading={activeTestAction === 'upgrade-all'}
+            icon={<Database size={15} />}
           >
-            {activeTestAction === 'upgrade-all' ? (
-              <Loader2 size={16} className="animate-spin" style={{ color: 'var(--accent-secondary)' }} />
-            ) : (
-              <Database size={16} />
-            )}
-            {activeTestAction === 'upgrade-all' ? 'Upgrading...' : 'Upgrade all databases'}
-          </button>
+            Upgrade all databases
+          </Button>
 
-          <button
+          <Button
+            variant="primary"
+            size="sm"
             onClick={() => handleTestAction('suite')}
             disabled={isTestBusy}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              padding: '0.55rem 1.25rem',
-              background: 'var(--accent-primary)',
-              border: 'none',
-              color: '#fff',
-              borderRadius: '6px',
-              cursor: isTestBusy ? 'not-allowed' : 'pointer',
-              opacity: isTestBusy && activeTestAction !== 'suite' ? 0.5 : 1,
-              fontSize: '0.9rem',
-              fontWeight: 600,
-            }}
+            loading={activeTestAction === 'suite'}
+            icon={<Play size={15} />}
           >
-            {activeTestAction === 'suite' ? (
-              <Loader2 size={16} className="animate-spin" />
-            ) : (
-              <Play size={16} />
-            )}
-            {activeTestAction === 'suite' ? 'Running Test Suite...' : 'Run Python Test Suite'}
-          </button>
+            Run Python Test Suite
+          </Button>
         </div>
 
         {testResult && (
-          <div style={{ marginTop: '1.25rem' }}>
+          <div className="flex-col gap-sm" style={{ marginTop: '0.5rem' }}>
             <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.6rem',
-                padding: '0.75rem 1rem',
-                borderRadius: '6px',
-                background:
-                  testResult.status === 'success'
-                    ? 'rgba(16, 185, 129, 0.12)'
-                    : 'rgba(239, 68, 68, 0.12)',
-                border: `1px solid ${
-                  testResult.status === 'success'
-                    ? 'rgba(16, 185, 129, 0.35)'
-                    : 'rgba(239, 68, 68, 0.35)'
-                }`,
-                color: testResult.status === 'success' ? 'var(--success)' : 'var(--danger)',
-                fontSize: '0.9rem',
-                fontWeight: 500,
-              }}
+              className={`banner-${testResult.status === 'success' ? 'success' : 'danger'}`}
+              style={{ marginBottom: 0 }}
             >
-              {testResult.status === 'success' ? <CheckCircle size={18} /> : <XCircle size={18} />}
-              <span>{testResult.message}</span>
+              <div className="flex-row items-center gap-sm">
+                {testResult.status === 'success' ? <CheckCircle size={18} /> : <XCircle size={18} />}
+                <strong>{testResult.message}</strong>
+              </div>
             </div>
 
             {testResult.output && (
               <div
+                className="log-console"
                 style={{
-                  marginTop: '0.75rem',
-                  background: '#1a1a1a',
-                  padding: '1rem',
-                  borderRadius: '6px',
-                  fontFamily: 'monospace',
-                  fontSize: '0.8rem',
-                  maxHeight: '320px',
-                  overflowY: 'auto',
-                  border: '1px solid #333',
+                  height: 'auto',
+                  maxHeight: '300px',
                   whiteSpace: 'pre-wrap',
-                  lineHeight: 1.45,
-                  color: '#c8d6e5',
                 }}
               >
                 {testResult.output}
@@ -278,96 +178,65 @@ export const AdminTab = ({ onRefreshSummary }: AdminTabProps) => {
             )}
           </div>
         )}
-      </div>
+      </PanelSurface>
 
       {/* Activity and Logs Section */}
-      <div className="glass-panel">
-        <h2 style={{ margin: '0 0 1rem 0', color: 'var(--text-primary)' }}>Activity and logs</h2>
-        
+      <PanelSurface className="flex-col gap-md">
+        <h2 style={{ margin: 0, fontSize: '1.25rem', color: 'var(--text-primary)' }}>
+          Activity and Logging Configuration
+        </h2>
+
         {globalConfig && globalConfig.admin && (
-          <div style={{ display: 'flex', gap: '2rem', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
-            <div>
-              <strong style={{ display: 'block', marginBottom: '0.5rem', color: 'var(--text-secondary)' }}>Verbosity levels</strong>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+          <div className="flex-row gap-xl flex-wrap">
+            <div className="flex-col gap-xs">
+              <span className="sidebar-group-title" style={{ padding: 0 }}>Verbosity levels</span>
+              <div className="flex-col gap-xs">
                 {['info', 'debug', 'console', 'log'].map(key => (
-                  <label key={key} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
-                    <input 
-                      type="checkbox" 
-                      checked={Boolean(globalConfig.admin?.verbosity?.[key])} 
+                  <label key={key} className="flex-row items-center gap-xs" style={{ cursor: 'pointer', fontSize: '0.85rem' }}>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(globalConfig.admin?.verbosity?.[key])}
                       onChange={e => updateVerbosity(key, e.target.checked)}
                     />
-                    Show {key} messages
+                    <span>Show {key} messages</span>
                   </label>
                 ))}
               </div>
             </div>
-            <div>
-              <strong style={{ display: 'block', marginBottom: '0.5rem', color: 'var(--text-secondary)' }}>Other settings</strong>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
-                  <input 
-                    type="checkbox" 
-                    checked={Boolean(globalConfig.admin?.verbosity?.debugFiles)} 
+
+            <div className="flex-col gap-xs">
+              <span className="sidebar-group-title" style={{ padding: 0 }}>Other settings</span>
+              <div className="flex-col gap-xs">
+                <label className="flex-row items-center gap-xs" style={{ cursor: 'pointer', fontSize: '0.85rem' }}>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(globalConfig.admin?.verbosity?.debugFiles)}
                     onChange={e => updateVerbosity('debugFiles', e.target.checked)}
                   />
-                  Keep debug files
+                  <span>Keep debug files</span>
                 </label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
-                  <input 
-                    type="checkbox" 
-                    checked={Boolean(globalConfig.admin?.verbosity?.dryRun)} 
+                <label className="flex-row items-center gap-xs" style={{ cursor: 'pointer', fontSize: '0.85rem' }}>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(globalConfig.admin?.verbosity?.dryRun)}
                     onChange={e => updateVerbosity('dryRun', e.target.checked)}
                   />
-                  Dry run mode
+                  <span>Dry run mode</span>
                 </label>
               </div>
             </div>
           </div>
         )}
 
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-          <strong style={{ color: 'var(--text-secondary)' }}>Global API & Init Logs</strong>
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <button onClick={fetchLogs} style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', padding: '0.2rem 0.5rem', fontSize: '0.8rem', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'white', borderRadius: '4px', cursor: 'pointer' }}>
-              <RefreshCw size={12} className={loadingLogs ? 'spin' : ''} /> Refresh
-            </button>
-            <button onClick={downloadLogs} style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', padding: '0.2rem 0.5rem', fontSize: '0.8rem', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'white', borderRadius: '4px', cursor: 'pointer' }}>
-              <Download size={12} /> Download
-            </button>
-            <button onClick={clearLogs} style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', padding: '0.2rem 0.5rem', fontSize: '0.8rem', background: 'var(--error-color)', border: '1px solid var(--border-color)', color: 'white', borderRadius: '4px', cursor: 'pointer' }}>
-              <Trash2 size={12} /> Clear
-            </button>
-          </div>
-        </div>
-
-        <div style={{ 
-          background: '#1a1a1a', 
-          padding: '1rem', 
-          borderRadius: '4px', 
-          fontFamily: 'monospace', 
-          fontSize: '0.8rem', 
-          height: '250px', 
-          overflowY: 'auto',
-          border: '1px solid #333'
-        }}>
-          {logs.length === 0 ? (
-            <span style={{ color: 'var(--text-secondary)' }}>No logs available.</span>
-          ) : (
-            logs.map((log, i) => (
-              <div key={i} style={{ 
-                color: log.includes('error') || log.includes('Exception') ? '#ff6b6b' : 
-                       log.includes('warning') ? '#feca57' : '#c8d6e5',
-                marginBottom: '0.2rem',
-                lineHeight: 1.4
-              }}>
-                {log}
-              </div>
-            ))
-          )}
-          <div ref={logsEndRef} />
-        </div>
-      </div>
+        <LogConsole
+          logs={logs}
+          loading={loadingLogs}
+          onRefresh={fetchLogs}
+          onClear={clearLogs}
+          downloadFilename="global-log.txt"
+          title="Global API & Init Logs"
+        />
+      </PanelSurface>
     </div>
   );
 };
-

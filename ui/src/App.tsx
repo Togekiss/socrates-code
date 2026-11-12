@@ -1,8 +1,24 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { BrowserRouter, Routes, Route, useNavigate, useSearchParams } from 'react-router-dom';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  BrowserRouter,
+  Routes,
+  Route,
+  Navigate,
+  useNavigate,
+  useSearchParams,
+  useLocation,
+} from 'react-router-dom';
 import { api } from './api';
-import { Database, LogIn, Loader2, AlertCircle, AlertTriangle } from 'lucide-react';
-import { Sidebar, type TabType } from './components/Sidebar';
+import {
+  Database,
+  LogIn,
+  Loader2,
+  AlertCircle,
+  AlertTriangle,
+  PlusCircle,
+} from 'lucide-react';
+import { AppShell } from './components/layout/AppShell';
+import type { TabType } from './components/Sidebar';
 import { StatusTab } from './components/StatusTab';
 import { RunTab } from './components/RunTab';
 import { WritersTab } from './components/WritersTab';
@@ -35,7 +51,7 @@ function AuthCallback() {
     api
       .authDiscord(code)
       .then(res => {
-        if (res.status === 'success') navigate('/', { replace: true });
+        if (res.status === 'success') navigate('/status', { replace: true });
         else setError('Authentication failed. Please try again.');
       })
       .catch(err => {
@@ -45,29 +61,41 @@ function AuthCallback() {
   }, [searchParams, navigate]);
 
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '80vh', padding: '2rem' }}>
-      <div className="glass-panel" style={{ maxWidth: '460px', width: '100%', textAlign: 'center', padding: '3.5rem 2.5rem' }}>
+    <div className="login-container">
+      <div className="glass-panel login-card">
         {error ? (
           <>
-            <AlertCircle size={48} style={{ color: 'var(--danger)', marginBottom: '1.25rem' }} />
-            <h2 style={{ fontSize: '1.35rem', marginBottom: '0.75rem', color: 'var(--text-primary)' }}>Authentication Failed</h2>
-            <p style={{ color: 'var(--text-secondary)', lineHeight: '1.5', marginBottom: '1.75rem', fontSize: '0.95rem' }}>{error}</p>
+            <AlertCircle size={48} className="text-danger" style={{ marginBottom: '1.25rem' }} />
+            <h2 className="login-title">Authentication Failed</h2>
+            <p className="login-desc">{error}</p>
             <button
-              onClick={() => navigate('/', { replace: true })}
-              style={{ padding: '0.65rem 1.5rem', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', borderRadius: '6px', color: 'white', fontWeight: 500 }}
+              type="button"
+              onClick={() => navigate('/status', { replace: true })}
+              className="btn btn-secondary"
             >
               Return to Home
             </button>
           </>
         ) : (
           <>
-            <div style={{ display: 'inline-flex', position: 'relative', marginBottom: '1.5rem' }}>
-              <div style={{ width: '64px', height: '64px', borderRadius: '50%', background: 'rgba(109, 40, 217, 0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid var(--border-color)' }}>
+            <div style={{ display: 'inline-flex', marginBottom: '1.5rem' }}>
+              <div
+                style={{
+                  width: '64px',
+                  height: '64px',
+                  borderRadius: '50%',
+                  background: 'var(--accent-subtle)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  border: '1px solid var(--border-color)',
+                }}
+              >
                 <Loader2 size={32} className="animate-spin" style={{ color: 'var(--accent-secondary)' }} />
               </div>
             </div>
-            <h2 style={{ fontSize: '1.35rem', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>Authenticating with Discord</h2>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem', margin: 0, lineHeight: '1.5' }}>
+            <h2 className="login-title">Authenticating with Discord</h2>
+            <p className="login-desc" style={{ marginBottom: 0 }}>
               Verifying server memberships and setting up your session...
             </p>
           </>
@@ -77,7 +105,15 @@ function AuthCallback() {
   );
 }
 
-function NewBackupTab({ user, onStart, onCancel }: { user: User; onStart: () => void; onCancel: () => void }) {
+function NewBackupTab({
+  user,
+  onStart,
+  onCancel,
+}: {
+  user: User;
+  onStart: () => void;
+  onCancel: () => void;
+}) {
   const [globalConfig, setGlobalConfig] = useState<GlobalConfig | null>(null);
   const [selectedServer, setSelectedServer] = useState<string>('');
 
@@ -87,14 +123,22 @@ function NewBackupTab({ user, onStart, onCancel }: { user: User; onStart: () => 
 
   if (!globalConfig) {
     return (
-      <div className="glass-panel" style={{ textAlign: 'center', padding: '4rem 2rem' }}>
-        <Loader2 size={36} className="animate-spin" style={{ color: 'var(--accent-secondary)', margin: '0 auto 1.25rem auto' }} />
-        <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem' }}>Loading configuration...</p>
+      <div className="panel-surface login-card" style={{ margin: '2rem auto' }}>
+        <Loader2
+          size={36}
+          className="animate-spin"
+          style={{ color: 'var(--accent-secondary)', marginBottom: '1.25rem' }}
+        />
+        <p className="banner-subtitle">Loading configuration...</p>
       </div>
     );
   }
 
-  const servers = user?.authorized_guilds || [];
+  // Deduplicate user.authorized_guilds by s.id to prevent duplicate React keys
+  const servers = Array.from(
+    new Map((user?.authorized_guilds || []).map(g => [String(g.id), g])).values()
+  );
+
   const serverInfo = servers.find(s => s.id === selectedServer);
   const initialConfigForServer =
     selectedServer && serverInfo
@@ -112,21 +156,35 @@ function NewBackupTab({ user, onStart, onCancel }: { user: User; onStart: () => 
       : globalConfig;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+    <div className="flex-col gap-md">
       <div className="glass-panel">
-        <h2 style={{ marginTop: 0, color: 'var(--text-primary)', marginBottom: '1.5rem' }}>Create a New Backup</h2>
+        <h2 style={{ marginTop: 0, color: 'var(--text-primary)', marginBottom: '1.5rem' }}>
+          Create a New Backup
+        </h2>
         <div style={{ marginBottom: '1.5rem' }}>
-          <label style={{ display: 'block', marginBottom: '0.5rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+          <label
+            htmlFor="new-backup-server-select"
+            style={{
+              display: 'block',
+              marginBottom: '0.5rem',
+              color: 'var(--text-secondary)',
+              fontSize: '0.9rem',
+            }}
+          >
             Select a Server to Backup
           </label>
           <select
+            id="new-backup-server-select"
+            name="new_backup_server"
+            className="select"
             value={selectedServer}
             onChange={e => setSelectedServer(e.target.value)}
-            style={{ width: '100%', padding: '0.65rem', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'white', borderRadius: '6px', fontSize: '0.95rem' }}
           >
             <option value="">-- Select a Server --</option>
             {servers.map(s => (
-              <option key={s.id} value={s.id}>{s.name}</option>
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
             ))}
           </select>
         </div>
@@ -148,8 +206,67 @@ function NewBackupTab({ user, onStart, onCancel }: { user: User; onStart: () => 
   );
 }
 
-function Dashboard() {
-  const [activeTab, setActiveTab] = useState<TabType>('status');
+function RequireBackup({
+  backupId,
+  backups,
+  onSelectBackup,
+  children,
+}: {
+  backupId: string | null;
+  backups: BackupInfo[];
+  onSelectBackup: (id: string | null) => void;
+  children: React.ReactNode;
+}) {
+  const navigate = useNavigate();
+
+  if (!backupId) {
+    return (
+      <div className="empty-state">
+        <Database size={48} className="empty-state-icon" />
+        <h3 className="empty-state-title">No Backup Selected</h3>
+        <p className="empty-state-desc">
+          Please select an active backup to explore this section, or create a new backup if you
+          have not set one up yet.
+        </p>
+        {backups.length > 0 ? (
+          <div className="flex-row items-center gap-sm">
+            <select
+              className="select select-sm"
+              value=""
+              onChange={e => onSelectBackup(e.target.value || null)}
+            >
+              <option value="">-- Choose a Backup --</option>
+              {backups.map(b => {
+                const id = b.id || b.backup_id;
+                const label = b.name || b.backup_name || b.server_name || id;
+                return (
+                  <option key={id} value={id}>
+                    {label}
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => navigate('/backups/new')}
+          >
+            <PlusCircle size={16} /> Create New Backup
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  return <>{children}</>;
+}
+
+function AppContent() {
+  const location = useLocation();
+  const navigate = useNavigate();
+
   const [backups, setBackups] = useState<BackupInfo[]>([]);
   const [selectedBackupId, setSelectedBackupId] = useState<string | null>(null);
   const [user, setUser] = useState<User | null>(null);
@@ -158,6 +275,18 @@ function Dashboard() {
   const [backupInfo, setBackupInfo] = useState<BackupInfo | null>(null);
   const [myWriter, setMyWriter] = useState<MyWriter | null>(null);
   const [isUpgrading, setIsUpgrading] = useState(false);
+
+  // If we are currently on the Discord OAuth callback route, let AuthCallback render immediately
+  const isAuthCallback = location.pathname === '/auth/callback';
+
+  const handleSelectBackup = useCallback((id: string | null) => {
+    setSelectedBackupId(id);
+    if (id) {
+      sessionStorage.setItem('socrates_selected_backup', id);
+    } else {
+      sessionStorage.removeItem('socrates_selected_backup');
+    }
+  }, []);
 
   const refreshSummary = useCallback(() => {
     if (!selectedBackupId) {
@@ -195,6 +324,7 @@ function Dashboard() {
     refreshSummary();
   }, [selectedBackupId, refreshSummary]);
 
+  // Initial user authentication and backup validation guard
   useEffect(() => {
     api
       .getMe()
@@ -206,25 +336,57 @@ function Dashboard() {
             .then(data => {
               const list = Array.isArray(data) ? data : [];
               setBackups(list);
-              if (list.length > 0 && !selectedBackupId) {
-                setSelectedBackupId(list[0].id || list[0].backup_id || '');
+
+              // Strictly validate stored backup ID against authorized backups
+              const storedId = sessionStorage.getItem('socrates_selected_backup');
+              const isValidStored = storedId && list.some(b => (b.id || b.backup_id) === storedId);
+
+              if (isValidStored) {
+                setSelectedBackupId(storedId);
+              } else if (list.length > 0) {
+                const fallbackId = list[0].id || list[0].backup_id || null;
+                setSelectedBackupId(fallbackId);
+                if (fallbackId) {
+                  sessionStorage.setItem('socrates_selected_backup', fallbackId);
+                }
+              } else {
+                setSelectedBackupId(null);
+                sessionStorage.removeItem('socrates_selected_backup');
               }
             })
             .catch(console.error);
         } else {
           setUser(null);
           setBackups([]);
+          setSelectedBackupId(null);
+          sessionStorage.removeItem('socrates_selected_backup');
         }
       })
       .catch(() => {
         setUser(null);
         setBackups([]);
+        setSelectedBackupId(null);
+        sessionStorage.removeItem('socrates_selected_backup');
       })
       .finally(() => setIsLoadingAuth(false));
   }, []);
 
   const handleLogin = () => {
     api.getLoginUrl().then(res => res.url && (window.location.href = res.url)).catch(console.error);
+  };
+
+  const handleDevLogin = () => {
+    setIsLoadingAuth(true);
+    api
+      .devLogin()
+      .then(res => {
+        if (res && res.user) {
+          setUser(res.user);
+          window.location.reload();
+        }
+      })
+      .catch(console.error)
+      .finally(() => setIsLoadingAuth(false));
   };
 
   const handleLogout = () => {
@@ -234,6 +396,7 @@ function Dashboard() {
         setUser(null);
         setBackups([]);
         setSelectedBackupId(null);
+        sessionStorage.removeItem('socrates_selected_backup');
         setCurationSummary(null);
         setBackupInfo(null);
         setMyWriter(null);
@@ -241,119 +404,323 @@ function Dashboard() {
       .catch(console.error);
   };
 
+  // Map legacy TabType to new router URL paths
+  const handleNavigateTab = (tab: TabType) => {
+    const pathToTab: Record<TabType, string> = {
+      status: '/status',
+      run: '/system/pipeline',
+      writers: '/writers',
+      characters: '/characters',
+      scenes: '/scenes',
+      chat_sessions: '/sessions',
+      events: '/events',
+      scene_issues: '/curation/issues',
+      flagged_messages: '/curation/flagged',
+      admin: '/system/admin',
+      new_backup: '/backups/new',
+    };
+    navigate(pathToTab[tab] || '/status');
+  };
+
+  // 1. Auth Callback route bypasses loading/login gates
+  if (isAuthCallback) {
+    return <AuthCallback />;
+  }
+
+  // 2. Loading screen guard
   if (isLoadingAuth) {
     return (
-      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh' }}>
-        <div className="glass-panel" style={{ textAlign: 'center', padding: '4rem 2rem' }}>
-          <Loader2 size={36} className="animate-spin" style={{ color: 'var(--accent-secondary)', margin: '0 auto 1.25rem auto' }} />
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem' }}>Checking session...</p>
+      <div className="loading-screen">
+        <div className="panel-surface login-card">
+          <Loader2
+            size={36}
+            className="animate-spin"
+            style={{ color: 'var(--accent-secondary)', marginBottom: '1.25rem' }}
+          />
+          <p className="banner-subtitle">Checking session...</p>
         </div>
       </div>
     );
   }
 
+  // 3. Login gate: unauthenticated users cannot access any protected view
   if (!user) {
     return (
-      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh', padding: '2rem' }}>
-        <div className="glass-panel" style={{ maxWidth: '540px', width: '100%', textAlign: 'center', padding: '4rem 2.5rem' }}>
-          <Database size={56} style={{ color: 'var(--accent-secondary)', marginBottom: '1.5rem', opacity: 0.8 }} />
-          <h1 style={{ fontSize: '1.8rem', marginBottom: '0.75rem', color: 'var(--text-primary)' }}>Welcome to Socrates</h1>
-          <p style={{ color: 'var(--text-secondary)', lineHeight: '1.6', marginBottom: '2rem', fontSize: '0.95rem' }}>
-            Discord chatlog download, parsing, and analysis platform. Please sign in with Discord to access backups and curation queues.
+      <div className="login-container">
+        <div className="glass-panel login-card">
+          <Database
+            size={56}
+            style={{ color: 'var(--accent-secondary)', marginBottom: '1.5rem', opacity: 0.8 }}
+          />
+          <h1 className="login-title">Welcome to Socrates</h1>
+          <p className="login-desc">
+            Discord chatlog download, parsing, and analysis platform. Please sign in with Discord to
+            access backups and curation queues.
           </p>
-          <button
-            onClick={handleLogin}
-            style={{ display: 'inline-flex', alignItems: 'center', gap: '0.75rem', background: 'var(--accent-primary)', color: '#fff', fontWeight: 600, padding: '0.75rem 1.75rem', fontSize: '1rem', borderRadius: '8px', border: 'none', cursor: 'pointer' }}
-          >
-            <LogIn size={20} /> Log in with Discord
-          </button>
+          <div className="flex-col items-center gap-sm">
+            <button
+              type="button"
+              onClick={handleLogin}
+              className="btn btn-primary"
+            >
+              <LogIn size={20} /> Log in with Discord
+            </button>
+            {import.meta.env.DEV && (
+              <button
+                type="button"
+                onClick={handleDevLogin}
+                className="btn btn-secondary btn-sm"
+              >
+                Dev Login (Localhost)
+              </button>
+            )}
+          </div>
         </div>
       </div>
     );
   }
 
+  // 4. Authenticated application shell with full URL routing
   return (
-    <div style={{ display: 'flex', gap: '1.25rem', minHeight: '100vh', position: 'relative' }}>
-      <Sidebar
-        user={user}
-        backups={backups}
-        selectedBackupId={selectedBackupId}
-        onSelectBackup={id => setSelectedBackupId(id)}
-        activeTab={activeTab}
-        onSelectTab={tab => setActiveTab(tab)}
-        curationSummary={curationSummary}
-        backupInfo={backupInfo}
-        onNewBackup={() => setActiveTab('new_backup')}
-        onLogout={handleLogout}
-      />
-
-      <main style={{ flex: 1, minWidth: 0, paddingBottom: '2rem' }}>
-        {backupInfo?.is_schema_outdated && (
-          <div style={{ marginBottom: '1.25rem', padding: '1rem 1.25rem', backgroundColor: 'rgba(239, 68, 68, 0.15)', border: '1px solid var(--danger)', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', color: 'var(--text-primary)' }}>
-              <AlertTriangle size={24} style={{ color: 'var(--danger)', flexShrink: 0 }} />
-              <div>
-                <strong>Database schema is outdated:</strong> Backup database is schema v{backupInfo.schema_version ?? 0}, but the application requires v{backupInfo.current_schema_version ?? 5}. Please upgrade the database.
-              </div>
+    <AppShell
+      user={user}
+      backups={backups}
+      selectedBackupId={selectedBackupId}
+      onSelectBackup={handleSelectBackup}
+      curationSummary={curationSummary}
+      backupInfo={backupInfo}
+      onLogout={handleLogout}
+      onNewBackup={() => navigate('/backups/new')}
+    >
+      {backupInfo?.is_schema_outdated && (
+        <div className="banner-danger">
+          <div className="banner-content">
+            <AlertTriangle size={22} className="flex-shrink-0" />
+            <div>
+              <strong>Database schema is outdated:</strong> Backup database is schema v
+              {backupInfo.schema_version ?? 0}, but the application requires v
+              {backupInfo.current_schema_version ?? 5}. Please upgrade the database.
             </div>
-            <button
-              onClick={handleUpgradeDatabase}
-              disabled={isUpgrading}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', backgroundColor: 'var(--danger)', color: '#fff', border: 'none', padding: '0.5rem 1rem', borderRadius: '6px', fontWeight: 600, cursor: isUpgrading ? 'not-allowed' : 'pointer', opacity: isUpgrading ? 0.7 : 1 }}
-            >
-              {isUpgrading && <Loader2 size={16} className="animate-spin" />}
-              {isUpgrading ? 'Upgrading Database...' : 'Upgrade Database Now'}
-            </button>
           </div>
-        )}
-        <ErrorBoundary fallbackTab={() => setActiveTab('status')}>
-          {activeTab === 'new_backup' && (
-            <NewBackupTab
-              user={user}
-              onStart={() => {
-                setTimeout(() => api.getBackups().then(data => Array.isArray(data) && setBackups(data)).catch(console.error), 1000);
-                setActiveTab('status');
-              }}
-              onCancel={() => setActiveTab('status')}
-            />
-          )}
-          {activeTab === 'status' && (
-            <StatusTab backupId={selectedBackupId} setTab={t => setActiveTab(t)} curationSummary={curationSummary} backupInfo={backupInfo} onUpgrade={handleUpgradeDatabase} isUpgrading={isUpgrading} />
-          )}
-          {activeTab === 'run' && selectedBackupId && <RunTab backupId={selectedBackupId} onRefreshSummary={refreshSummary} />}
-          {activeTab === 'writers' && selectedBackupId && <WritersTab backupId={selectedBackupId} onRefreshSummary={refreshSummary} />}
-          {activeTab === 'characters' && selectedBackupId && (
-            <CharactersTab backupId={selectedBackupId} myWriter={myWriter} onNavigateToWriters={() => setActiveTab('writers')} />
-          )}
-          {activeTab === 'scenes' && selectedBackupId && (
-            <ScenesTab backupId={selectedBackupId} myWriter={myWriter} onNavigateToWriters={() => setActiveTab('writers')} />
-          )}
-          {activeTab === 'chat_sessions' && selectedBackupId && (
-            <ChatSessionsTab backupId={selectedBackupId} myWriter={myWriter} onNavigateToWriters={() => setActiveTab('writers')} />
-          )}
-          {activeTab === 'events' && selectedBackupId && (
-            <EventsTab backupId={selectedBackupId} myWriter={myWriter} onNavigateToWriters={() => setActiveTab('writers')} onRefreshSummary={refreshSummary} />
-          )}
-          {activeTab === 'scene_issues' && selectedBackupId && (
-            <SceneIssuesTab backupId={selectedBackupId} onRefreshSummary={refreshSummary} />
-          )}
-          {activeTab === 'flagged_messages' && selectedBackupId && (
-            <FlaggedMessagesTab backupId={selectedBackupId} onRefreshSummary={refreshSummary} />
-          )}
-          {activeTab === 'admin' && <AdminTab onRefreshSummary={refreshSummary} />}
-        </ErrorBoundary>
-      </main>
-    </div>
+          <button
+            type="button"
+            className="btn btn-danger btn-sm"
+            onClick={handleUpgradeDatabase}
+            disabled={isUpgrading}
+          >
+            {isUpgrading && <Loader2 size={16} className="animate-spin" />}
+            {isUpgrading ? 'Upgrading Database...' : 'Upgrade Database Now'}
+          </button>
+        </div>
+      )}
+
+      <ErrorBoundary fallbackTab={() => navigate('/status')}>
+        <Routes>
+          <Route path="/" element={<Navigate to="/status" replace />} />
+          <Route
+            path="/status"
+            element={
+              <RequireBackup
+                backupId={selectedBackupId}
+                backups={backups}
+                onSelectBackup={handleSelectBackup}
+              >
+                <StatusTab
+                  backupId={selectedBackupId}
+                  setTab={handleNavigateTab}
+                  curationSummary={curationSummary}
+                  backupInfo={backupInfo}
+                  onUpgrade={handleUpgradeDatabase}
+                  isUpgrading={isUpgrading}
+                />
+              </RequireBackup>
+            }
+          />
+          <Route
+            path="/characters"
+            element={
+              <RequireBackup
+                backupId={selectedBackupId}
+                backups={backups}
+                onSelectBackup={handleSelectBackup}
+              >
+                <CharactersTab
+                  backupId={selectedBackupId!}
+                  myWriter={myWriter}
+                  onNavigateToWriters={() => navigate('/writers')}
+                />
+              </RequireBackup>
+            }
+          />
+          <Route
+            path="/writers"
+            element={
+              <RequireBackup
+                backupId={selectedBackupId}
+                backups={backups}
+                onSelectBackup={handleSelectBackup}
+              >
+                <WritersTab
+                  backupId={selectedBackupId!}
+                  onRefreshSummary={refreshSummary}
+                />
+              </RequireBackup>
+            }
+          />
+          <Route
+            path="/scenes"
+            element={
+              <RequireBackup
+                backupId={selectedBackupId}
+                backups={backups}
+                onSelectBackup={handleSelectBackup}
+              >
+                <ScenesTab
+                  backupId={selectedBackupId!}
+                  myWriter={myWriter}
+                  onNavigateToWriters={() => navigate('/writers')}
+                />
+              </RequireBackup>
+            }
+          />
+          <Route
+            path="/sessions"
+            element={
+              <RequireBackup
+                backupId={selectedBackupId}
+                backups={backups}
+                onSelectBackup={handleSelectBackup}
+              >
+                <ChatSessionsTab
+                  backupId={selectedBackupId!}
+                  myWriter={myWriter}
+                  onNavigateToWriters={() => navigate('/writers')}
+                />
+              </RequireBackup>
+            }
+          />
+          <Route
+            path="/events"
+            element={
+              <RequireBackup
+                backupId={selectedBackupId}
+                backups={backups}
+                onSelectBackup={handleSelectBackup}
+              >
+                <EventsTab
+                  backupId={selectedBackupId!}
+                  myWriter={myWriter}
+                  onNavigateToWriters={() => navigate('/writers')}
+                  onRefreshSummary={refreshSummary}
+                />
+              </RequireBackup>
+            }
+          />
+          <Route
+            path="/curation/issues"
+            element={
+              <RequireBackup
+                backupId={selectedBackupId}
+                backups={backups}
+                onSelectBackup={handleSelectBackup}
+              >
+                <SceneIssuesTab
+                  backupId={selectedBackupId!}
+                  onRefreshSummary={refreshSummary}
+                />
+              </RequireBackup>
+            }
+          />
+          <Route
+            path="/curation/flagged"
+            element={
+              <RequireBackup
+                backupId={selectedBackupId}
+                backups={backups}
+                onSelectBackup={handleSelectBackup}
+              >
+                <FlaggedMessagesTab
+                  backupId={selectedBackupId!}
+                  onRefreshSummary={refreshSummary}
+                />
+              </RequireBackup>
+            }
+          />
+          <Route
+            path="/system/pipeline"
+            element={
+              <RequireBackup
+                backupId={selectedBackupId}
+                backups={backups}
+                onSelectBackup={handleSelectBackup}
+              >
+                <RunTab
+                  backupId={selectedBackupId!}
+                  onRefreshSummary={refreshSummary}
+                />
+              </RequireBackup>
+            }
+          />
+          <Route
+            path="/system/admin"
+            element={
+              user.admin !== false ? (
+                <AdminTab onRefreshSummary={refreshSummary} />
+              ) : (
+                <div className="empty-state">
+                  <AlertTriangle
+                    size={48}
+                    className="empty-state-icon"
+                    style={{ color: 'var(--warning)' }}
+                  />
+                  <h3 className="empty-state-title">Administrator Access Required</h3>
+                  <p className="empty-state-desc">
+                    You must be an administrator to access system admin operations and global logs.
+                  </p>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => navigate('/status')}
+                  >
+                    Return to Status
+                  </button>
+                </div>
+              )
+            }
+          />
+          <Route
+            path="/backups/new"
+            element={
+              <NewBackupTab
+                user={user}
+                onStart={() => {
+                  setTimeout(() => {
+                    api
+                      .getBackups()
+                      .then(data => {
+                        if (Array.isArray(data)) {
+                          setBackups(data);
+                        }
+                      })
+                      .catch(console.error);
+                  }, 1000);
+                  navigate('/status');
+                }}
+                onCancel={() => navigate('/status')}
+              />
+            }
+          />
+          <Route path="*" element={<Navigate to="/status" replace />} />
+        </Routes>
+      </ErrorBoundary>
+    </AppShell>
   );
 }
 
 export default function App() {
   return (
     <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Dashboard />} />
-        <Route path="/auth/callback" element={<AuthCallback />} />
-      </Routes>
+      <AppContent />
     </BrowserRouter>
   );
 }

@@ -15,14 +15,14 @@ export const BackupForm = ({
   isModal = false,
 }: {
   backupId: string;
-  initialConfig: any;
+  initialConfig: BackupConfig | null;
   globalConfig: GlobalConfig | null;
   onStart: () => void;
   onCancel: () => void;
   onSave?: (savedConfig: BackupConfig) => void;
   isModal?: boolean;
 }) => {
-  const [config, setConfig] = useState<any>(() => {
+  const [config, setConfig] = useState<BackupConfig | null>(() => {
     const cfg = initialConfig || globalConfig;
     if (cfg && cfg.admin && !cfg.admin.backupName) {
       return { ...cfg, admin: { ...cfg.admin, backupName: cfg.admin.serverName } };
@@ -60,7 +60,7 @@ export const BackupForm = ({
     if (matchBackupName) {
       const safe = 'Backups/' + (admin.backupName || admin.serverName || 'Unnamed').replace(/[^a-zA-Z0-9_-]/g, '_');
       if (admin.path !== safe) {
-        setConfig((prev: any) => ({ ...prev, admin: { ...prev.admin, path: safe } }));
+        setConfig((prev: BackupConfig | null) => ({ ...(prev || {}), admin: { ...(prev?.admin || {}), path: safe } }));
       }
     }
   }, [matchBackupName, admin.backupName, admin.serverName, admin.path]);
@@ -85,7 +85,7 @@ export const BackupForm = ({
           setServerCategories(Object.entries(res).map(([id, name]) => ({ id, name: String(name) })));
         }
       })
-      .catch((err: any) => {
+      .catch((err: unknown) => {
         console.error(err);
         setCategoriesError('Failed to fetch server categories');
       })
@@ -93,30 +93,32 @@ export const BackupForm = ({
   }, [admin.serverId]);
 
   const handleSaveOnly = async () => {
+    if (!config) return;
     setIsSaving(true);
     setSaveError(null);
     try {
       await api.updateBackupConfig(backupId, config);
       if (onSave) onSave(config);
       else onCancel();
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Failed to save config:', err);
-      setSaveError(err.message || 'Failed to save configuration');
+      setSaveError(err instanceof Error ? err.message : 'Failed to save configuration');
     } finally {
       setIsSaving(false);
     }
   };
 
   const handleSaveAndRun = async () => {
+    if (!config) return;
     setIsSaving(true);
     setSaveError(null);
     try {
       if (backupId === 'New Backup') await api.createNewBackup(config);
       else await api.runBackup(backupId, config);
       onStart();
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Failed to start backup:', err);
-      setSaveError(err.message || 'Failed to start backup');
+      setSaveError(err instanceof Error ? err.message : 'Failed to start backup');
       setIsSaving(false);
     }
   };
@@ -214,11 +216,12 @@ export const BackupForm = ({
 
   const inputStyle: React.CSSProperties = {
     width: '100%',
-    padding: '0.5rem',
+    padding: '0.5rem 0.75rem',
     background: 'var(--bg-tertiary)',
     border: '1px solid var(--border-color)',
-    color: 'white',
-    borderRadius: '4px',
+    color: 'var(--text-primary)',
+    borderRadius: 'var(--radius-sm)',
+    fontSize: '0.875rem',
   };
 
   const formFields = (
@@ -236,7 +239,7 @@ export const BackupForm = ({
 
         <div>
           <label style={{ display: 'block', marginBottom: '0.25rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Server ID</label>
-          <input type="text" disabled value={admin.serverId || ''} style={{ ...inputStyle, color: 'gray' }} />
+          <input type="text" disabled value={admin.serverId || ''} style={{ ...inputStyle, color: 'var(--text-muted)' }} />
         </div>
       </div>
 
@@ -256,7 +259,7 @@ export const BackupForm = ({
           style={{
             ...inputStyle,
             border: `1px solid ${pathConflict ? 'var(--danger)' : 'var(--border-color)'}`,
-            color: matchBackupName ? 'gray' : 'white',
+            color: matchBackupName ? 'var(--text-muted)' : 'var(--text-primary)',
           }}
         />
         {pathConflict && (
@@ -352,25 +355,27 @@ export const BackupForm = ({
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
         {saveError && (
-          <div style={{ background: 'rgba(239, 68, 68, 0.15)', border: '1px solid var(--danger)', color: 'var(--danger)', padding: '0.75rem', borderRadius: '4px', fontSize: '0.85rem' }}>
+          <div className="banner-danger">
             {saveError}
           </div>
         )}
         {formFields}
 
-        <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>
+        <div className="flex-row gap-sm items-center mt-md">
           <button
+            type="button"
             onClick={handleSaveAndRun}
             disabled={isSaving}
-            style={{ padding: '0.5rem 1.5rem', background: 'var(--accent-primary)', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 600, cursor: isSaving ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+            className="btn btn-primary"
           >
             {isSaving && <Loader2 size={16} className="animate-spin" />}
             Start backup
           </button>
           <button
+            type="button"
             onClick={onCancel}
             disabled={isSaving}
-            style={{ padding: '0.5rem 1.5rem', background: 'transparent', color: 'var(--text-primary)', border: '1px solid var(--border-color)', borderRadius: '6px', cursor: 'pointer' }}
+            className="btn btn-secondary"
           >
             Cancel
           </button>

@@ -11,9 +11,71 @@ from db.models import (
     WriterModel,
     WriterAliasModel,
     SceneParticipantModel,
+    SceneModel,
+    ChannelModel,
 )
 from db.snapshots import export_character_list_snapshot
 from utils import tricks as t
+
+
+def get_character_activity_stats(
+    session: Any, backup_id: str
+) -> Tuple[Dict[int, Dict[str, Any]], Dict[int, Dict[str, Any]]]:
+    """
+    Computes activity statistics for all characters in a backup:
+    - scene_count: number of distinct scenes/sessions/events participated in
+    - last_active_at: ISO string of latest participation timestamp
+    - last_channel_name: name of the ChannelModel from the character's most recent scene participation
+    Returns a tuple of (stats_by_char_pk, stats_by_char_id).
+    """
+    stats_by_pk: Dict[int, Dict[str, Any]] = {}
+    stats_by_id: Dict[int, Dict[str, Any]] = {}
+    try:
+        active_ts = func.coalesce(SceneParticipantModel.last_at, SceneModel.end_at)
+        subq = (
+            session.query(
+                SceneParticipantModel.character_pk.label("char_pk"),
+                CharacterModel.char_id.label("char_id"),
+                active_ts.label("active_at"),
+                ChannelModel.name.label("channel_name"),
+                func.count(SceneParticipantModel.scene_pk).over(
+                    partition_by=SceneParticipantModel.character_pk
+                ).label("scene_count"),
+                func.row_number().over(
+                    partition_by=SceneParticipantModel.character_pk,
+                    order_by=(active_ts.desc(), SceneModel.pk.desc())
+                ).label("rn")
+            )
+            .join(CharacterModel, SceneParticipantModel.character_pk == CharacterModel.pk)
+            .join(SceneModel, SceneParticipantModel.scene_pk == SceneModel.pk)
+            .join(ChannelModel, SceneModel.channel_pk == ChannelModel.pk)
+            .filter(SceneModel.backup_id == str(backup_id))
+            .subquery()
+        )
+        rows = (
+            session.query(
+                subq.c.char_pk,
+                subq.c.char_id,
+                subq.c.scene_count,
+                subq.c.active_at,
+                subq.c.channel_name,
+            )
+            .filter(subq.c.rn == 1)
+            .all()
+        )
+        for r in rows:
+            iso_str = r.active_at.isoformat() if hasattr(r.active_at, "isoformat") else (str(r.active_at) if r.active_at else None)
+            item = {
+                "scene_count": int(r.scene_count) if r.scene_count else 0,
+                "last_active_at": iso_str,
+                "last_channel_name": str(r.channel_name) if r.channel_name else None,
+            }
+            stats_by_pk[r.char_pk] = item
+            stats_by_id[r.char_id] = item
+    except Exception as e:
+        t.log("debug", f"Could not load character activity stats for {backup_id}: {e}")
+
+    return stats_by_pk, stats_by_id
 
 
 def get_character_count(backup_id: str, base_path: str) -> int:
@@ -23,6 +85,15 @@ def get_character_count(backup_id: str, base_path: str) -> int:
         return session.query(func.count(CharacterModel.pk)).filter(
             CharacterModel.backup_id == str(backup_id),
             CharacterModel.parent_pk.is_(None)
+        ).scalar() or 0
+
+
+def get_writer_count(backup_id: str, base_path: str) -> int:
+    """Returns the total number of writers in SQLite."""
+    require_sqlite_db(base_path)
+    with db_session(backup_id=backup_id, backup_path=base_path) as session:
+        return session.query(func.count(WriterModel.pk)).filter(
+            WriterModel.backup_id == str(backup_id)
         ).scalar() or 0
 
 
@@ -63,8 +134,22 @@ def get_characters(
                 return [] if format_type == "legacy" else {"writers": [], "groups": [], "characters": []}
             target_writer_pk = w_obj[0]
 
+        stats_by_pk, stats_by_id = get_character_activity_stats(session, backup_id)
+
         if format_type in ("normalized", "db"):
             data = export_character_list_snapshot(session, backup_id, write_to_disk=False)
+            for c_entry in data.get("characters", []):
+                cid = c_entry.get("char_id")
+                st = stats_by_id.get(cid, {"scene_count": 0, "last_active_at": None, "last_channel_name": None})
+                c_entry["scene_count"] = st["scene_count"]
+                c_entry["last_active_at"] = st["last_active_at"]
+                c_entry["last_channel_name"] = st["last_channel_name"]
+                for tup in c_entry.get("tuppers", []):
+                    t_cid = tup.get("char_id")
+                    t_st = stats_by_id.get(t_cid, {"scene_count": 0, "last_active_at": None, "last_channel_name": None})
+                    tup["scene_count"] = t_st["scene_count"]
+                    tup["last_active_at"] = t_st["last_active_at"]
+                    tup["last_channel_name"] = t_st["last_channel_name"]
             if target_writer_pk is not None:
                 data["characters"] = [c for c in data.get("characters", []) if c.get("writer_id") == target_writer_pk]
             return data
@@ -120,20 +205,28 @@ def get_characters(
                 if child.activity: child_tags.append(child.activity)
                 if child.version_type: child_tags.append(child.version_type)
 
+                child_st = stats_by_pk.get(child.pk, {"scene_count": 0, "last_active_at": None, "last_channel_name": None})
                 other_versions.append({
                     "id": child.char_id,
                     "names": child_names,
                     "writer": child_writer,
                     "tags": child_tags,
                     "other_versions": [],
+                    "scene_count": child_st["scene_count"],
+                    "last_active_at": child_st["last_active_at"],
+                    "last_channel_name": child_st["last_channel_name"],
                 })
 
+            c_st = stats_by_pk.get(c.pk, {"scene_count": 0, "last_active_at": None, "last_channel_name": None})
             results.append({
                 "id": c.char_id,
                 "names": names,
                 "writer": writer_list,
                 "tags": tags,
                 "other_versions": other_versions,
+                "scene_count": c_st["scene_count"],
+                "last_active_at": c_st["last_active_at"],
+                "last_channel_name": c_st["last_channel_name"],
             })
 
         return results

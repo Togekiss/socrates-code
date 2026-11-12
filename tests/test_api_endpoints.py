@@ -180,8 +180,14 @@ class TestCharactersEndpoints(unittest.TestCase):
         self.assertEqual(len(chars), 20)
 
         sample = chars[0]
-        for key in ("id", "names", "writer", "tags", "other_versions"):
+        for key in ("id", "names", "writer", "tags", "other_versions", "scene_count", "last_active_at", "last_channel_name"):
             self.assertIn(key, sample)
+
+        # Check other_versions has activity stats
+        for c in chars:
+            for child in c.get("other_versions", []):
+                for key in ("id", "names", "scene_count", "last_active_at", "last_channel_name"):
+                    self.assertIn(key, child)
 
     def test_get_characters_normalized_format(self):
         norm = get_characters("1791895360", format="normalized")
@@ -190,6 +196,23 @@ class TestCharactersEndpoints(unittest.TestCase):
         self.assertIn("groups", norm)
         self.assertIn("characters", norm)
         self.assertEqual(len(norm["characters"]), 20)
+        sample = norm["characters"][0]
+        for key in ("char_id", "names", "scene_count", "last_active_at", "last_channel_name"):
+            self.assertIn(key, sample)
+
+    def test_dev_login_deduplicates_authorized_guilds(self):
+        from server import dev_login
+        from unittest.mock import MagicMock
+        from fastapi import Response, Request
+
+        mock_resp = Response()
+        mock_req = MagicMock(spec=Request)
+        mock_req.headers = {}
+        res = dev_login(mock_resp, mock_req)
+        self.assertEqual(res["status"], "success")
+        guilds = res["user"]["authorized_guilds"]
+        guild_ids = [g["id"] for g in guilds]
+        self.assertEqual(len(guild_ids), len(set(guild_ids)), "Guild IDs must be deduplicated in dev_login")
 
     def test_get_writers(self):
         writers = get_writers("1791895360")
@@ -580,6 +603,19 @@ class TestBackupConfigEndpoints(unittest.TestCase):
         self.assertIsInstance(logs_res, dict)
         self.assertIn("lines", logs_res)
         self.assertIsInstance(logs_res["lines"], list)
+
+    def test_dev_login_endpoint(self):
+        # pyrefly: ignore [missing-import]
+        from server import dev_login
+        from fastapi import Response
+        from unittest.mock import MagicMock
+        mock_req = MagicMock()
+        mock_req.headers = {}
+        resp = Response()
+        res = dev_login(resp, mock_req)
+        self.assertEqual(res["status"], "success")
+        self.assertIn("user", res)
+        self.assertIn("authorized_guilds", res["user"])
 
     def test_admin_reset_and_migrate_testing_backup(self):
         reset_res = reset_testing_backup()

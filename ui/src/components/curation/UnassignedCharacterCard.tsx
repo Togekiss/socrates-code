@@ -1,5 +1,7 @@
 import React from 'react';
+import { UserPlus } from 'lucide-react';
 import type { UnassignedCharacter } from '../../types';
+import { DataCard, Button, Badge } from '../ui';
 
 interface UnassignedCharacterCardProps {
   char: UnassignedCharacter;
@@ -13,39 +15,30 @@ export const UnassignedCharacterCard: React.FC<UnassignedCharacterCardProps> = (
   const charName = char.name || char.names?.[0] || `Character #${char.id}`;
 
   return (
-    <div
-      className="glass-panel"
-      style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        padding: '1rem',
-      }}
-    >
-      <div>
-        <div style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: '0.95rem' }}>
+    <DataCard className="flex-row items-center justify-between" style={{ padding: '0.85rem 1rem' }}>
+      <div className="flex-col gap-xs">
+        <span style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: '0.95rem' }}>
           {charName}
-        </div>
-        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
-          ID: #{char.id} {char.origin ? `• ${char.origin}` : ''}
+        </span>
+        <div className="flex-row items-center gap-xs">
+          <Badge variant="neutral">ID: #{char.id}</Badge>
+          {char.origin && <span className="form-hint">• {char.origin}</span>}
+          {char.scene_count != null && (
+            <Badge variant="accent">
+              {char.scene_count} {char.scene_count === 1 ? 'scene' : 'scenes'}
+            </Badge>
+          )}
         </div>
       </div>
 
-      <button
+      <Button
+        variant="primary"
+        size="xs"
         onClick={() => onAssign(char)}
-        style={{
-          padding: '0.35rem 0.75rem',
-          background: 'var(--accent-primary)',
-          color: '#fff',
-          border: 'none',
-          borderRadius: '4px',
-          fontSize: '0.8rem',
-          fontWeight: 600,
-          cursor: 'pointer',
-        }}
+        icon={<UserPlus size={13} />}
       >
         Assign Writer
-      </button>
-    </div>
+      </Button>
+    </DataCard>
   );
 };

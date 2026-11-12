@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { X, Loader2 } from 'lucide-react';
+import { X, Users, AlertTriangle } from 'lucide-react';
 import { api } from '../../api';
 import type { Character, CharacterGroup } from '../../types';
+import { Modal, ChipInput, Button, Badge } from '../ui';
 
 interface CharacterEditModalProps {
   backupId: string;
@@ -11,104 +12,6 @@ interface CharacterEditModalProps {
   onClose: () => void;
   onSaved: () => void;
 }
-
-const ChipInput = ({
-  values,
-  onChange,
-  label,
-  tooltip,
-}: {
-  values: string[];
-  onChange: (vals: string[]) => void;
-  label: string;
-  tooltip?: string;
-}) => {
-  const [input, setInput] = useState('');
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && input.trim()) {
-      e.preventDefault();
-      if (!values.includes(input.trim())) {
-        onChange([...values, input.trim()]);
-      }
-      setInput('');
-    }
-  };
-
-  const removeValue = (val: string) => {
-    onChange(values.filter(v => v !== val));
-  };
-
-  return (
-    <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem' }}>
-        <label style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: 600 }}>{label}</label>
-        {tooltip && (
-          <span title={tooltip} style={{ cursor: 'help', color: 'var(--accent-secondary)', fontSize: '0.8rem' }}>
-            ?
-          </span>
-        )}
-      </div>
-      <div
-        style={{
-          background: 'var(--bg-tertiary)',
-          border: '1px solid var(--border-color)',
-          padding: '0.5rem',
-          borderRadius: '6px',
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: '0.4rem',
-        }}
-      >
-        {values.map(v => (
-          <div
-            key={v}
-            style={{
-              background: 'var(--bg-secondary)',
-              padding: '0.2rem 0.5rem',
-              borderRadius: '4px',
-              fontSize: '0.85rem',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.25rem',
-              border: '1px solid var(--border-color)',
-            }}
-          >
-            {v}
-            <button
-              onClick={() => removeValue(v)}
-              style={{
-                background: 'transparent',
-                border: 'none',
-                color: 'var(--text-secondary)',
-                cursor: 'pointer',
-                display: 'flex',
-                padding: 0,
-              }}
-            >
-              <X size={12} />
-            </button>
-          </div>
-        ))}
-        <input
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Type and press Enter..."
-          style={{
-            flex: 1,
-            background: 'transparent',
-            border: 'none',
-            color: 'white',
-            outline: 'none',
-            minWidth: '150px',
-            fontSize: '0.85rem',
-          }}
-        />
-      </div>
-    </div>
-  );
-};
 
 export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
   backupId,
@@ -166,8 +69,8 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
       const refreshedGroups = await api.getGroups(backupId);
       setGroups(refreshedGroups);
       onSaved();
-    } catch (err: any) {
-      setError(err.message || 'Failed to join group.');
+    } catch (err: unknown) {
+      setError((err as Error).message || 'Failed to join group.');
     } finally {
       setUpdatingGroup(false);
     }
@@ -184,8 +87,8 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
       setGroups(refreshedGroups);
       setSelectedGroupId('');
       onSaved();
-    } catch (err: any) {
-      setError(err.message || 'Failed to leave group.');
+    } catch (err: unknown) {
+      setError((err as Error).message || 'Failed to leave group.');
     } finally {
       setUpdatingGroup(false);
     }
@@ -210,8 +113,8 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
       await api.mergeCharacters(backupId, character.id, targetId);
       onSaved();
       onClose();
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e: unknown) {
+      setError((e as Error).message);
       setSaving(false);
     }
   };
@@ -223,8 +126,8 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
       await api.nestCharacter(backupId, character.id, targetId, versionType);
       onSaved();
       onClose();
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e: unknown) {
+      setError((e as Error).message);
       setSaving(false);
     }
   };
@@ -249,8 +152,8 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
       await api.updateCharacter(backupId, character.id, { tags, names, writer });
       onSaved();
       onClose();
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e: unknown) {
+      setError((e as Error).message);
       setSaving(false);
     }
   };
@@ -262,8 +165,8 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
       await api.unnestCharacter(backupId, character.id);
       onSaved();
       onClose();
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e: unknown) {
+      setError((e as Error).message);
       setSaving(false);
     }
   };
@@ -271,524 +174,285 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
   const hasNested = character.versions && character.versions.length > 0;
   const isNested = Boolean(parentCharacter);
 
+  const modalFooter = (
+    <div className="flex-row items-center justify-end gap-sm">
+      <Button variant="ghost" onClick={onClose} disabled={saving}>
+        Cancel
+      </Button>
+      <Button variant="primary" onClick={handleSave} loading={saving}>
+        Save Changes
+      </Button>
+    </div>
+  );
+
   return (
-    <div
-      style={{
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        background: 'rgba(0,0,0,0.75)',
-        zIndex: 100,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        backdropFilter: 'blur(4px)',
-      }}
-      onClick={e => {
-        if (e.target === e.currentTarget && !saving) onClose();
-      }}
+    <Modal
+      isOpen={true}
+      onClose={onClose}
+      title={`Edit Character #${character.id}`}
+      size="lg"
+      footer={modalFooter}
     >
-      <div
-        style={{
-          background: 'var(--bg-primary)',
-          width: '600px',
-          maxWidth: '92vw',
-          maxHeight: '90vh',
-          borderRadius: '12px',
-          border: '1px solid var(--border-color)',
-          display: 'flex',
-          flexDirection: 'column',
-          boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)',
-        }}
-      >
-        <div
-          style={{
-            padding: '1rem 1.25rem',
-            borderBottom: '1px solid var(--border-color)',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-          }}
-        >
-          <h2 style={{ margin: 0, fontSize: '1.2rem', color: 'var(--text-primary)' }}>
-            Edit Character (ID: {character.id})
-          </h2>
-          <button
-            onClick={onClose}
-            disabled={saving}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: 'var(--text-secondary)',
-              cursor: 'pointer',
-              display: 'flex',
-            }}
-          >
-            <X size={20} />
-          </button>
-        </div>
+      <div className="flex-col gap-md">
+        {error && (
+          <div className="banner-danger">
+            <AlertTriangle size={16} />
+            <span>{error}</span>
+          </div>
+        )}
 
-        <div
-          style={{
-            padding: '1.25rem',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '1.25rem',
-            overflowY: 'auto',
-          }}
-        >
-          {error && (
-            <div
-              style={{
-                background: 'rgba(239, 68, 68, 0.15)',
-                color: 'var(--danger)',
-                border: '1px solid var(--danger)',
-                padding: '0.75rem 1rem',
-                borderRadius: '6px',
-                fontSize: '0.9rem',
-              }}
-            >
-              {error}
-            </div>
-          )}
+        <ChipInput
+          label="Names & Aliases"
+          values={names}
+          onChange={setNames}
+          placeholder="Type alias and press Enter..."
+        />
 
-          <ChipInput
-            label="Names & Aliases"
-            values={names}
-            onChange={setNames}
-            tooltip="Name variations, nicknames, or alternate spellings for search."
-          />
+        <ChipInput
+          label="Writer"
+          values={writer}
+          onChange={setWriter}
+          placeholder="Type writer username and press Enter..."
+        />
 
-          <ChipInput
-            label="Writer"
-            values={writer}
-            onChange={setWriter}
-            tooltip="Aliases or usernames of the writer associated with this character."
-          />
-
-          {/* Tags */}
-          <div>
-            <label
-              style={{
-                display: 'block',
-                fontSize: '0.85rem',
-                color: 'var(--text-secondary)',
-                marginBottom: '0.4rem',
-                fontWeight: 600,
-              }}
-            >
-              Tags
-            </label>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <span style={{ width: '70px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>Status:</span>
+        {/* Tags */}
+        <div className="form-group">
+          <label className="form-label">Classification Tags</label>
+          <div className="flex-col gap-xs">
+            <div className="flex-row items-center gap-sm">
+              <span className="form-hint" style={{ width: '60px' }}>Status:</span>
+              <div className="flex-row items-center gap-xs">
                 {['active', 'inactive'].map(tag => (
-                  <button
+                  <Button
                     key={tag}
-                    type="button"
+                    variant={tags.includes(tag) ? 'primary' : 'secondary'}
+                    size="xs"
                     onClick={() => toggleTag(tag, ['active', 'inactive'])}
-                    style={{
-                      padding: '0.2rem 0.55rem',
-                      borderRadius: '4px',
-                      border: '1px solid var(--border-color)',
-                      background: tags.includes(tag) ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
-                      color: tags.includes(tag) ? '#fff' : 'var(--text-secondary)',
-                      fontSize: '0.8rem',
-                    }}
                   >
                     {tag}
-                  </button>
+                  </Button>
                 ))}
               </div>
+            </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <span style={{ width: '70px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>Canon:</span>
+            <div className="flex-row items-center gap-sm">
+              <span className="form-hint" style={{ width: '60px' }}>Canon:</span>
+              <div className="flex-row items-center gap-xs">
                 {['canon', 'oc'].map(tag => (
-                  <button
+                  <Button
                     key={tag}
-                    type="button"
+                    variant={tags.includes(tag) ? 'primary' : 'secondary'}
+                    size="xs"
                     onClick={() => toggleTag(tag, ['canon', 'oc'])}
-                    style={{
-                      padding: '0.2rem 0.55rem',
-                      borderRadius: '4px',
-                      border: '1px solid var(--border-color)',
-                      background: tags.includes(tag) ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
-                      color: tags.includes(tag) ? '#fff' : 'var(--text-secondary)',
-                      fontSize: '0.8rem',
-                    }}
                   >
                     {tag}
-                  </button>
+                  </Button>
                 ))}
               </div>
+            </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <span style={{ width: '70px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>Type:</span>
+            <div className="flex-row items-center gap-sm">
+              <span className="form-hint" style={{ width: '60px' }}>Type:</span>
+              <div className="flex-row items-center gap-xs flex-wrap">
                 {['npc', 'familiar', 'alter_ego'].map(tag => (
-                  <button
+                  <Button
                     key={tag}
-                    type="button"
+                    variant={tags.includes(tag) ? 'primary' : 'secondary'}
+                    size="xs"
                     onClick={() => toggleTag(tag, ['npc', 'familiar', 'alter_ego'])}
-                    style={{
-                      padding: '0.2rem 0.55rem',
-                      borderRadius: '4px',
-                      border: '1px solid var(--border-color)',
-                      background: tags.includes(tag) ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
-                      color: tags.includes(tag) ? '#fff' : 'var(--text-secondary)',
-                      fontSize: '0.8rem',
-                    }}
                   >
                     {tag.replace('_', ' ')}
-                  </button>
+                  </Button>
                 ))}
               </div>
             </div>
           </div>
+        </div>
 
-          {/* Group Membership */}
-          <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
-            <label
-              style={{
-                display: 'block',
-                fontSize: '0.85rem',
-                color: 'var(--text-secondary)',
-                marginBottom: '0.4rem',
-                fontWeight: 600,
-              }}
-            >
-              Character Group Membership
-            </label>
-            {currentAssignedGroup ? (
-              <div
-                style={{
-                  background: 'var(--bg-tertiary)',
-                  border: '1px solid var(--border-color)',
-                  padding: '0.75rem',
-                  borderRadius: '6px',
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                }}
-              >
-                <div>
-                  <div style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: '0.9rem' }}>
-                    {currentAssignedGroup.names?.[0] || `Group #${currentAssignedGroup.id}`}
+        {/* Group Membership */}
+        <div className="form-group" style={{ borderTop: '1px solid var(--border-color)', paddingTop: '0.75rem' }}>
+          <label className="form-label">
+            <span className="flex-row items-center gap-xs">
+              <Users size={14} /> Character Group Membership
+            </span>
+          </label>
+          {currentAssignedGroup ? (
+            <div className="panel-surface flex-row items-center justify-between" style={{ padding: '0.65rem 0.85rem' }}>
+              <div>
+                <div style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: '0.9rem' }}>
+                  {currentAssignedGroup.names?.[0] || `Group #${currentAssignedGroup.id}`}
+                </div>
+                {currentAssignedGroup.names && currentAssignedGroup.names.length > 1 && (
+                  <div className="form-hint">
+                    Aliases: {currentAssignedGroup.names.slice(1).join(', ')}
                   </div>
-                  {currentAssignedGroup.names?.length > 1 && (
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                      Aliases: {currentAssignedGroup.names.slice(1).join(', ')}
-                    </div>
+                )}
+              </div>
+              <Button
+                variant="danger"
+                size="xs"
+                onClick={handleLeaveGroup}
+                loading={updatingGroup}
+              >
+                Leave Group
+              </Button>
+            </div>
+          ) : (
+            <div className="flex-row items-center gap-sm">
+              <select
+                className="select"
+                value={selectedGroupId}
+                onChange={e => setSelectedGroupId(e.target.value ? Number(e.target.value) : '')}
+              >
+                <option value="">-- No Group (Individual Character) --</option>
+                {groups.map(g => (
+                  <option key={g.id} value={g.id}>
+                    {g.names?.[0]} ({g.members?.length || 0} members)
+                  </option>
+                ))}
+              </select>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleJoinGroup}
+                disabled={selectedGroupId === ''}
+                loading={updatingGroup}
+              >
+                Join
+              </Button>
+            </div>
+          )}
+        </div>
+
+        {/* Advanced Actions (Merge / Nest) */}
+        <div className="form-group" style={{ borderTop: '1px solid var(--border-color)', paddingTop: '0.75rem' }}>
+          <label className="form-label">Advanced Actions</label>
+
+          {actionState === 'idle' ? (
+            <div className="flex-col gap-xs">
+              {isNested && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={handleUnnest}
+                  disabled={saving}
+                >
+                  Turn into a main version
+                </Button>
+              )}
+
+              {hasNested && !isNested && (
+                <div className="form-hint">
+                  This character has other versions. Move them to other entries before moving this one.
+                </div>
+              )}
+
+              {!hasNested && !isNested && (
+                <div className="flex-row items-center gap-sm">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="flex-1"
+                    onClick={() => setActionState('merge')}
+                  >
+                    Merge with existing...
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="flex-1"
+                    onClick={() => setActionState('nest')}
+                  >
+                    Turn into version of...
+                  </Button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="panel-surface flex-col gap-sm" style={{ padding: '0.85rem' }}>
+              <div className="flex-row items-center justify-between">
+                <strong style={{ fontSize: '0.875rem', color: 'var(--text-primary)' }}>
+                  {actionState === 'merge' ? 'Merge Character' : 'Nest Character'}
+                </strong>
+                <button
+                  type="button"
+                  className="modal-close"
+                  onClick={() => {
+                    setActionState('idle');
+                    setTargetId(null);
+                    setTargetSearch('');
+                  }}
+                  aria-label="Cancel action"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+
+              <input
+                type="text"
+                className="input"
+                placeholder="Search for target character by name..."
+                value={targetSearch}
+                onChange={e => setTargetSearch(e.target.value)}
+              />
+
+              {targetSearch.length > 1 && !targetId && (
+                <div className="flex-col gap-xs">
+                  {searchResults.length === 0 ? (
+                    <div className="form-hint">No characters found.</div>
+                  ) : (
+                    searchResults.map(c => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        className="btn btn-secondary btn-sm justify-between"
+                        onClick={() => setTargetId(c.id)}
+                      >
+                        <span>{c.names?.[0] || c.name}</span>
+                        <span className="text-secondary" style={{ fontSize: '0.75rem' }}>ID: #{c.id}</span>
+                      </button>
+                    ))
                   )}
                 </div>
-                <button
-                  type="button"
-                  onClick={handleLeaveGroup}
-                  disabled={updatingGroup}
-                  style={{
-                    padding: '0.35rem 0.75rem',
-                    background: 'transparent',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: '4px',
-                    color: 'var(--danger)',
-                    cursor: 'pointer',
-                    fontSize: '0.8rem',
-                  }}
-                >
-                  Leave Group
-                </button>
-              </div>
-            ) : (
-              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                <select
-                  value={selectedGroupId}
-                  onChange={e => setSelectedGroupId(e.target.value ? Number(e.target.value) : '')}
-                  style={{
-                    flex: 1,
-                    padding: '0.5rem',
-                    background: 'var(--bg-tertiary)',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: '6px',
-                    color: 'white',
-                    fontSize: '0.85rem',
-                  }}
-                >
-                  <option value="">-- No Group (Individual Character) --</option>
-                  {groups.map(g => (
-                    <option key={g.id} value={g.id}>
-                      {g.names?.[0]} ({g.members?.length || 0} members)
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={handleJoinGroup}
-                  disabled={selectedGroupId === '' || updatingGroup}
-                  style={{
-                    padding: '0.5rem 0.85rem',
-                    background: selectedGroupId !== '' ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
-                    color: selectedGroupId !== '' ? '#fff' : 'var(--text-muted)',
-                    fontWeight: 600,
-                    border: 'none',
-                    borderRadius: '6px',
-                    cursor: selectedGroupId !== '' ? 'pointer' : 'default',
-                    fontSize: '0.85rem',
-                  }}
-                >
-                  Join Group
-                </button>
-              </div>
-            )}
-          </div>
+              )}
 
-          {/* Advanced Actions (Merge / Nest) */}
-          <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '1rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-            <h4 style={{ margin: '0 0 0.5rem 0', color: 'var(--text-secondary)', fontSize: '0.85rem', fontWeight: 600 }}>
-              Advanced Actions
-            </h4>
-
-            {actionState === 'idle' ? (
-              <>
-                {isNested && (
-                  <button
-                    onClick={handleUnnest}
-                    disabled={saving}
-                    style={{
-                      textAlign: 'left',
-                      padding: '0.65rem 0.85rem',
-                      background: 'var(--bg-tertiary)',
-                      border: '1px solid var(--border-color)',
-                      borderRadius: '6px',
-                      color: 'white',
-                      cursor: 'pointer',
-                      fontSize: '0.85rem',
-                    }}
-                  >
-                    Turn into a main version
-                  </button>
-                )}
-
-                {hasNested && !isNested && (
-                  <div
-                    style={{
-                      padding: '0.65rem 0.85rem',
-                      background: 'rgba(255,255,255,0.05)',
-                      borderRadius: '6px',
-                      color: 'var(--text-muted)',
-                      fontSize: '0.8rem',
-                    }}
-                  >
-                    This character has other versions. Move them to other entries before moving this one.
+              {targetId && (
+                <div className="flex-col gap-sm" style={{ marginTop: '0.25rem' }}>
+                  <div className="flex-row items-center gap-xs">
+                    <span className="form-hint">Target Character ID:</span>
+                    <Badge variant="accent">#{targetId}</Badge>
                   </div>
-                )}
 
-                {!hasNested && !isNested && (
-                  <div style={{ display: 'flex', gap: '0.5rem' }}>
-                    <button
-                      onClick={() => setActionState('merge')}
-                      style={{
-                        flex: 1,
-                        padding: '0.6rem',
-                        background: 'var(--bg-tertiary)',
-                        border: '1px solid var(--border-color)',
-                        borderRadius: '6px',
-                        color: 'white',
-                        cursor: 'pointer',
-                        fontSize: '0.85rem',
-                      }}
-                    >
-                      Merge with existing...
-                    </button>
-                    <button
-                      onClick={() => setActionState('nest')}
-                      style={{
-                        flex: 1,
-                        padding: '0.6rem',
-                        background: 'var(--bg-tertiary)',
-                        border: '1px solid var(--border-color)',
-                        borderRadius: '6px',
-                        color: 'white',
-                        cursor: 'pointer',
-                        fontSize: '0.85rem',
-                      }}
-                    >
-                      Turn into version of...
-                    </button>
-                  </div>
-                )}
-              </>
-            ) : (
-              <div
-                style={{
-                  background: 'var(--bg-tertiary)',
-                  padding: '1rem',
-                  borderRadius: '6px',
-                  border: '1px solid var(--border-color)',
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
-                  <strong style={{ fontSize: '0.9rem', color: 'var(--text-primary)' }}>
-                    {actionState === 'merge' ? 'Merge Character' : 'Nest Character'}
-                  </strong>
-                  <button
-                    onClick={() => {
-                      setActionState('idle');
-                      setTargetId(null);
-                      setTargetSearch('');
-                    }}
-                    style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+                  {actionState === 'nest' && (
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <label className="form-label">Version Type</label>
+                      <select
+                        className="select"
+                        value={versionType}
+                        onChange={e => setVersionType(e.target.value)}
+                      >
+                        <option value="alter_ego">Alter Ego</option>
+                        <option value="familiar">Familiar</option>
+                        <option value="npc">NPC</option>
+                        <option value="different_writer">Different Writer</option>
+                      </select>
+                    </div>
+                  )}
+
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={actionState === 'merge' ? handleMerge : handleNest}
+                    loading={saving}
                   >
-                    <X size={16} />
-                  </button>
+                    {actionState === 'merge' ? 'Confirm Merge' : 'Confirm Nesting'}
+                  </Button>
                 </div>
-
-                <input
-                  type="text"
-                  placeholder="Search for target character..."
-                  value={targetSearch}
-                  onChange={e => setTargetSearch(e.target.value)}
-                  style={{
-                    width: '100%',
-                    padding: '0.45rem 0.75rem',
-                    background: 'var(--bg-secondary)',
-                    border: '1px solid var(--border-color)',
-                    color: 'white',
-                    borderRadius: '4px',
-                    marginBottom: '0.5rem',
-                    fontSize: '0.85rem',
-                  }}
-                />
-
-                {targetSearch.length > 1 && !targetId && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                    {searchResults.length === 0 ? (
-                      <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>No characters found.</div>
-                    ) : (
-                      searchResults.map(c => (
-                        <button
-                          key={c.id}
-                          onClick={() => setTargetId(c.id)}
-                          style={{
-                            textAlign: 'left',
-                            padding: '0.4rem 0.6rem',
-                            background: 'var(--bg-secondary)',
-                            border: '1px solid var(--border-color)',
-                            borderRadius: '4px',
-                            color: 'white',
-                            cursor: 'pointer',
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            fontSize: '0.85rem',
-                          }}
-                        >
-                          <span>{c.names?.[0]}</span>
-                          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>ID: {c.id}</span>
-                        </button>
-                      ))
-                    )}
-                  </div>
-                )}
-
-                {targetId && (
-                  <div style={{ marginTop: '0.75rem', padding: '0.75rem', background: 'rgba(0,0,0,0.2)', borderRadius: '4px' }}>
-                    <div style={{ marginBottom: '0.5rem', fontSize: '0.85rem' }}>Selected Target ID: {targetId}</div>
-                    {actionState === 'nest' && (
-                      <div style={{ marginBottom: '0.5rem' }}>
-                        <label style={{ display: 'block', fontSize: '0.8rem', marginBottom: '0.3rem' }}>Version Type:</label>
-                        <select
-                          value={versionType}
-                          onChange={e => setVersionType(e.target.value)}
-                          style={{
-                            width: '100%',
-                            padding: '0.4rem',
-                            background: 'var(--bg-secondary)',
-                            border: '1px solid var(--border-color)',
-                            color: 'white',
-                            borderRadius: '4px',
-                            fontSize: '0.85rem',
-                          }}
-                        >
-                          <option value="alter_ego">Alter Ego</option>
-                          <option value="familiar">Familiar</option>
-                          <option value="npc">NPC</option>
-                          <option value="different_writer">Different Writer</option>
-                        </select>
-                      </div>
-                    )}
-                    <button
-                      onClick={actionState === 'merge' ? handleMerge : handleNest}
-                      disabled={saving}
-                      style={{
-                        width: '100%',
-                        padding: '0.45rem',
-                        background: 'var(--accent-primary)',
-                        border: 'none',
-                        color: '#fff',
-                        fontWeight: 600,
-                        borderRadius: '4px',
-                        cursor: 'pointer',
-                        fontSize: '0.85rem',
-                      }}
-                    >
-                      {actionState === 'merge' ? 'Confirm Merge' : 'Confirm Nesting'}
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Footer */}
-        <div
-          style={{
-            padding: '1rem 1.25rem',
-            borderTop: '1px solid var(--border-color)',
-            display: 'flex',
-            justifyContent: 'flex-end',
-            gap: '0.75rem',
-            background: 'var(--bg-secondary)',
-            borderRadius: '0 0 12px 12px',
-          }}
-        >
-          <button
-            onClick={onClose}
-            disabled={saving}
-            style={{
-              padding: '0.45rem 1rem',
-              background: 'transparent',
-              border: '1px solid var(--border-color)',
-              color: 'var(--text-primary)',
-              borderRadius: '6px',
-              cursor: 'pointer',
-              fontSize: '0.85rem',
-            }}
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.4rem',
-              padding: '0.45rem 1.25rem',
-              background: 'var(--accent-primary)',
-              border: 'none',
-              color: '#fff',
-              fontWeight: 600,
-              borderRadius: '6px',
-              cursor: saving ? 'not-allowed' : 'pointer',
-              fontSize: '0.85rem',
-            }}
-          >
-            {saving && <Loader2 size={14} className="animate-spin" />}
-            Save Changes
-          </button>
+              )}
+            </div>
+          )}
         </div>
       </div>
-    </div>
+    </Modal>
   );
 };

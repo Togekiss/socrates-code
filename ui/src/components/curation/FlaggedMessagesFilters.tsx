@@ -1,8 +1,8 @@
 import React from 'react';
-import { MessageSquareCode, Plus } from 'lucide-react';
+import { Plus } from 'lucide-react';
+import { CollapsibleFilterBar, SegmentedControl, FilterChip, Badge, Button } from '../ui';
 
 const KIND_OPTIONS = [
-  { value: '', label: 'All' },
   { value: 'failed_tupper', label: 'Failed Tupper' },
   { value: 'ooc_boundary', label: 'OOC Boundary' },
   { value: 'ooc_message', label: 'OOC Message' },
@@ -10,7 +10,6 @@ const KIND_OPTIONS = [
 ] as const;
 
 const RESOLUTION_OPTIONS = [
-  { value: '', label: 'All' },
   { value: 'override', label: 'Overridden' },
   { value: 'ignored', label: 'Ignored' },
   { value: 'kept', label: 'Kept' },
@@ -21,8 +20,11 @@ export interface FlaggedMessagesFiltersProps {
   statusFilter: 'unresolved' | 'resolved' | 'all';
   onStatusChange: (status: 'unresolved' | 'resolved' | 'all') => void;
   statusCounts: { unresolved: number; resolved: number; all: number };
+  scopeCounts?: Record<string, number>;
   kindFilter: string;
   onKindChange: (kind: string) => void;
+  sceneTypeFilter?: string;
+  onSceneTypeChange?: (sceneType: string) => void;
   resolutionFilter: string;
   onResolutionChange: (res: string) => void;
   onOpenAddModal: () => void;
@@ -33,189 +35,166 @@ export const FlaggedMessagesFilters: React.FC<FlaggedMessagesFiltersProps> = ({
   statusFilter,
   onStatusChange,
   statusCounts,
+  scopeCounts,
   kindFilter,
   onKindChange,
+  sceneTypeFilter = '',
+  onSceneTypeChange,
   resolutionFilter,
   onResolutionChange,
   onOpenAddModal,
 }) => {
+  const handleKindClick = (value: string) => {
+    onKindChange(kindFilter === value ? '' : value);
+  };
+
+  const handleResolutionClick = (value: string) => {
+    onResolutionChange(resolutionFilter === value ? '' : value);
+  };
+
+  const activeCount =
+    (statusFilter !== 'all' ? 1 : 0) +
+    (sceneTypeFilter ? 1 : 0) +
+    (kindFilter ? 1 : 0) +
+    (resolutionFilter && statusFilter !== 'unresolved' ? 1 : 0);
+
+  const handleClearAll = () => {
+    onStatusChange('unresolved');
+    if (onSceneTypeChange) onSceneTypeChange('');
+    onKindChange('');
+    onResolutionChange('');
+  };
+
+  const scopeOptions = [
+    { value: '', label: 'All', count: scopeCounts?.all },
+    { value: 'scene', label: 'Scene', count: scopeCounts?.scene },
+    { value: 'session', label: 'Session', count: scopeCounts?.session },
+    { value: 'event', label: 'Event', count: scopeCounts?.event },
+  ];
+
+  const statusOptions = [
+    { value: 'unresolved' as const, label: 'Unresolved', count: statusCounts.unresolved },
+    { value: 'resolved' as const, label: 'Resolved', count: statusCounts.resolved },
+    { value: 'all' as const, label: 'All', count: statusCounts.all },
+  ];
+
+  const summaryPills = (
+    <div className="flex-row items-center gap-xs flex-wrap">
+      <Badge variant="accent">
+        {statusFilter === 'unresolved'
+          ? 'Unresolved'
+          : statusFilter === 'resolved'
+          ? 'Resolved'
+          : 'All Statuses'}
+      </Badge>
+      {sceneTypeFilter && (
+        <Badge variant="neutral">
+          Scope:{' '}
+          {sceneTypeFilter === 'scene'
+            ? 'Scenes'
+            : sceneTypeFilter === 'session'
+            ? 'Sessions'
+            : 'Events'}
+        </Badge>
+      )}
+      {kindFilter && (
+        <Badge variant="neutral">
+          Kind: {KIND_OPTIONS.find(k => k.value === kindFilter)?.label || kindFilter}
+        </Badge>
+      )}
+      {resolutionFilter && statusFilter !== 'unresolved' && (
+        <Badge variant="neutral">
+          Resolution:{' '}
+          {RESOLUTION_OPTIONS.find(r => r.value === resolutionFilter)?.label || resolutionFilter}
+        </Badge>
+      )}
+    </div>
+  );
+
   return (
-    <div
-      className="glass-panel"
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '1.15rem',
-      }}
+    <CollapsibleFilterBar
+      title={`Flagged Messages Review Queue (${totalItems})`}
+      activeCount={activeCount}
+      summaryPills={summaryPills}
+      onClearAll={handleClearAll}
+      actions={
+        <Button
+          variant="secondary"
+          size="xs"
+          onClick={onOpenAddModal}
+          icon={<Plus size={13} />}
+          title="Add flagged message manually"
+        >
+          Add Message
+        </Button>
+      }
+      className="mb-md"
     >
-      {/* Top: Header Info & Status Filter & Add Button */}
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          flexWrap: 'wrap',
-          gap: '1rem',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <div
-            style={{
-              width: '40px',
-              height: '40px',
-              borderRadius: '8px',
-              background: 'rgba(109, 40, 217, 0.15)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: 'var(--accent-secondary)',
-            }}
-          >
-            <MessageSquareCode size={22} />
+      <div className="flex-col gap-md pt-xs">
+        {/* Prominent Controls: Status & Archive Scope Segmented Controls */}
+        <div className="flex-row justify-between items-center flex-wrap gap-md">
+          {/* Status Segmented Control */}
+          <div className="flex-col gap-xs">
+            <label className="text-secondary text-sm font-semibold">Status</label>
+            <SegmentedControl<'unresolved' | 'resolved' | 'all'>
+              options={statusOptions}
+              value={statusFilter}
+              onChange={onStatusChange}
+              ariaLabel="Flagged Message Status Filter"
+            />
           </div>
-          <div>
-            <h2 style={{ margin: 0, fontSize: '1.25rem', color: 'var(--text-primary)' }}>
-              Flagged Messages Review Queue
-            </h2>
-            <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-              Non-tupper dialogue, OOC messages, and boundary anomalies ({statusCounts.all || totalItems} total)
-            </p>
-          </div>
+
+          {/* Archive Scope Segmented Control */}
+          {onSceneTypeChange && (
+            <div className="flex-col gap-xs">
+              <label className="text-secondary text-sm font-semibold">Archive Scope</label>
+              <SegmentedControl<string>
+                options={scopeOptions}
+                value={sceneTypeFilter}
+                onChange={onSceneTypeChange}
+                ariaLabel="Archive Scope Filter"
+              />
+            </div>
+          )}
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-          {/* Status Buttons */}
-          <div style={{ display: 'flex', gap: '0.35rem' }}>
-            {(['unresolved', 'resolved', 'all'] as const).map(st => (
-              <button
-                key={st}
-                onClick={() => onStatusChange(st)}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '0.45rem',
-                  padding: '0.35rem 0.8rem',
-                  borderRadius: '6px',
-                  fontSize: '0.85rem',
-                  border: statusFilter === st ? '1px solid var(--accent-secondary)' : '1px solid var(--border-color)',
-                  background: statusFilter === st ? 'rgba(109, 40, 217, 0.25)' : 'var(--bg-tertiary)',
-                  color: statusFilter === st ? '#fff' : 'var(--text-secondary)',
-                  fontWeight: statusFilter === st ? 600 : 400,
-                  cursor: 'pointer',
-                  transition: 'all var(--transition-fast)',
-                }}
-              >
-                <span style={{ textTransform: 'capitalize' }}>{st}</span>
-                <span
-                  style={{
-                    padding: '0.1rem 0.45rem',
-                    borderRadius: '10px',
-                    fontSize: '0.75rem',
-                    fontWeight: 700,
-                    background: statusFilter === st ? 'rgba(255, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.08)',
-                    color: statusFilter === st ? '#fff' : 'var(--text-muted)',
-                  }}
-                >
-                  {statusCounts[st] ?? 0}
-                </span>
-              </button>
-            ))}
-          </div>
-
-          {/* Add Flagged Message Button */}
-          <button
-            onClick={onOpenAddModal}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '0.4rem',
-              padding: '0.35rem 0.85rem',
-              borderRadius: '6px',
-              fontSize: '0.85rem',
-              border: '1px solid var(--accent-secondary)',
-              background: 'var(--accent-secondary)',
-              color: '#fff',
-              fontWeight: 600,
-              cursor: 'pointer',
-            }}
-          >
-            <Plus size={15} /> Add Flagged Message
-          </button>
-        </div>
-      </div>
-
-      {/* Filter Rows: Kind and Resolution */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          flexWrap: 'wrap',
-          gap: '1rem',
-          paddingTop: '0.85rem',
-          borderTop: '1px solid var(--border-color)',
-        }}
-      >
-        {/* Kind Buttons */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 500 }}>Kind:</span>
-          <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
-            {KIND_OPTIONS.map(opt => {
-              const isActive = kindFilter === opt.value;
-              return (
-                <button
+        {/* Independent Kind & Resolution Toggles */}
+        <div className="flex-row items-center justify-between flex-wrap gap-md pt-xs border-t border-color">
+          {/* Flagged Message Kind Chips */}
+          <div className="flex-col gap-xs">
+            <label className="text-secondary text-sm font-semibold">Message Kind</label>
+            <div className="flex-row items-center gap-xs flex-wrap">
+              {KIND_OPTIONS.map(opt => (
+                <FilterChip
                   key={opt.value}
-                  onClick={() => onKindChange(kindFilter === opt.value ? '' : opt.value)}
-                  style={{
-                    padding: '0.35rem 0.75rem',
-                    borderRadius: '6px',
-                    fontSize: '0.85rem',
-                    border: isActive ? '1px solid var(--accent-secondary)' : '1px solid var(--border-color)',
-                    background: isActive ? 'rgba(109, 40, 217, 0.25)' : 'var(--bg-tertiary)',
-                    color: isActive ? '#fff' : 'var(--text-secondary)',
-                    fontWeight: isActive ? 600 : 400,
-                    cursor: 'pointer',
-                    transition: 'all var(--transition-fast)',
-                  }}
+                  active={kindFilter === opt.value}
+                  onClick={() => handleKindClick(opt.value)}
                 >
                   {opt.label}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Resolution Buttons (Only visible when viewing resolved or all) */}
-        {statusFilter !== 'unresolved' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 500 }}>Resolution:</span>
-            <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
-              {RESOLUTION_OPTIONS.map(opt => {
-                const isActive = resolutionFilter === opt.value;
-                return (
-                  <button
-                    key={opt.value}
-                    onClick={() => onResolutionChange(resolutionFilter === opt.value ? '' : opt.value)}
-                    style={{
-                      padding: '0.35rem 0.75rem',
-                      borderRadius: '6px',
-                      fontSize: '0.85rem',
-                      border: isActive ? '1px solid var(--accent-secondary)' : '1px solid var(--border-color)',
-                      background: isActive ? 'rgba(109, 40, 217, 0.25)' : 'var(--bg-tertiary)',
-                      color: isActive ? '#fff' : 'var(--text-secondary)',
-                      fontWeight: isActive ? 600 : 400,
-                      cursor: 'pointer',
-                      transition: 'all var(--transition-fast)',
-                    }}
-                  >
-                    {opt.label}
-                  </button>
-                );
-              })}
+                </FilterChip>
+              ))}
             </div>
           </div>
-        )}
+
+          {/* Resolution Chips (only applicable when viewing resolved or all) */}
+          {statusFilter !== 'unresolved' && (
+            <div className="flex-col gap-xs">
+              <label className="text-secondary text-sm font-semibold">Resolution</label>
+              <div className="flex-row items-center gap-xs flex-wrap">
+                {RESOLUTION_OPTIONS.map(opt => (
+                  <FilterChip
+                    key={opt.value}
+                    active={resolutionFilter === opt.value}
+                    onClick={() => handleResolutionClick(opt.value)}
+                  >
+                    {opt.label}
+                  </FilterChip>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
-    </div>
+    </CollapsibleFilterBar>
   );
 };

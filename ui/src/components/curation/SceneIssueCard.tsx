@@ -1,5 +1,6 @@
 import React from 'react';
-import { ExternalLink, Check, RotateCcw, Loader2, ArrowRight, GitMerge, Split } from 'lucide-react';
+import { ExternalLink, Check, RotateCcw, ArrowRight, GitMerge, Split } from 'lucide-react';
+import { DataCard, Badge, Button } from '../ui';
 import type { SceneIssue } from '../../types';
 
 interface SceneIssueCardProps {
@@ -10,21 +11,6 @@ interface SceneIssueCardProps {
   onOppositeAction?: (action: 'merge' | 'split', issue: SceneIssue) => void;
 }
 
-const actionBtnStyle = (bg: string, color: string, border?: string): React.CSSProperties => ({
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: '0.35rem',
-  padding: '0.35rem 0.85rem',
-  fontSize: '0.8rem',
-  background: bg,
-  color,
-  border: border || 'none',
-  borderRadius: '6px',
-  cursor: 'pointer',
-  fontWeight: 600,
-  transition: 'all var(--transition-fast)',
-});
-
 export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
   issue,
   isReopening,
@@ -34,16 +20,11 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
 }) => {
   const isResolved = issue.resolved_at !== null && issue.resolved_at !== undefined;
 
-  const getKindBadgeColor = (kind: string) => {
-    switch (kind) {
-      case 'auto_split':
-        return '#eab308';
-      case 'soft_boundary':
-        return '#8b5cf6';
-      default:
-        return 'var(--text-secondary)';
-    }
-  };
+  const cardAccent = isResolved
+    ? 'resolved'
+    : issue.kind === 'auto_split'
+    ? 'warning'
+    : 'accent';
 
   const getSceneKindLabel = (kind?: string) => {
     if (kind === 'event') return 'Event';
@@ -94,58 +75,22 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
   };
 
   return (
-    <div
-      className="glass-panel"
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '0.85rem',
-        borderLeft: `4px solid ${getKindBadgeColor(issue.kind)}`,
-        opacity: isResolved ? 0.75 : 1,
-      }}
-    >
+    <DataCard accent={cardAccent} className="flex-col gap-sm">
       {/* Top Bar: Kind Badge & Actions */}
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'flex-start',
-          flexWrap: 'wrap',
-          gap: '0.75rem',
-        }}
-      >
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-            <span
-              style={{
-                background: issue.kind === 'auto_split' ? 'rgba(234, 179, 8, 0.2)' : 'rgba(139, 92, 246, 0.2)',
-                border: issue.kind === 'auto_split' ? '1px solid #eab308' : '1px solid #8b5cf6',
-                color: issue.kind === 'auto_split' ? '#fde047' : '#c4b5fd',
-                padding: '0.15rem 0.5rem',
-                borderRadius: '4px',
-                fontSize: '0.75rem',
-                fontWeight: 700,
-                letterSpacing: '0.04em',
-                textTransform: 'uppercase',
-              }}
+      <div className="flex-row justify-between items-start flex-wrap gap-sm">
+        <div className="flex-col gap-xs">
+          <div className="flex-row items-center gap-xs flex-wrap">
+            <Badge
+              variant={issue.kind === 'auto_split' ? 'warning' : 'accent'}
+              className="uppercase font-bold text-sm"
             >
               {issue.kind.replace(/_/g, ' ')}
-            </span>
+            </Badge>
 
             {isResolved && (
-              <span
-                style={{
-                  background: 'rgba(16, 185, 129, 0.2)',
-                  border: '1px solid var(--success)',
-                  color: 'var(--success)',
-                  padding: '0.15rem 0.5rem',
-                  borderRadius: '4px',
-                  fontSize: '0.75rem',
-                  fontWeight: 600,
-                }}
-              >
+              <Badge variant="success" className="text-sm font-semibold">
                 ✓ {issue.resolution === 'split' ? 'SPLIT' : issue.resolution === 'merged' ? 'MERGED' : 'RESOLVED'}
-              </span>
+              </Badge>
             )}
 
             {issue.discord_link && (
@@ -153,85 +98,97 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
                 href={issue.discord_link}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="action-btn"
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '0.3rem',
-                  padding: '0.15rem 0.5rem',
-                  fontSize: '0.75rem',
-                  background: 'var(--bg-tertiary)',
-                  color: 'var(--text-secondary)',
-                  borderRadius: '4px',
-                  textDecoration: 'none',
-                }}
+                className="btn btn-secondary btn-xs"
+                style={{ padding: '0.12rem 0.45rem', fontSize: '0.72rem' }}
               >
-                <ExternalLink size={12} /> Discord
+                <ExternalLink size={11} /> Discord
               </a>
             )}
           </div>
 
-          <div style={{ marginTop: '0.35rem' }}>
-            <h4 style={{ margin: 0, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', fontSize: '1rem' }}>
-              <span>{getSceneKindLabel(issue.scene_kind)} <code style={{ color: getKindBadgeColor(issue.kind) }}>{issue.scene_key}</code></span>
+          <div className="mt-xs">
+            <h4
+              className="text-primary flex-row items-center gap-xs flex-wrap m-0"
+              style={{ fontSize: '1rem' }}
+            >
+              <span>
+                {getSceneKindLabel(issue.scene_kind)}{' '}
+                <code className="text-accent">{issue.scene_key}</code>
+              </span>
               {issue.next_scene_key && (
                 <>
-                  <ArrowRight size={14} style={{ color: 'var(--text-muted)' }} />
-                  <span>Split into {getSceneKindLabel(issue.scene_kind)} <code style={{ color: getKindBadgeColor(issue.kind) }}>{issue.next_scene_key}</code></span>
+                  <ArrowRight size={14} className="text-muted" />
+                  <span>
+                    Split into {getSceneKindLabel(issue.scene_kind)}{' '}
+                    <code className="text-accent">{issue.next_scene_key}</code>
+                  </span>
                 </>
               )}
-              <span style={{ color: 'var(--text-secondary)' }}>in #{issue.channel_name}</span>
+              <span className="text-secondary font-normal text-md">
+                in #{issue.channel_name}
+              </span>
             </h4>
           </div>
 
-          <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
+          <div className="text-muted text-sm">
             Detected: {issue.created_at ? new Date(issue.created_at).toLocaleString() : 'N/A'}
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+        {/* Action Buttons */}
+        <div className="flex-row items-center gap-xs flex-wrap">
           {isResolved ? (
-            <button
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => onReopen(issue.id)}
               disabled={isReopening}
-              style={actionBtnStyle('var(--bg-tertiary)', 'var(--text-secondary)', '1px solid var(--border-color)')}
+              loading={isReopening}
+              icon={<RotateCcw size={12} />}
             >
-              {isReopening ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />}
               Reopen Issue
-            </button>
+            </Button>
           ) : issue.kind === 'auto_split' ? (
             <>
-              <button
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={() => handleOpposite('merge')}
                 title="Merge these two scenes back together"
-                style={actionBtnStyle('var(--bg-tertiary)', 'var(--text-primary)', '1px solid var(--border-color)')}
+                icon={<GitMerge size={14} />}
               >
-                <GitMerge size={14} style={{ color: 'var(--accent-secondary)' }} /> Merge
-              </button>
-              <button
+                Merge
+              </Button>
+              <Button
+                variant="success"
+                size="sm"
                 onClick={() => onResolve(issue)}
                 title="Accept Socrates' split into two scenes"
-                style={actionBtnStyle('var(--success)', '#fff')}
+                icon={<Check size={14} />}
               >
-                <Check size={14} /> Accept Split
-              </button>
+                Accept Split
+              </Button>
             </>
           ) : (
             <>
-              <button
+              <Button
+                variant="success"
+                size="sm"
                 onClick={() => onResolve(issue)}
                 title="Accept keeping this as a single continuous scene"
-                style={actionBtnStyle('var(--success)', '#fff')}
+                icon={<Check size={14} />}
               >
-                <Check size={14} /> Accept Merge
-              </button>
-              <button
+                Accept Merge
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={() => handleOpposite('split')}
                 title="Split this scene at the split point"
-                style={actionBtnStyle('var(--bg-tertiary)', 'var(--text-primary)', '1px solid var(--border-color)')}
+                icon={<Split size={14} />}
               >
-                <Split size={14} /> Split
-              </button>
+                Split
+              </Button>
             </>
           )}
         </div>
@@ -254,21 +211,26 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
         }}
       >
         <div>
-          <strong style={{ color: 'var(--text-primary)' }}>Trigger / Reason:</strong>{' '}
-          <span style={{ color: issue.kind === 'auto_split' ? '#eab308' : '#c4b5fd', fontWeight: 600 }}>
+          <strong className="text-primary">Trigger / Reason:</strong>{' '}
+          <span
+            style={{
+              color: issue.kind === 'auto_split' ? '#eab308' : '#c4b5fd',
+              fontWeight: 600,
+            }}
+          >
             {getReasonLabel(issue.reason)}
           </span>
         </div>
 
         {hasCharacters && (
-          <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-            <strong style={{ color: 'var(--text-secondary)' }}>Participants:</strong> [{prevDisplay}] ➔ [{nextDisplay}]
+          <div className="text-secondary text-sm">
+            <strong>Participants:</strong> [{prevDisplay}] ➔ [{nextDisplay}]
           </div>
         )}
 
         {issue.candidate_excerpt && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', marginTop: '0.15rem' }}>
-            <strong style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+          <div className="flex-col gap-xs mt-xs">
+            <strong className="text-secondary text-sm">
               {issue.kind === 'auto_split'
                 ? 'Start of the next scene:'
                 : issue.kind === 'soft_boundary'
@@ -292,22 +254,22 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
         )}
 
         {issue.candidate_discord_link && (
-          <div style={{ marginTop: '0.2rem' }}>
+          <div className="mt-xs">
             <a
               href={issue.candidate_discord_link}
               target="_blank"
               rel="noopener noreferrer"
+              className="btn btn-secondary btn-xs"
               style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '0.3rem',
-                padding: '0.25rem 0.6rem',
-                fontSize: '0.8rem',
-                background: issue.kind === 'auto_split' ? 'rgba(234, 179, 8, 0.15)' : 'rgba(139, 92, 246, 0.2)',
-                border: issue.kind === 'auto_split' ? '1px solid rgba(234, 179, 8, 0.5)' : '1px solid #8b5cf6',
+                background:
+                  issue.kind === 'auto_split'
+                    ? 'rgba(234, 179, 8, 0.15)'
+                    : 'rgba(139, 92, 246, 0.2)',
+                border:
+                  issue.kind === 'auto_split'
+                    ? '1px solid rgba(234, 179, 8, 0.5)'
+                    : '1px solid #8b5cf6',
                 color: issue.kind === 'auto_split' ? '#fde047' : '#c4b5fd',
-                borderRadius: '6px',
-                textDecoration: 'none',
                 fontWeight: 600,
               }}
             >
@@ -320,11 +282,11 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
       {/* Resolved Banner */}
       {isResolved && (
         <div
+          className="badge-success p-xs border-radius-sm text-sm"
           style={{
-            fontSize: '0.8rem',
-            color: 'var(--success)',
             background: 'rgba(16, 185, 129, 0.1)',
             border: '1px solid rgba(16, 185, 129, 0.25)',
+            color: 'var(--success)',
             padding: '0.35rem 0.75rem',
             borderRadius: '6px',
           }}
@@ -333,6 +295,6 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
           <em>{issue.resolved_note || 'Resolved by reviewer'}</em>
         </div>
       )}
-    </div>
+    </DataCard>
   );
 };

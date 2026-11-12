@@ -210,9 +210,12 @@ class TestUnassignedCharactersQueue(unittest.TestCase):
             session.commit()
 
         try:
-            # Verify character appears in unassigned queue
+            # Verify character appears in unassigned queue and has activity stats
             unassigned = get_unassigned_characters("1791895360")
             self.assertTrue(any(c["id"] == target_cid for c in unassigned))
+            for u_char in unassigned:
+                for key in ("id", "names", "scene_count", "last_active_at", "last_channel_name"):
+                    self.assertIn(key, u_char)
 
             # Assign writer back
             assign_res = assign_character_writer(
@@ -355,6 +358,15 @@ class TestSceneIssuesReviewQueue(unittest.TestCase):
             issues_res["status_counts"]["all"],
             issues_res["status_counts"]["unresolved"] + issues_res["status_counts"]["resolved"],
         )
+        self.assertIn("scope_counts", issues_res)
+        self.assertIn("all", issues_res["scope_counts"])
+        self.assertIn("scene", issues_res["scope_counts"])
+        self.assertIn("session", issues_res["scope_counts"])
+        self.assertIn("event", issues_res["scope_counts"])
+        self.assertEqual(
+            issues_res["scope_counts"]["all"],
+            issues_res["scope_counts"]["scene"] + issues_res["scope_counts"]["session"] + issues_res["scope_counts"]["event"]
+        )
 
         first_issue = issues_res["issues"][0]
         for key in (
@@ -435,10 +447,31 @@ class TestFlaggedMessagesAndOverrides(unittest.TestCase):
         self.assertIsInstance(flagged_res, dict)
         self.assertGreater(flagged_res["total_items"], 0)
         self.assertEqual(len(flagged_res["messages"]), flagged_res["total_items"])
+        self.assertIn("scope_counts", flagged_res)
+        self.assertIn("all", flagged_res["scope_counts"])
+        self.assertIn("scene", flagged_res["scope_counts"])
+        self.assertIn("session", flagged_res["scope_counts"])
+        self.assertIn("event", flagged_res["scope_counts"])
+        self.assertEqual(
+            flagged_res["scope_counts"]["all"],
+            flagged_res["scope_counts"]["scene"] + flagged_res["scope_counts"]["session"] + flagged_res["scope_counts"]["event"]
+        )
 
         first_msg = flagged_res["messages"][0]
-        for key in ("id", "message_id", "kind", "channel_name", "content", "author", "discord_link"):
+        for key in ("id", "message_id", "kind", "scene_type", "channel_name", "content", "author", "discord_link"):
             self.assertIn(key, first_msg)
+        self.assertEqual(first_msg["scene_type"], "scene")
+
+    def test_get_flagged_messages_filtering_by_scene_type(self):
+        scene_res = get_flagged_messages("1791895360", scene_type="scene")
+        self.assertIsInstance(scene_res, dict)
+        self.assertGreater(scene_res["total_items"], 0)
+        for msg in scene_res["messages"]:
+            self.assertEqual(msg["scene_type"], "scene")
+
+        empty_res = get_flagged_messages("1791895360", scene_type="session")
+        self.assertEqual(empty_res["total_items"], 0)
+        self.assertEqual(len(empty_res["messages"]), 0)
 
     def test_promote_and_delete_override_roundtrip(self):
         backup_path = t.get_backup_path("1791895360")

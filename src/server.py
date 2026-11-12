@@ -382,6 +382,57 @@ def logout(response: Response, request: Request):
 def get_me(user = Depends(get_optional_user)):
     return {"user": user}
 
+
+@app.get("/api/auth/dev-login")
+@app.post("/api/auth/dev-login")
+def dev_login(response: Response, request: Request):
+    if os.environ.get("K_SERVICE"):
+        raise HTTPException(status_code=403, detail="Dev login disabled in production")
+
+    config = get_auth_config()
+    index = t.get_backups_index()
+    authorized_guilds = []
+    seen_guild_ids = set()
+    for b in index:
+        if "server_id" in b and b["server_id"]:
+            gid = str(b["server_id"])
+            if gid not in seen_guild_ids:
+                seen_guild_ids.add(gid)
+                authorized_guilds.append({
+                    "id": gid,
+                    "name": b.get("server_name", "Local Server")
+                })
+
+    exp = datetime.now(timezone.utc) + timedelta(days=7)
+    payload = {
+        "sub": "200668852713947137",
+        "username": "DevUser",
+        "avatar": None,
+        "authorized_guilds": authorized_guilds,
+        "exp": exp
+    }
+    token = jwt.encode(payload, config["jwt_secret"], algorithm="HS256")
+
+    is_secure = request.headers.get("x-forwarded-proto") == "https"
+    for key in ("__session", "session_token"):
+        response.set_cookie(
+            key=key,
+            value=token,
+            httponly=True,
+            samesite="lax",
+            secure=is_secure,
+            max_age=7 * 24 * 60 * 60
+        )
+    return {
+        "status": "success",
+        "user": {
+            "id": payload["sub"],
+            "sub": payload["sub"],
+            "username": payload["username"],
+            "authorized_guilds": authorized_guilds
+        }
+    }
+
 # --- END AUTHENTICATION ---
 
 
@@ -473,6 +524,8 @@ def get_backup_info(backup_id: str):
                 "number_of_scenes": 0,
                 "number_of_sessions": 0,
                 "number_of_events": 0,
+                "number_of_characters": 0,
+                "number_of_writers": 0,
                 "categories": [],
             }
         else:
@@ -480,8 +533,10 @@ def get_backup_info(backup_id: str):
 
     try:
         data["number_of_characters"] = character_service.get_character_count(backup_id, base_path)
+        data["number_of_writers"] = character_service.get_writer_count(backup_id, base_path)
     except Exception:
         data["number_of_characters"] = 0
+        data["number_of_writers"] = 0
 
     data["current_schema_version"] = current_schema_version
     data["schema_version"] = schema_version
@@ -1558,6 +1613,8 @@ def get_flagged_messages(
     kind: Optional[str] = Query(None),
     resolution: Optional[str] = Query(None),
     channel_id: Optional[str] = Query(None),
+    scene_type: Optional[str] = Query(None),
+    scene_kind: Optional[str] = Query(None),
     page: int = Query(1),
     per_page: int = Query(50)
 ):
@@ -1570,6 +1627,7 @@ def get_flagged_messages(
             kind=kind,
             resolution=resolution,
             channel_id=channel_id,
+            scene_type=scene_type or scene_kind,
             page=page,
             per_page=per_page
         )

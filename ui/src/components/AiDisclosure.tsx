@@ -1,20 +1,12 @@
 import { useState } from 'react';
 import { Sparkles, ChevronDown } from 'lucide-react';
+import { PanelSurface } from './ui';
 
 export const AiDisclosure = () => {
   const [collapsed, setCollapsed] = useState(true);
 
   return (
-    <div
-      className="glass-panel"
-      style={{
-        background: 'var(--bg-secondary)',
-        margin: '2rem auto',
-        width: 'clamp(320px, 60%, 750px)',
-        boxShadow: 'var(--glass-shadow)',
-        transition: 'all var(--transition-fast)',
-      }}
-    >
+    <PanelSurface style={{ margin: '2rem auto', maxWidth: '750px', width: '100%' }}>
       <div
         onClick={() => setCollapsed(prev => !prev)}
         role="button"
@@ -26,29 +18,16 @@ export const AiDisclosure = () => {
             setCollapsed(prev => !prev);
           }
         }}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          cursor: 'pointer',
-          userSelect: 'none',
-        }}
+        className="flex-row items-center justify-between"
+        style={{ cursor: 'pointer', userSelect: 'none' }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <Sparkles size={22} style={{ color: 'var(--accent-secondary)', flexShrink: 0 }} />
-          <span style={{ fontSize: '1.25rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+        <div className="flex-row items-center gap-sm">
+          <Sparkles size={20} style={{ color: 'var(--accent-secondary)', flexShrink: 0 }} />
+          <span style={{ fontSize: '1.15rem', fontWeight: 600, color: 'var(--text-primary)' }}>
             AI usage disclosure
           </span>
         </div>
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.35rem',
-            color: 'var(--text-muted)',
-            fontSize: '0.85rem',
-          }}
-        >
+        <div className="flex-row items-center gap-xs" style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
           <span>{collapsed ? 'Show' : 'Hide'}</span>
           <ChevronDown
             size={16}
@@ -62,15 +41,13 @@ export const AiDisclosure = () => {
 
       {!collapsed && (
         <div
+          className="flex-col gap-sm"
           style={{
             marginTop: '1rem',
             paddingTop: '1rem',
             borderTop: '1px solid var(--border-color)',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '0.65rem',
-            fontSize: '0.925rem',
-            lineHeight: '1.6',
+            fontSize: '0.9rem',
+            lineHeight: 1.6,
             color: 'var(--text-secondary)',
           }}
         >
@@ -89,11 +66,10 @@ export const AiDisclosure = () => {
           <div>
             The core logic of this tool like scene detection and fix suggestions are clever{' '}
             <span style={{ color: 'var(--text-primary)' }}>pattern recognition formulas</span>.{' '}
-            Cold hard math I wrote by hand back when LLMs were dumber than my cat (and he's very dumb)
+            Cold hard math I wrote by hand back when LLMs were dumber than my cat (and he&apos;s very dumb)
           </div>
         </div>
       )}
-    </div>
+    </PanelSurface>
   );
 };
-

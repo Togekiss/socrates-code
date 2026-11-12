@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { createPortal } from 'react-dom';
-import { X, ExternalLink, GitMerge, Scissors, Save, Loader2 } from 'lucide-react';
+import React, { useState } from 'react';
+import { GitMerge, Scissors, Save } from 'lucide-react';
+import { Modal, Button } from '../ui';
 import { api } from '../../api';
 import type { EventChannelEntry, EventRecord } from '../../types';
 
@@ -11,16 +11,6 @@ interface EventEditModalProps {
   onClose: () => void;
   onUpdated: () => void;
 }
-
-const inputStyle: React.CSSProperties = {
-  width: '100%',
-  padding: '0.45rem 0.6rem',
-  background: 'var(--bg-tertiary)',
-  border: '1px solid var(--border-color)',
-  color: 'white',
-  borderRadius: '4px',
-  fontSize: '0.85rem',
-};
 
 export const EventEditModal: React.FC<EventEditModalProps> = ({
   backupId,
@@ -56,14 +46,6 @@ export const EventEditModal: React.FC<EventEditModalProps> = ({
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !saving) onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [saving, onClose]);
 
   const handleSaveMetadata = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -133,238 +115,225 @@ export const EventEditModal: React.FC<EventEditModalProps> = ({
 
   const otherEvents = allEvents.filter(ev => ev.pk !== event.pk);
 
-  return createPortal(
-    <div
-      style={{
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        background: 'rgba(0, 0, 0, 0.75)',
-        zIndex: 1000,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        backdropFilter: 'blur(4px)',
-        padding: '1rem',
-      }}
-      onClick={e => {
-        if (e.target === e.currentTarget && !saving) onClose();
-      }}
+  return (
+    <Modal
+      isOpen={true}
+      onClose={onClose}
+      title={`Edit Event (${event.id})`}
+      size="lg"
     >
-      <div
-        style={{
-          background: 'var(--bg-primary)',
-          width: '640px',
-          maxWidth: '92vw',
-          maxHeight: '88vh',
-          overflowY: 'auto',
-          borderRadius: '12px',
-          border: '1px solid var(--border-color)',
-          boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)',
-          padding: '1.5rem',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '1.25rem',
-        }}
-        onClick={e => e.stopPropagation()}
-      >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h3 style={{ margin: 0, fontSize: '1.15rem', color: 'var(--text-primary)' }}>
-            Edit Event ({event.id})
-          </h3>
-          <button
-            type="button"
-            onClick={onClose}
-            style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}
-          >
-            <X size={20} />
-          </button>
-        </div>
-
+      <div className="flex-col gap-lg">
         {error && (
-          <div style={{ padding: '0.65rem', background: 'rgba(239, 68, 68, 0.15)', border: '1px solid var(--danger)', color: 'var(--danger)', borderRadius: '6px', fontSize: '0.85rem' }}>
-            {error}
+          <div className="banner-danger">
+            <span className="text-md">{error}</span>
           </div>
         )}
 
         {/* Section 1: Event & Channel Custom Names */}
-        <form onSubmit={handleSaveMetadata} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          <div>
-            <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.3rem' }}>
-              Event Name
-            </label>
+        <form onSubmit={handleSaveMetadata} className="flex-col gap-md">
+          <div className="flex-col gap-xs">
+            <label className="text-secondary text-sm font-semibold">Event Name</label>
             <input
               type="text"
               placeholder="e.g. Summer Festival"
               value={name}
               onChange={e => setName(e.target.value)}
-              style={inputStyle}
+              className="input"
             />
           </div>
 
-          <div>
-            <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
-              Channel Custom Names (Location Labels)
+          <div className="flex-col gap-xs">
+            <label className="text-secondary text-sm font-semibold">
+              Location Names for Channels &amp; Threads
             </label>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-              {allEntries.map(entry => (
-                <div
-                  key={entry.scene_pk}
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '0.45rem',
+                maxHeight: '220px',
+                overflowY: 'auto',
+                padding: '0.5rem',
+                background: 'var(--bg-tertiary)',
+                borderRadius: '6px',
+                border: '1px solid var(--border-color)',
+              }}
+            >
+              {allEntries.map(entry => {
+                const pk = entry.scene_pk ?? entry.pk ?? 0;
+                const isThread = entry.type === 'thread';
+                const slotLabel = isThread ? entry.channel_name : `#${entry.channel_name}`;
+
+                return (
+                  <div
+                    key={`${entry.scene_key || pk}`}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.75rem',
+                      paddingLeft: isThread ? '1.5rem' : 0,
+                    }}
+                  >
+                    <span
+                      style={{
+                        minWidth: '150px',
+                        fontSize: '0.8rem',
+                        color: isThread ? 'var(--accent-secondary)' : 'var(--text-primary)',
+                        fontFamily: 'monospace',
+                      }}
+                    >
+                      {isThread ? `↳ ${slotLabel}` : slotLabel}
+                    </span>
+                    <input
+                      type="text"
+                      placeholder={`e.g. ${isThread ? 'Side Room' : 'Courtyard'}`}
+                      value={channelNames[pk] || ''}
+                      onChange={e =>
+                        setChannelNames({
+                          ...channelNames,
+                          [pk]: e.target.value,
+                        })
+                      }
+                      className="input"
+                      style={{ padding: '0.35rem 0.6rem', fontSize: '0.82rem' }}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="flex-row justify-end">
+            <Button
+              type="submit"
+              variant="primary"
+              size="sm"
+              loading={saving}
+              icon={<Save size={14} />}
+            >
+              Save Names
+            </Button>
+          </div>
+        </form>
+
+        <hr style={{ border: 'none', borderTop: '1px solid var(--border-color)', margin: 0 }} />
+
+        {/* Section 2: Split Event */}
+        <div className="flex-col gap-sm">
+          <div className="flex-row items-center gap-xs text-secondary text-md font-semibold">
+            <Scissors size={16} className="text-accent" />
+            <span>Split Event Channels into a New Event</span>
+          </div>
+          <span className="text-secondary text-sm">
+            Select channels or threads to branch off into a newly created event record:
+          </span>
+
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.35rem',
+              maxHeight: '160px',
+              overflowY: 'auto',
+              padding: '0.5rem',
+              background: 'var(--bg-tertiary)',
+              borderRadius: '6px',
+              border: '1px solid var(--border-color)',
+            }}
+          >
+            {allEntries.map(entry => {
+              const pk = entry.scene_pk ?? entry.pk ?? 0;
+              const isSelected = selectedSplitScenePks.includes(pk);
+              const label = entry.custom_name
+                ? `${entry.custom_name} (${entry.channel_name})`
+                : `#${entry.channel_name}`;
+
+              return (
+                <label
+                  key={`split-${pk}`}
                   style={{
                     display: 'flex',
                     alignItems: 'center',
                     gap: '0.5rem',
-                    paddingLeft: entry.type === 'thread' ? '1.25rem' : 0,
+                    fontSize: '0.82rem',
+                    cursor: 'pointer',
+                    color: 'var(--text-primary)',
                   }}
-                >
-                  <span style={{ minWidth: '140px', fontSize: '0.82rem', color: 'var(--text-primary)' }}>
-                    {entry.type === 'thread' ? `↳ ${entry.channel_name}` : `#${entry.channel_name}`}
-                  </span>
-                  <input
-                    type="text"
-                    placeholder="Custom location name (e.g. garden)"
-                    value={channelNames[entry.scene_pk] ?? ''}
-                    onChange={e =>
-                      setChannelNames({ ...channelNames, [entry.scene_pk]: e.target.value })
-                    }
-                    style={{ ...inputStyle, flex: 1 }}
-                  />
-                  {entry.start?.link && (
-                    <a
-                      href={entry.start.link}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      title="Open first message in Discord to check location banner"
-                      style={{
-                        display: 'inline-flex', alignItems: 'center', gap: '0.25rem',
-                        padding: '0.35rem 0.55rem', fontSize: '0.75rem',
-                        background: 'rgba(139, 92, 246, 0.2)', border: '1px solid #8b5cf6',
-                        color: '#c4b5fd', borderRadius: '4px', textDecoration: 'none', whiteSpace: 'nowrap',
-                      }}
-                    >
-                      <ExternalLink size={12} /> Discord
-                    </a>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <button
-              type="submit"
-              disabled={saving}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '0.4rem',
-                padding: '0.5rem 1rem',
-                background: 'var(--accent-primary)',
-                color: '#fff',
-                border: 'none',
-                borderRadius: '6px',
-                fontWeight: 600,
-                cursor: saving ? 'not-allowed' : 'pointer',
-              }}
-            >
-              {saving ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
-              Save Names
-            </button>
-          </div>
-        </form>
-
-        {/* Section 2: Split Event */}
-        {allEntries.length > 1 && (
-          <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '1rem', display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
-            <strong style={{ fontSize: '0.9rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-              <Scissors size={15} /> Split Channels into a New Event
-            </strong>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
-              {allEntries.map(entry => (
-                <label
-                  key={entry.scene_pk}
-                  style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.82rem', cursor: 'pointer' }}
                 >
                   <input
                     type="checkbox"
-                    checked={selectedSplitScenePks.includes(entry.scene_pk)}
-                    onChange={() => toggleSplitScene(entry.scene_pk)}
+                    checked={isSelected}
+                    onChange={() => toggleSplitScene(pk)}
                   />
                   <span>
-                    {entry.type === 'thread' ? `Thread: ${entry.channel_name}` : `#${entry.channel_name}`}
-                    {entry.custom_name ? ` (${entry.custom_name})` : ''} — {entry.message_count} msgs
+                    {entry.type === 'thread' ? `↳ ${label} (Thread)` : label} •{' '}
+                    <span className="text-secondary text-sm">{entry.message_count} msgs</span>
                   </span>
                 </label>
-              ))}
-            </div>
-            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              <input
-                type="text"
-                placeholder="New split event name (optional)"
-                value={newSplitEventName}
-                onChange={e => setNewSplitEventName(e.target.value)}
-                style={{ ...inputStyle, flex: 1 }}
-              />
-              <button
-                type="button"
-                onClick={handleSplit}
-                disabled={saving || selectedSplitScenePks.length === 0 || selectedSplitScenePks.length >= allEntries.length}
-                style={{
-                  display: 'inline-flex', alignItems: 'center', gap: '0.35rem', padding: '0.45rem 0.9rem',
-                  background: 'rgba(245, 158, 11, 0.2)', border: '1px solid var(--warning)', color: '#fbbf24',
-                  borderRadius: '6px', fontWeight: 600, whiteSpace: 'nowrap',
-                  cursor: saving || selectedSplitScenePks.length === 0 || selectedSplitScenePks.length >= allEntries.length ? 'not-allowed' : 'pointer',
-                }}
-              >
-                <Scissors size={14} /> Split Selected
-              </button>
-            </div>
+              );
+            })}
           </div>
-        )}
 
-        {/* Section 3: Merge with Another Event */}
-        {otherEvents.length > 0 && (
-          <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '1rem', display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
-            <strong style={{ fontSize: '0.9rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-              <GitMerge size={15} /> Merge Another Event into This Event
-            </strong>
-            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              <select
-                value={mergeTargetPk}
-                onChange={e => setMergeTargetPk(e.target.value)}
-                style={{ ...inputStyle, flex: 1 }}
-              >
-                <option value="">-- Select an event to merge --</option>
-                {otherEvents.map(ev => {
-                  const ts = ev.start_timestamp || ev.start_at || '';
-                  const dateLabel = ts ? new Date(ts).toLocaleDateString() : 'N/A';
-                  return (
-                    <option key={ev.pk} value={ev.pk}>
-                      {ev.name || 'Unnamed Event'} ({ev.id}) — {dateLabel} ({ev.message_count} msgs)
-                    </option>
-                  );
-                })}
-              </select>
-              <button
-                type="button"
-                onClick={handleMerge}
-                disabled={saving || !mergeTargetPk}
-                style={{
-                  display: 'inline-flex', alignItems: 'center', gap: '0.35rem', padding: '0.45rem 0.9rem',
-                  background: 'rgba(139, 92, 246, 0.2)', border: '1px solid #8b5cf6', color: '#c4b5fd',
-                  borderRadius: '6px', fontWeight: 600, whiteSpace: 'nowrap',
-                  cursor: saving || !mergeTargetPk ? 'not-allowed' : 'pointer',
-                }}
-              >
-                <GitMerge size={14} /> Merge Events
-              </button>
-            </div>
+          <div className="flex-row gap-sm items-center flex-wrap">
+            <input
+              type="text"
+              placeholder="Name for the newly split event..."
+              value={newSplitEventName}
+              onChange={e => setNewSplitEventName(e.target.value)}
+              className="input"
+              style={{ flex: 1, minWidth: '200px' }}
+            />
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={saving || selectedSplitScenePks.length === 0}
+              onClick={handleSplit}
+              icon={<Scissors size={14} />}
+            >
+              Split Selected ({selectedSplitScenePks.length})
+            </Button>
           </div>
-        )}
+        </div>
+
+        <hr style={{ border: 'none', borderTop: '1px solid var(--border-color)', margin: 0 }} />
+
+        {/* Section 3: Merge Entire Event */}
+        <div className="flex-col gap-sm">
+          <div className="flex-row items-center gap-xs text-secondary text-md font-semibold">
+            <GitMerge size={16} className="text-accent" />
+            <span>Merge Entire Event into Another Event</span>
+          </div>
+          <span className="text-secondary text-sm">
+            Combine all channels and history of this event into another target event:
+          </span>
+
+          <div className="flex-row gap-sm items-center flex-wrap">
+            <select
+              value={mergeTargetPk}
+              onChange={e => setMergeTargetPk(e.target.value)}
+              className="select"
+              style={{ flex: 1, minWidth: '200px' }}
+            >
+              <option value="">Select target event to merge into...</option>
+              {otherEvents.map(ev => (
+                <option key={ev.pk} value={ev.pk}>
+                  {ev.name ? `${ev.name} (${ev.id})` : ev.id} • {(ev.channels || []).length} channels
+                </option>
+              ))}
+            </select>
+
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={saving || !mergeTargetPk}
+              onClick={handleMerge}
+              icon={<GitMerge size={14} />}
+            >
+              Merge Events
+            </Button>
+          </div>
+        </div>
       </div>
-    </div>,
-    document.body
+    </Modal>
   );
 };

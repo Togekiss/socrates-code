@@ -3,7 +3,9 @@ import { api } from '../api';
 import { ScenesFilter } from './scenes/ScenesFilter';
 import { EventCard } from './scenes/EventCard';
 import { EventEditModal } from './scenes/EventEditModal';
-import { AlertCircle, ArrowRight, Search, ArrowUpDown } from 'lucide-react';
+import { Search, ArrowUpDown } from 'lucide-react';
+import { Button, ResponsiveText } from './ui';
+import { UnlinkedWriterBanner } from './layout/UnlinkedWriterBanner';
 import type { Character, EventRecord, MyWriter } from '../types';
 
 interface EventsTabProps {
@@ -97,24 +99,28 @@ export const EventsTab = ({
       params.append('page', targetPage.toString());
       params.append('per_page', '50');
       params.append('sort', sortOrder);
-
       if (search.trim()) params.append('search', search.trim());
+
       channelsFilter.forEach(ch => params.append('channels', ch));
+      typesFilter.forEach(t => params.append('types', t));
       statusesFilter.forEach(s => params.append('statuses', s));
 
+      if (before) params.append('before', before);
+      if (after) params.append('after', after);
+
+      if (byMe) {
+        params.append('by_me', 'true');
+      } else {
+        writersFilter.forEach(w => params.append('writers', w));
+        if (writersFilter.length > 0) {
+          params.append('writer_logic', writerLogic);
+        }
+      }
+
       resolvedCharacterIds.forEach(id => params.append('characters', id.toString()));
-      params.append('character_logic', characterLogic);
-
-      writersFilter.forEach(w => params.append('writers', w));
-      params.append('writer_logic', writerLogic);
-
-      params.append('include_alter_egos', includeAlterEgos.toString());
-      params.append('include_familiars', includeFamiliars.toString());
-      params.append('include_npcs', includeNPCs.toString());
-
-      if (byMe) params.append('by_me', 'true');
-      if (before) params.append('before', before + 'T00:00:00Z');
-      if (after) params.append('after', after + 'T23:59:59Z');
+      if (resolvedCharacterIds.length > 0) {
+        params.append('character_logic', characterLogic);
+      }
 
       return params;
     },
@@ -122,152 +128,104 @@ export const EventsTab = ({
       sortOrder,
       search,
       channelsFilter,
+      typesFilter,
       statusesFilter,
-      resolvedCharacterIds,
-      characterLogic,
-      writersFilter,
-      writerLogic,
-      includeAlterEgos,
-      includeFamiliars,
-      includeNPCs,
-      byMe,
       before,
       after,
+      byMe,
+      writersFilter,
+      writerLogic,
+      resolvedCharacterIds,
+      characterLogic,
     ]
   );
 
   const loadEvents = useCallback(
-    (targetPage: number, reset: boolean = false) => {
+    (targetPage: number, reset = false) => {
       if (!isReady) return;
       setLoading(true);
-      if (reset) setError(null);
+      setError(null);
+
+      const params = buildQueryParams(targetPage);
 
       api
-        .getEvents(backupId, buildQueryParams(targetPage))
+        .getEvents(backupId, params)
         .then(res => {
-          const data = res.events || [];
-          setEvents(prev => (reset ? data : [...prev, ...data]));
-          setHasMore(targetPage < (res.total_pages || 1));
-          setLoading(false);
+          const newEvents = res.events || [];
+          setEvents(prev => (reset ? newEvents : [...prev, ...newEvents]));
+          setHasMore(newEvents.length === 50);
         })
         .catch(err => {
-          setError(err.message);
-          setLoading(false);
-        });
+          console.error(err);
+          setError('Failed to fetch events.');
+        })
+        .finally(() => setLoading(false));
     },
     [backupId, isReady, buildQueryParams]
   );
 
+  // Debounced filter effect
   useEffect(() => {
     setPage(1);
     const timeout = setTimeout(() => {
       loadEvents(1, true);
-    }, 300);
+    }, 400);
     return () => clearTimeout(timeout);
-  }, [loadEvents]);
+  }, [
+    backupId,
+    isReady,
+    resolvedCharacterIds,
+    characterLogic,
+    writersFilter,
+    writerLogic,
+    channelsFilter,
+    typesFilter,
+    statusesFilter,
+    before,
+    after,
+    byMe,
+    search,
+    sortOrder,
+    loadEvents,
+  ]);
 
   if (!isReady) {
     return (
-      <div className="glass-panel" style={{ opacity: 0.5, pointerEvents: 'none' }}>
+      <div className="glass-panel opacity-50 pointer-events-none p-lg">
         <h2>Events</h2>
-        <p>Backup is not ready. Run the pipeline first.</p>
+        <p className="text-secondary">Backup is not ready. Run the pipeline first.</p>
       </div>
     );
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+    <div className="flex-col gap-md">
+      {/* Guidance Banner when By Me is active and User is unlinked */}
       {byMe && !myWriter && (
-        <div
-          style={{
-            background: 'rgba(245, 158, 11, 0.1)',
-            border: '1px solid var(--warning)',
-            borderRadius: '8px',
-            padding: '1rem 1.25rem',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: '1rem',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <AlertCircle size={22} style={{ color: 'var(--warning)', flexShrink: 0 }} />
-            <div>
-              <strong style={{ color: 'var(--text-primary)', display: 'block', fontSize: '0.95rem' }}>
-                Your Discord account is not yet linked to a writer profile
-              </strong>
-              <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-                Link your profile in the Writers tab to filter events written by your characters.
-              </span>
-            </div>
-          </div>
-          {onNavigateToWriters && (
-            <button
-              onClick={onNavigateToWriters}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.4rem',
-                padding: '0.45rem 1rem',
-                background: 'var(--warning)',
-                color: '#000',
-                border: 'none',
-                borderRadius: '6px',
-                fontWeight: 600,
-                fontSize: '0.85rem',
-                cursor: 'pointer',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              Go to Writers <ArrowRight size={14} />
-            </button>
-          )}
-        </div>
+        <UnlinkedWriterBanner onNavigateToWriters={onNavigateToWriters} className="mb-sm" />
       )}
 
       {/* Search & Sort Bar */}
-      <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
-        <div style={{ position: 'relative', flex: '1 1 260px' }}>
-          <Search
-            size={16}
-            style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }}
-          />
+      <div className="flex-row gap-sm items-center">
+        <div className="search-input-wrapper" style={{ flex: '1 1 260px' }}>
+          <Search size={16} />
           <input
             type="text"
+            className="input"
             placeholder="Search events or location custom names..."
             value={search}
             onChange={e => setSearch(e.target.value)}
-            style={{
-              width: '100%',
-              padding: '0.5rem 0.75rem 0.5rem 2.25rem',
-              background: 'var(--bg-secondary)',
-              border: '1px solid var(--border-color)',
-              color: 'white',
-              borderRadius: '6px',
-              fontSize: '0.88rem',
-            }}
           />
         </div>
 
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="md"
           onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '0.4rem',
-            padding: '0.5rem 0.85rem',
-            background: 'var(--bg-secondary)',
-            border: '1px solid var(--border-color)',
-            color: 'var(--text-primary)',
-            borderRadius: '6px',
-            fontSize: '0.85rem',
-            cursor: 'pointer',
-          }}
+          icon={<ArrowUpDown size={14} />}
         >
-          <ArrowUpDown size={15} />
-          {sortOrder === 'asc' ? 'Oldest First' : 'Newest First'}
-        </button>
+          <ResponsiveText textKey={sortOrder === 'asc' ? 'sortOldest' : 'sortNewest'} />
+        </Button>
       </div>
 
       <ScenesFilter
@@ -301,11 +259,15 @@ export const EventsTab = ({
         allCharacters={allCharacters}
       />
 
-      {error && <div style={{ color: 'var(--danger)', padding: '0.75rem' }}>{error}</div>}
+      {error && (
+        <div className="banner-danger">
+          <span className="text-md">{error}</span>
+        </div>
+      )}
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+      <div className="flex-col gap-sm">
         {events.length === 0 && !loading ? (
-          <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-secondary)' }}>
+          <div className="text-secondary text-center p-xl">
             No events match the current filters.
           </div>
         ) : (
@@ -321,26 +283,20 @@ export const EventsTab = ({
       </div>
 
       {hasMore && (
-        <button
-          type="button"
-          onClick={() => {
-            const next = page + 1;
-            setPage(next);
-            loadEvents(next, false);
-          }}
-          disabled={loading}
-          style={{
-            alignSelf: 'center',
-            padding: '0.5rem 1.25rem',
-            background: 'var(--bg-tertiary)',
-            border: '1px solid var(--border-color)',
-            color: 'var(--text-primary)',
-            borderRadius: '6px',
-            cursor: loading ? 'not-allowed' : 'pointer',
-          }}
-        >
-          {loading ? 'Loading...' : 'Load More Events'}
-        </button>
+        <div className="flex-row justify-center mt-md">
+          <Button
+            variant="secondary"
+            size="md"
+            onClick={() => {
+              const next = page + 1;
+              setPage(next);
+              loadEvents(next, false);
+            }}
+            loading={loading}
+          >
+            Load More Events
+          </Button>
+        </div>
       )}
 
       {editingEvent && (

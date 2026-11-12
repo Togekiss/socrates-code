@@ -2,7 +2,7 @@ import math
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
-from sqlalchemy import func, case, and_, or_
+from sqlalchemy import func, case, and_, or_, select
 from sqlalchemy.orm import selectinload, joinedload
 
 import re
@@ -21,6 +21,7 @@ from db.models import (
     FlaggedKind,
     FlaggedResolution,
     SceneIssueModel,
+    SceneKind,
     SceneModel,
     SceneParticipantModel,
     SceneStatus,
@@ -33,6 +34,7 @@ from db.models import (
 from db.session import db_session, require_sqlite_db, init_db
 from db.snapshots import export_character_list_snapshot, export_curation_snapshots
 from db.event_service import update_event_metadata, merge_events, split_event
+from db.character_service import get_character_activity_stats
 from find_character_scenes import MENTION_ONLY_PAT, EXCERPT_MAX_LEN, has_end_tag
 from utils import exceptions as exc
 import utils.tricks as t
@@ -249,6 +251,7 @@ def get_unassigned_characters(backup_id: str, base_path: str) -> List[Dict[str, 
     init_db(engine_or_backup_id=backup_id, backup_path=base_path)
 
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
+        stats_by_pk, _ = get_character_activity_stats(session, backup_id)
         chars = (
             session.query(CharacterModel)
             .filter(
@@ -262,6 +265,7 @@ def get_unassigned_characters(backup_id: str, base_path: str) -> List[Dict[str, 
         result = []
         for c in chars:
             c_names = [n.name for n in sorted(c.names, key=lambda x: x.position)]
+            st = stats_by_pk.get(c.pk, {"scene_count": 0, "last_active_at": None, "last_channel_name": None})
             result.append({
                 "id": c.char_id,
                 "names": c_names,
@@ -270,6 +274,9 @@ def get_unassigned_characters(backup_id: str, base_path: str) -> List[Dict[str, 
                 "version_type": c.version_type,
                 "group_id": c.group_pk,
                 "parent_id": c.parent.char_id if c.parent else None,
+                "scene_count": st["scene_count"],
+                "last_active_at": st["last_active_at"],
+                "last_channel_name": st["last_channel_name"],
             })
         return result
 
@@ -436,6 +443,38 @@ def get_scene_issues(
             "resolved": int(counts_row.resolved) if counts_row and counts_row.resolved is not None else 0,
         }
 
+        # Compute scope counts filtered by status, kind, reason, channel_id
+        scope_query = (
+            session.query(
+                func.count(SceneIssueModel.pk).label("all_count"),
+                func.coalesce(func.sum(case((SceneModel.kind == SceneKind.SCENE.value, 1), else_=0)), 0).label("scene_count"),
+                func.coalesce(func.sum(case((SceneModel.kind == SceneKind.SESSION.value, 1), else_=0)), 0).label("session_count"),
+                func.coalesce(func.sum(case((SceneModel.kind == SceneKind.EVENT.value, 1), else_=0)), 0).label("event_count"),
+            )
+            .outerjoin(SceneModel, SceneIssueModel.scene_pk == SceneModel.pk)
+            .filter(SceneIssueModel.backup_id == str(backup_id))
+        )
+        if status == "unresolved":
+            scope_query = scope_query.filter(SceneIssueModel.resolved_at.is_(None))
+        elif status == "resolved":
+            scope_query = scope_query.filter(SceneIssueModel.resolved_at.isnot(None))
+
+        if kind:
+            scope_query = scope_query.filter(SceneIssueModel.kind == kind)
+        if reason:
+            scope_query = scope_query.filter(SceneIssueModel.reason == reason)
+        if channel_id:
+            scope_query = scope_query.join(ChannelModel, SceneModel.channel_pk == ChannelModel.pk)
+            scope_query = scope_query.filter(ChannelModel.discord_id == str(channel_id))
+
+        scope_row = scope_query.first()
+        scope_counts = {
+            "all": int(scope_row.all_count) if scope_row and scope_row.all_count is not None else 0,
+            "scene": int(scope_row.scene_count) if scope_row and scope_row.scene_count is not None else 0,
+            "session": int(scope_row.session_count) if scope_row and scope_row.session_count is not None else 0,
+            "event": int(scope_row.event_count) if scope_row and scope_row.event_count is not None else 0,
+        }
+
         query = query.order_by(SceneIssueModel.created_at.desc(), SceneIssueModel.pk.desc())
         offset = (page - 1) * per_page
         issues_raw = query.offset(offset).limit(per_page).all()
@@ -525,6 +564,7 @@ def get_scene_issues(
             "per_page": per_page,
             "total_pages": total_pages,
             "status_counts": status_counts,
+            "scope_counts": scope_counts,
             "issues": formatted,
         }
 
@@ -1711,10 +1751,11 @@ def get_flagged_messages(
     kind: Optional[str] = None,
     resolution: Optional[str] = None,
     channel_id: Optional[str] = None,
+    scene_type: Optional[str] = None,
     page: int = 1,
     per_page: int = 50,
 ) -> Dict[str, Any]:
-    """Queries flagged messages with status, kind, resolution, and channel filters."""
+    """Queries flagged messages with status, kind, resolution, channel, and scene_type filters."""
     if not isinstance(status, str):
         status = "unresolved"
     if not isinstance(kind, str):
@@ -1723,6 +1764,8 @@ def get_flagged_messages(
         resolution = None
     if not isinstance(channel_id, str):
         channel_id = None
+    if not isinstance(scene_type, str) or not scene_type.strip():
+        scene_type = None
     if not isinstance(page, int) or page < 1:
         page = 1
     if not isinstance(per_page, int) or per_page < 1:
@@ -1749,6 +1792,50 @@ def get_flagged_messages(
             FlaggedMessageModel.backup_id == str(backup_id)
         ).scalar() or 0
 
+        # Determine scope subquery for flagged messages based on channel scenes
+        kind_subq = (
+            select(SceneModel.kind)
+            .where(
+                SceneModel.channel_pk == FlaggedMessageModel.channel_pk,
+                SceneModel.backup_id == FlaggedMessageModel.backup_id,
+            )
+            .limit(1)
+            .scalar_subquery()
+        )
+        msg_scope = func.coalesce(kind_subq, SceneKind.SCENE.value)
+
+        # Compute scope counts filtered by status, kind, resolution, channel_id
+        scope_counts_query = (
+            session.query(
+                func.count(FlaggedMessageModel.pk).label("all_count"),
+                func.coalesce(func.sum(case((msg_scope == SceneKind.SCENE.value, 1), else_=0)), 0).label("scene_count"),
+                func.coalesce(func.sum(case((msg_scope == SceneKind.SESSION.value, 1), else_=0)), 0).label("session_count"),
+                func.coalesce(func.sum(case((msg_scope == SceneKind.EVENT.value, 1), else_=0)), 0).label("event_count"),
+            )
+            .filter(FlaggedMessageModel.backup_id == str(backup_id))
+        )
+        if status == "unresolved":
+            scope_counts_query = scope_counts_query.filter(FlaggedMessageModel.resolved_at.is_(None))
+        elif status == "resolved":
+            scope_counts_query = scope_counts_query.filter(FlaggedMessageModel.resolved_at.isnot(None))
+
+        if kind:
+            scope_counts_query = scope_counts_query.filter(FlaggedMessageModel.kind == kind)
+        if resolution:
+            scope_counts_query = scope_counts_query.filter(FlaggedMessageModel.resolution == resolution)
+        if channel_id:
+            scope_counts_query = scope_counts_query.join(ChannelModel, FlaggedMessageModel.channel_pk == ChannelModel.pk).filter(
+                ChannelModel.discord_id == str(channel_id)
+            )
+
+        scope_row = scope_counts_query.first()
+        scope_counts = {
+            "all": int(scope_row.all_count) if scope_row and scope_row.all_count is not None else 0,
+            "scene": int(scope_row.scene_count) if scope_row and scope_row.scene_count is not None else 0,
+            "session": int(scope_row.session_count) if scope_row and scope_row.session_count is not None else 0,
+            "event": int(scope_row.event_count) if scope_row and scope_row.event_count is not None else 0,
+        }
+
         query = session.query(FlaggedMessageModel).filter(FlaggedMessageModel.backup_id == str(backup_id))
 
         if status == "unresolved":
@@ -1764,6 +1851,8 @@ def get_flagged_messages(
             query = query.join(ChannelModel, FlaggedMessageModel.channel_pk == ChannelModel.pk).filter(
                 ChannelModel.discord_id == str(channel_id)
             )
+        if scene_type:
+            query = query.filter(msg_scope == scene_type)
 
         total_items = query.count()
         query = query.order_by(FlaggedMessageModel.flagged_at.desc(), FlaggedMessageModel.pk.desc())
@@ -1854,10 +1943,15 @@ def get_flagged_messages(
                 writer_cache=writer_cache,
             )
 
+            item_scene_type = SceneKind.SCENE.value
+            if f.channel_pk and f.channel_pk in chan_scenes_map and chan_scenes_map[f.channel_pk]:
+                item_scene_type = chan_scenes_map[f.channel_pk][0].kind or SceneKind.SCENE.value
+
             formatted.append({
                 "id": f.pk,
                 "message_id": f.message_id,
                 "kind": f.kind,
+                "scene_type": item_scene_type,
                 "channel_name": c_name,
                 "channel_discord_id": c_discord_id,
                 "content": f.content,
@@ -1883,6 +1977,7 @@ def get_flagged_messages(
                 "resolved": resolved_count,
                 "all": all_count,
             },
+            "scope_counts": scope_counts,
             "messages": formatted,
         }
 

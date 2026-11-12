@@ -1,5 +1,6 @@
 import React from 'react';
-import { ExternalLink, Check, RotateCcw, Loader2, Sparkles, EyeOff, CheckCheck, ArrowRight } from 'lucide-react';
+import { ExternalLink, Check, RotateCcw, Sparkles, EyeOff, CheckCheck, ArrowRight } from 'lucide-react';
+import { DataCard, Badge, Button } from '../ui';
 import type { FlaggedMessage, FlaggedResolution } from '../../types';
 
 interface FlaggedMessageCardProps {
@@ -29,100 +30,74 @@ export const FlaggedMessageCard: React.FC<FlaggedMessageCardProps> = ({
   const isMessageOverridden = isOverridden && message.content !== message.override_content;
   const suggested = message.suggested_character;
 
-  const getKindBadge = (kind: string) => {
+  const cardAccent = isResolved
+    ? 'resolved'
+    : message.kind === 'failed_tupper'
+    ? 'warning'
+    : 'accent';
+
+  const getKindBadgeVariant = (kind: string): 'warning' | 'accent' | 'info' | 'neutral' => {
     switch (kind) {
       case 'failed_tupper':
-        return { label: 'Failed Tupper', bg: '#f59e0b', color: '#000' };
+        return 'warning';
       case 'ooc_boundary':
-        return { label: 'OOC Boundary', bg: '#8b5cf6', color: '#fff' };
+        return 'accent';
       case 'ooc_message':
-        return { label: 'OOC Message', bg: '#3b82f6', color: '#fff' };
-      case 'manual':
-        return { label: 'Manual', bg: '#06b6d4', color: '#000' };
+        return 'info';
       default:
-        return { label: kind.replace(/_/g, ' '), bg: 'var(--text-muted)', color: '#fff' };
+        return 'neutral';
     }
   };
 
-  const getResolutionBadge = (res?: string | null) => {
+  const getResolutionBadgeVariant = (res?: string | null): 'accent' | 'danger' | 'success' | null => {
     switch (res) {
       case 'override':
-        return { label: 'Overridden', bg: 'rgba(139, 92, 246, 0.2)', border: '#8b5cf6', color: '#c4b5fd' };
+        return 'accent';
       case 'ignored':
-        return { label: 'Ignored (OOC)', bg: 'rgba(239, 68, 68, 0.15)', border: 'rgba(239, 68, 68, 0.5)', color: '#fca5a5' };
+        return 'danger';
       case 'kept':
-        return { label: 'Kept As-Is', bg: 'rgba(16, 185, 129, 0.15)', border: 'rgba(16, 185, 129, 0.5)', color: '#6ee7b7' };
+        return 'success';
       default:
         return null;
     }
   };
 
-  const kindBadge = getKindBadge(message.kind);
-  const resBadge = getResolutionBadge(message.resolution);
+  const kindVariant = getKindBadgeVariant(message.kind);
+  const resVariant = getResolutionBadgeVariant(message.resolution);
 
   return (
-    <div
-      className="glass-panel"
-      style={{
-        padding: '1.25rem',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '0.75rem',
-        borderLeft: isResolved
-          ? '4px solid var(--success)'
-          : message.kind === 'failed_tupper'
-          ? '4px solid #f59e0b'
-          : '4px solid var(--accent-secondary)',
-      }}
-    >
+    <DataCard accent={cardAccent} className="flex-col gap-sm">
       {/* Header Row */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.75rem' }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-            <span
-              style={{
-                background: kindBadge.bg,
-                color: kindBadge.color,
-                padding: '0.15rem 0.5rem',
-                borderRadius: '4px',
-                fontSize: '0.75rem',
-                fontWeight: 700,
-                textTransform: 'uppercase',
-              }}
-            >
-              {kindBadge.label}
-            </span>
+      <div className="flex-row justify-between items-start flex-wrap gap-sm">
+        <div className="flex-col gap-xs">
+          <div className="flex-row items-center gap-xs flex-wrap">
+            <Badge variant={kindVariant} className="uppercase font-bold text-sm">
+              {message.kind.replace(/_/g, ' ')}
+            </Badge>
 
-            {resBadge && (
-              <span
-                style={{
-                  background: resBadge.bg,
-                  border: `1px solid ${resBadge.border}`,
-                  color: resBadge.color,
-                  padding: '0.15rem 0.5rem',
-                  borderRadius: '4px',
-                  fontSize: '0.75rem',
-                  fontWeight: 600,
-                }}
-              >
-                ✓ {resBadge.label}
-              </span>
+            {resVariant && (
+              <Badge variant={resVariant} className="text-sm font-semibold">
+                ✓ {message.resolution === 'override' ? 'Overridden' : message.resolution === 'ignored' ? 'Ignored (OOC)' : 'Kept As-Is'}
+              </Badge>
             )}
 
-            <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+            <span className="text-secondary text-md">
               #{message.channel_name || 'unknown-channel'}
             </span>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem', fontSize: '0.85rem', color: 'var(--text-muted)', flexWrap: 'wrap' }}>
-            
-            
-            <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-              {isOverridden && originalAuthorName !== currentAuthorName && (    
-                <><span style={{ color: 'var(--text-secondary)' }}>Original Author:</span><span style={{ color: 'var(--text-primary)' }}>{originalAuthorName}</span> <ArrowRight size={14}/>
-                <strong style={{ color: 'var(--text-secondary)' }}>New: </strong></>
+          <div className="flex-row items-center gap-xs flex-wrap text-muted text-sm mt-xs">
+            <span className="flex-row items-center gap-xs">
+              {isOverridden && originalAuthorName !== currentAuthorName && (
+                <>
+                  <span className="text-secondary">Original Author:</span>
+                  <span className="text-primary">{originalAuthorName}</span>
+                  <ArrowRight size={13} className="text-muted" />
+                  <strong className="text-secondary">New: </strong>
+                </>
               )}
-              <strong style={{ color: 'var(--text-secondary)' }}>Author:</strong><strong style={{ color: 'var(--text-primary)' }}>{currentAuthorName}</strong>
+              <strong className="text-secondary">Author:</strong>
+              <strong className="text-primary">{currentAuthorName}</strong>
             </span>
 
             {message.flagged_at && (
@@ -131,113 +106,62 @@ export const FlaggedMessageCard: React.FC<FlaggedMessageCardProps> = ({
           </div>
         </div>
 
-        {/* Actions */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+        {/* Action Buttons */}
+        <div className="flex-row items-center gap-xs flex-wrap">
           {message.discord_link && (
             <a
               href={message.discord_link}
               target="_blank"
               rel="noopener noreferrer"
-              className="action-btn"
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '0.35rem',
-                padding: '0.35rem 0.65rem',
-                fontSize: '0.8rem',
-                background: 'var(--bg-tertiary)',
-                color: 'var(--text-secondary)',
-                borderRadius: '6px',
-                textDecoration: 'none',
-                border: '1px solid var(--border-color)',
-              }}
+              className="btn btn-secondary btn-xs"
+              style={{ padding: '0.12rem 0.45rem', fontSize: '0.72rem' }}
             >
-              <ExternalLink size={14} /> Discord
+              <ExternalLink size={11} /> Discord
             </a>
           )}
 
           {isResolved ? (
-            <button
+            <Button
+              variant="danger"
+              size="sm"
               onClick={() => onReopen(message.message_id)}
               disabled={isReopening}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '0.35rem',
-                padding: '0.35rem 0.75rem',
-                fontSize: '0.8rem',
-                background: 'rgba(239, 68, 68, 0.15)',
-                color: 'var(--danger)',
-                border: '1px solid rgba(239, 68, 68, 0.4)',
-                borderRadius: '6px',
-                cursor: isReopening ? 'not-allowed' : 'pointer',
-                fontWeight: 600,
-              }}
+              loading={isReopening}
+              icon={<RotateCcw size={12} />}
             >
-              {isReopening ? <Loader2 size={14} className="spin" /> : <RotateCcw size={14} />}
               Reopen
-            </button>
+            </Button>
           ) : (
             <>
-              <button
+              <Button
+                variant="primary"
+                size="sm"
                 onClick={() => onPromote(message)}
                 disabled={isResolving}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '0.35rem',
-                  padding: '0.35rem 0.75rem',
-                  fontSize: '0.8rem',
-                  background: 'rgba(109, 40, 217, 0.25)',
-                  color: '#fff',
-                  border: '1px solid var(--accent-secondary)',
-                  borderRadius: '6px',
-                  cursor: isResolving ? 'not-allowed' : 'pointer',
-                  fontWeight: 600,
-                }}
+                icon={<Check size={13} />}
               >
-                <Check size={14} /> Override
-              </button>
+                Override
+              </Button>
 
-              <button
+              <Button
+                variant="warning"
+                size="sm"
                 onClick={() => onResolve(message, 'ignored')}
                 disabled={isResolving}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '0.35rem',
-                  padding: '0.35rem 0.75rem',
-                  fontSize: '0.8rem',
-                  background: 'rgba(234, 179, 8, 0.15)',
-                  color: '#fde047',
-                  border: '1px solid rgba(234, 179, 8, 0.4)',
-                  borderRadius: '6px',
-                  cursor: isResolving ? 'not-allowed' : 'pointer',
-                  fontWeight: 600,
-                }}
+                icon={<EyeOff size={13} />}
               >
-                <EyeOff size={14} /> Ignore (OOC)
-              </button>
+                Ignore (OOC)
+              </Button>
 
-              <button
+              <Button
+                variant="success"
+                size="sm"
                 onClick={() => onResolve(message, 'kept')}
                 disabled={isResolving}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '0.35rem',
-                  padding: '0.35rem 0.75rem',
-                  fontSize: '0.8rem',
-                  background: 'rgba(16, 185, 129, 0.15)',
-                  color: '#6ee7b7',
-                  border: '1px solid rgba(16, 185, 129, 0.4)',
-                  borderRadius: '6px',
-                  cursor: isResolving ? 'not-allowed' : 'pointer',
-                  fontWeight: 600,
-                }}
+                icon={<CheckCheck size={13} />}
               >
-                <CheckCheck size={14} /> Keep As-Is
-              </button>
+                Keep As-Is
+              </Button>
             </>
           )}
         </div>
@@ -259,48 +183,40 @@ export const FlaggedMessageCard: React.FC<FlaggedMessageCardProps> = ({
             gap: '0.5rem',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-            <Sparkles size={14} color="#c4b5fd" />
-            <span style={{ color: 'var(--text-secondary)' }}>
+          <div className="flex-row items-center gap-xs">
+            <Sparkles size={14} className="text-accent" />
+            <span className="text-secondary">
               Suggested:{' '}
-              <strong style={{ color: '#c4b5fd' }}>{suggested.name}</strong>
-              {suggested.writer_name ? ` (${suggested.writer_name})` : ''} — <em>{suggested.reason}</em>
+              <strong className="text-accent">{suggested.name}</strong>
+              {suggested.writer_name ? ` (${suggested.writer_name})` : ''} —{' '}
+              <em>{suggested.reason}</em>
             </span>
           </div>
-          <button
+          <Button
+            variant="secondary"
+            size="xs"
             onClick={() => onPromote(message)}
-            style={{
-              padding: '0.2rem 0.55rem',
-              borderRadius: '4px',
-              border: '1px solid #8b5cf6',
-              background: '#8b5cf6',
-              color: '#fff',
-              fontSize: '0.75rem',
-              fontWeight: 600,
-              cursor: 'pointer',
-            }}
           >
             Apply Suggestion
-          </button>
+          </Button>
         </div>
       )}
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: '#c4b5fd', fontWeight: 600 }}>
-        {isMessageOverridden ? 'Original message content ' : 'Message content:'} {isMessageOverridden ? <ArrowRight size={14} /> : null} {isMessageOverridden ? 'New message content:' : ''}
+      <div className="flex-row items-center gap-xs text-sm font-semibold text-accent">
+        {isMessageOverridden ? 'Original message content ' : 'Message content:'}{' '}
+        {isMessageOverridden ? <ArrowRight size={13} /> : null}{' '}
+        {isMessageOverridden ? 'New message content:' : ''}
       </div>
 
       {/* Message Content */}
       <div
+        className="message-excerpt-grid"
         style={{
           background: 'var(--bg-tertiary)',
           padding: '0.75rem 1rem',
           borderRadius: '6px',
           fontSize: '0.85rem',
           border: '1px solid var(--border-color)',
-          display: 'grid',
-          gridAutoFlow: 'column',
-          gridTemplateColumns: '1fr 1fr',
-          gap: '0.5rem',
         }}
       >
         <div
@@ -309,7 +225,7 @@ export const FlaggedMessageCard: React.FC<FlaggedMessageCardProps> = ({
           style={{
             cursor: 'pointer',
             fontStyle: 'italic',
-            color: isMessageOverridden? 'var(--text-secondary)' : 'var(--text-primary)',
+            color: isMessageOverridden ? 'var(--text-secondary)' : 'var(--text-primary)',
             whiteSpace: 'pre-wrap',
             lineHeight: '1.4',
             display: isExpanded ? 'block' : '-webkit-box',
@@ -321,7 +237,7 @@ export const FlaggedMessageCard: React.FC<FlaggedMessageCardProps> = ({
         >
           {message.content}
         </div>
-        
+
         {/* Override Comparison (if Overridden) */}
         {message.resolution === 'override' && isMessageOverridden && (
           <div
@@ -345,7 +261,6 @@ export const FlaggedMessageCard: React.FC<FlaggedMessageCardProps> = ({
             {message.override_content}
           </div>
         )}
-        
       </div>
 
       {/* Resolved Banner */}
@@ -364,6 +279,6 @@ export const FlaggedMessageCard: React.FC<FlaggedMessageCardProps> = ({
           <em>{message.resolved_note || `Resolved as ${message.resolution}`}</em>
         </div>
       )}
-    </div>
+    </DataCard>
   );
 };

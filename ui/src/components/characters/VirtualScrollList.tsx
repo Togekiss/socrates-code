@@ -13,6 +13,7 @@ interface VirtualScrollListProps {
   onEdit: (char: Character, parent?: Character) => void;
   onEditGroup?: (group: CharacterGroup) => void;
   onAddTagFilter: (tag: string) => void;
+  onAssignWriter?: (char: Character) => void;
   disableAccordion?: boolean;
 }
 
@@ -21,6 +22,7 @@ export const VirtualScrollList: React.FC<VirtualScrollListProps> = ({
   onEdit,
   onEditGroup,
   onAddTagFilter,
+  onAssignWriter,
   disableAccordion,
 }) => {
   const parentRef = useRef<HTMLDivElement>(null);
@@ -44,13 +46,7 @@ export const VirtualScrollList: React.FC<VirtualScrollListProps> = ({
   return (
     <div
       ref={parentRef}
-      style={{
-        height: '650px',
-        overflowY: 'auto',
-        position: 'relative',
-        borderRadius: '8px',
-        background: 'rgba(0,0,0,0.2)',
-      }}
+      className="virtual-list-container"
     >
       <div
         style={{
@@ -74,7 +70,7 @@ export const VirtualScrollList: React.FC<VirtualScrollListProps> = ({
                 left: 0,
                 width: '100%',
                 transform: `translateY(${virtualRow.start}px)`,
-                padding: '0.4rem 0.5rem',
+                padding: '0 0 0.65rem 0',
               }}
             >
               {item._isGroup ? (
@@ -84,6 +80,7 @@ export const VirtualScrollList: React.FC<VirtualScrollListProps> = ({
                   onEditGroup={onEditGroup || (() => {})}
                   onEditCharacter={onEdit}
                   onAddTagFilter={onAddTagFilter}
+                  onAssignWriter={onAssignWriter}
                   disableAccordion={disableAccordion}
                 />
               ) : (
@@ -91,6 +88,7 @@ export const VirtualScrollList: React.FC<VirtualScrollListProps> = ({
                   character={item.character || (item as unknown as Character)}
                   onEdit={onEdit}
                   onAddTagFilter={onAddTagFilter}
+                  onAssignWriter={onAssignWriter}
                   disableAccordion={disableAccordion}
                 />
               )}

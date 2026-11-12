@@ -3,7 +3,9 @@ import { api } from '../api';
 import { ScenesFilter } from './scenes/ScenesFilter';
 import { VirtualSceneList } from './scenes/VirtualSceneList';
 import { SceneEditModal } from './scenes/SceneEditModal';
-import { AlertCircle, ArrowRight, Search, ArrowUpDown } from 'lucide-react';
+import { Search, ArrowUpDown } from 'lucide-react';
+import { Button, ResponsiveText } from './ui';
+import { UnlinkedWriterBanner } from './layout/UnlinkedWriterBanner';
 import type { Character, ChatSession, MyWriter } from '../types';
 
 interface ChatSessionsTabProps {
@@ -98,60 +100,64 @@ export const ChatSessionsTab = ({
       if (search.trim()) params.append('search', search.trim());
 
       channelsFilter.forEach(ch => params.append('channels', ch));
+      typesFilter.forEach(t => params.append('types', t));
       statusesFilter.forEach(s => params.append('statuses', s));
 
+      if (before) params.append('before', before);
+      if (after) params.append('after', after);
+
+      if (byMe) {
+        params.append('by_me', 'true');
+      } else {
+        writersFilter.forEach(w => params.append('writers', w));
+        if (writersFilter.length > 0) {
+          params.append('writer_logic', writerLogic);
+        }
+      }
+
       resolvedCharacterIds.forEach(id => params.append('characters', id.toString()));
-      params.append('character_logic', characterLogic);
-
-      writersFilter.forEach(w => params.append('writers', w));
-      params.append('writer_logic', writerLogic);
-
-      params.append('include_alter_egos', includeAlterEgos.toString());
-      params.append('include_familiars', includeFamiliars.toString());
-      params.append('include_npcs', includeNPCs.toString());
-
-      if (byMe) params.append('by_me', 'true');
-      if (before) params.append('before', before + 'T00:00:00Z');
-      if (after) params.append('after', after + 'T23:59:59Z');
+      if (resolvedCharacterIds.length > 0) {
+        params.append('character_logic', characterLogic);
+      }
 
       return params;
     },
     [
+      sortOrder,
+      search,
       channelsFilter,
+      typesFilter,
       statusesFilter,
-      resolvedCharacterIds,
-      characterLogic,
-      writersFilter,
-      writerLogic,
-      includeAlterEgos,
-      includeFamiliars,
-      includeNPCs,
-      byMe,
       before,
       after,
-      search,
-      sortOrder,
+      byMe,
+      writersFilter,
+      writerLogic,
+      resolvedCharacterIds,
+      characterLogic,
     ]
   );
 
   const fetchSessions = useCallback(
-    (targetPage: number, reset: boolean = false) => {
+    (targetPage: number, reset = false) => {
       if (!isReady) return;
       setLoading(true);
-      if (reset) setError(null);
+      setError(null);
+
+      const params = buildQueryParams(targetPage);
 
       api
-        .getSessions(backupId, buildQueryParams(targetPage))
+        .getSessions(backupId, params)
         .then(res => {
-          const data = res.sessions || (res.scenes as unknown as ChatSession[]) || [];
-          setSessions(prev => (reset ? data : [...prev, ...data]));
-          setHasMore(data.length === 50);
-          setLoading(false);
+          const newSessions = res.sessions || [];
+          setSessions(prev => (reset ? newSessions : [...prev, ...newSessions]));
+          setHasMore(newSessions.length === 50);
         })
         .catch(err => {
-          setError(err.message);
-          setLoading(false);
-        });
+          console.error(err);
+          setError('Failed to fetch chat sessions.');
+        })
+        .finally(() => setLoading(false));
     },
     [backupId, isReady, buildQueryParams]
   );
@@ -171,10 +177,8 @@ export const ChatSessionsTab = ({
     writersFilter,
     writerLogic,
     channelsFilter,
+    typesFilter,
     statusesFilter,
-    includeAlterEgos,
-    includeFamiliars,
-    includeNPCs,
     before,
     after,
     byMe,
@@ -191,109 +195,41 @@ export const ChatSessionsTab = ({
 
   if (!isReady) {
     return (
-      <div className="glass-panel" style={{ opacity: 0.5, pointerEvents: 'none' }}>
+      <div className="glass-panel opacity-50 pointer-events-none p-lg">
         <h2>Chat Sessions</h2>
-        <p>Backup is not ready. Run the pipeline first.</p>
+        <p className="text-secondary">Backup is not ready. Run the pipeline first.</p>
       </div>
     );
   }
 
   return (
-    <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+    <div className="flex-col gap-md">
       {/* Guidance Banner when By Me is active and User is unlinked */}
       {byMe && !myWriter && (
-        <div
-          style={{
-            background: 'rgba(245, 158, 11, 0.1)',
-            border: '1px solid var(--warning)',
-            borderRadius: '8px',
-            padding: '1rem 1.25rem',
-            marginBottom: '1rem',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: '1rem',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <AlertCircle size={22} style={{ color: 'var(--warning)', flexShrink: 0 }} />
-            <div>
-              <strong style={{ color: 'var(--text-primary)', display: 'block', fontSize: '0.95rem' }}>
-                Your Discord account is not yet linked to a writer profile
-              </strong>
-              <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-                Link your profile in the Writers tab to filter chat sessions written by your characters.
-              </span>
-            </div>
-          </div>
-          {onNavigateToWriters && (
-            <button
-              onClick={onNavigateToWriters}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.4rem',
-                padding: '0.45rem 1rem',
-                background: 'var(--warning)',
-                color: '#000',
-                border: 'none',
-                borderRadius: '6px',
-                fontWeight: 600,
-                fontSize: '0.85rem',
-                cursor: 'pointer',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              Go to Writers <ArrowRight size={14} />
-            </button>
-          )}
-        </div>
+        <UnlinkedWriterBanner onNavigateToWriters={onNavigateToWriters} className="mb-sm" />
       )}
 
       {/* Search & Sort Bar */}
-      <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
-        <div style={{ position: 'relative', flex: '1 1 260px' }}>
-          <Search
-            size={16}
-            style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }}
-          />
+      <div className="flex-row gap-sm items-center">
+        <div className="search-input-wrapper" style={{ flex: '1 1 260px' }}>
+          <Search size={16} />
           <input
             type="text"
+            className="input"
             placeholder="Search chat sessions or custom names..."
             value={search}
             onChange={e => setSearch(e.target.value)}
-            style={{
-              width: '100%',
-              padding: '0.5rem 0.75rem 0.5rem 2.25rem',
-              background: 'var(--bg-secondary)',
-              border: '1px solid var(--border-color)',
-              color: 'white',
-              borderRadius: '6px',
-              fontSize: '0.88rem',
-              boxSizing: 'border-box',
-            }}
           />
         </div>
 
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="md"
           onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '0.4rem',
-            padding: '0.5rem 0.85rem',
-            background: 'var(--bg-secondary)',
-            border: '1px solid var(--border-color)',
-            color: 'var(--text-primary)',
-            borderRadius: '6px',
-            fontSize: '0.85rem',
-            cursor: 'pointer',
-          }}
+          icon={<ArrowUpDown size={14} />}
         >
-          <ArrowUpDown size={15} />
-          {sortOrder === 'asc' ? 'Oldest First' : 'Newest First'}
-        </button>
+          <ResponsiveText textKey={sortOrder === 'asc' ? 'sortOldest' : 'sortNewest'} />
+        </Button>
       </div>
 
       <ScenesFilter
@@ -327,7 +263,11 @@ export const ChatSessionsTab = ({
         allCharacters={allCharacters}
       />
 
-      {error && <div style={{ color: 'var(--danger)', padding: '1rem' }}>{error}</div>}
+      {error && (
+        <div className="banner-danger">
+          <span className="text-md">{error}</span>
+        </div>
+      )}
 
       <VirtualSceneList
         mode="sessions"
@@ -338,7 +278,7 @@ export const ChatSessionsTab = ({
         loadMore={loadMore}
         hasMore={hasMore}
         loading={loading}
-        onEdit={(item) => setEditingSession(item as ChatSession)}
+        onEdit={item => setEditingSession(item as ChatSession)}
       />
 
       {editingSession && (
@@ -346,13 +286,13 @@ export const ChatSessionsTab = ({
           backupId={backupId}
           scene={editingSession}
           onClose={() => setEditingSession(null)}
-          onUpdated={(updated) => {
+          onUpdated={updated => {
             if (updated) {
               setSessions(prev =>
                 prev.map(s =>
                   s.scene_key === updated.scene_key ||
                   s.id === updated.scene_key ||
-                  (updated.pk && (s.pk === updated.pk || (s as any).scene_pk === updated.pk))
+                  (updated.pk && (s.pk === updated.pk || s.scene_pk === updated.pk))
                     ? { ...s, custom_name: updated.custom_name }
                     : s
                 )

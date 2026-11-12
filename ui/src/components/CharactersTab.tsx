@@ -1,11 +1,15 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { Plus, AlertCircle, ArrowRight, Loader2 } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { Plus, Loader2 } from 'lucide-react';
 import { api } from '../api';
 import { CharactersFilter } from './characters/CharactersFilter';
 import { VirtualScrollList, type VirtualListItem } from './characters/VirtualScrollList';
 import { CharacterEditModal } from './characters/CharacterEditModal';
 import { GroupEditModal } from './characters/GroupEditModal';
-import type { Character, CharacterGroup, MyWriter } from '../types';
+import { AssignWriterModal } from './curation/AssignWriterModal';
+import { UnlinkedWriterBanner } from './layout/UnlinkedWriterBanner';
+import { Button, PanelSurface, ResponsiveText } from './ui';
+import type { Character, CharacterGroup, MyWriter, WriterDetailed } from '../types';
 
 interface CharactersTabProps {
   backupId: string;
@@ -18,8 +22,10 @@ export const CharactersTab = ({
   onNavigateToWriters,
   myWriter: initialMyWriter,
 }: CharactersTabProps) => {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [characters, setCharacters] = useState<Character[] | null>(null);
   const [groups, setGroups] = useState<CharacterGroup[] | null>(null);
+  const [writers, setWriters] = useState<WriterDetailed[]>([]);
   const [myWriter, setMyWriter] = useState<MyWriter | null>(initialMyWriter || null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -29,11 +35,34 @@ export const CharactersTab = ({
   const [writerFilter, setWriterFilter] = useState('');
   const [tagsFilter, setTagsFilter] = useState<string[]>([]);
   const [byMe, setByMe] = useState(false);
+  const [unassignedOnly, setUnassignedOnly] = useState(() => searchParams.get('unassigned') === '1');
 
-  // Edit state
+  // Sync unassigned filter with query params
+  useEffect(() => {
+    const isUnassigned = searchParams.get('unassigned') === '1';
+    if (isUnassigned !== unassignedOnly) {
+      setUnassignedOnly(isUnassigned);
+    }
+  }, [searchParams, unassignedOnly]);
+
+  const handleSetUnassignedOnly = (val: boolean) => {
+    setUnassignedOnly(val);
+    setSearchParams(
+      prev => {
+        const next = new URLSearchParams(prev);
+        if (val) next.set('unassigned', '1');
+        else next.delete('unassigned');
+        return next;
+      },
+      { replace: true }
+    );
+  };
+
+  // Edit / Action state
   const [editingChar, setEditingChar] = useState<{ char: Character; parent?: Character } | null>(null);
   const [editingGroup, setEditingGroup] = useState<CharacterGroup | null>(null);
   const [isCreatingGroup, setIsCreatingGroup] = useState(false);
+  const [assigningChar, setAssigningChar] = useState<Character | null>(null);
 
   const fetchCharacters = useCallback(() => {
     setLoading(true);
@@ -41,11 +70,13 @@ export const CharactersTab = ({
       api.getCharacters(backupId, byMe),
       api.getGroups(backupId),
       api.getMyWriter(backupId).catch(() => null),
+      api.getWritersDetailed(backupId).catch(() => []),
     ])
-      .then(([charsRes, groupsRes, writerRes]) => {
+      .then(([charsRes, groupsRes, writerRes, writersRes]) => {
         setCharacters(Array.isArray(charsRes) ? charsRes : []);
         setGroups(Array.isArray(groupsRes) ? groupsRes : []);
         if (writerRes !== undefined) setMyWriter(writerRes);
+        if (Array.isArray(writersRes)) setWriters(writersRes);
       })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false));
@@ -75,9 +106,17 @@ export const CharactersTab = ({
     if (!characters) return { displayItems: [], filtersActive: false };
 
     const currentGroups = groups || [];
-    const isActive = Boolean(nameFilter || writerFilter || tagsFilter.length > 0 || byMe);
+    const isActive = Boolean(nameFilter || writerFilter || tagsFilter.length > 0 || byMe || unassignedOnly);
 
     const matchesFilters = (char: Character): boolean => {
+      if (unassignedOnly) {
+        const hasWriter = Boolean(
+          (char.writer && char.writer.length > 0 && char.writer.some(w => w && w.trim().length > 0)) ||
+          char.writer_name ||
+          char.writer_id
+        );
+        if (hasWriter) return false;
+      }
       if (nameFilter) {
         const q = nameFilter.toLowerCase();
         const hasNameMatch = char.names?.some(n => n.toLowerCase().includes(q));
@@ -161,7 +200,7 @@ export const CharactersTab = ({
       // Rule: Never render ghost groups with 0 matching members when filters or byMe are active!
       const shouldIncludeGroup =
         matchingMembers.length > 0 ||
-        (groupNameMatches && !writerFilter && tagsFilter.length === 0 && !byMe && allMembers.length > 0);
+        (groupNameMatches && !writerFilter && tagsFilter.length === 0 && !byMe && !unassignedOnly && allMembers.length > 0);
 
       if (shouldIncludeGroup) {
         const displayMembers = matchingMembers.length > 0 ? matchingMembers : allMembers;
@@ -186,10 +225,10 @@ export const CharactersTab = ({
     });
 
     return { displayItems: items, filtersActive: true };
-  }, [characters, groups, nameFilter, writerFilter, tagsFilter, byMe]);
+  }, [characters, groups, nameFilter, writerFilter, tagsFilter, byMe, unassignedOnly]);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+    <div className="flex-col gap-md">
       {/* Filter Bar */}
       <CharactersFilter
         nameFilter={nameFilter}
@@ -202,102 +241,53 @@ export const CharactersTab = ({
         byMe={byMe}
         setByMe={setByMe}
         isLoggedIn={true}
+        unassignedOnly={unassignedOnly}
+        setUnassignedOnly={handleSetUnassignedOnly}
       />
 
       {/* Unlinked Writer Guidance Banner for "By Me" */}
       {byMe && !myWriter && (
-        <div
-          style={{
-            background: 'rgba(245, 158, 11, 0.1)',
-            border: '1px solid var(--warning)',
-            borderRadius: '8px',
-            padding: '1rem 1.25rem',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: '1rem',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <AlertCircle size={22} style={{ color: 'var(--warning)', flexShrink: 0 }} />
-            <div>
-              <strong style={{ color: 'var(--text-primary)', display: 'block', fontSize: '0.95rem' }}>
-                Your Discord account is not yet linked to a writer profile
-              </strong>
-              <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-                Link your Discord user ID in the Writers view so &quot;★ By Me&quot; can identify your characters.
-              </span>
-            </div>
-          </div>
-          {onNavigateToWriters && (
-            <button
-              onClick={onNavigateToWriters}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.4rem',
-                padding: '0.45rem 1rem',
-                background: 'var(--warning)',
-                color: '#000',
-                border: 'none',
-                borderRadius: '6px',
-                fontWeight: 600,
-                fontSize: '0.85rem',
-                cursor: 'pointer',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              Go to Writers <ArrowRight size={14} />
-            </button>
-          )}
-        </div>
+        <UnlinkedWriterBanner onNavigateToWriters={onNavigateToWriters} />
       )}
 
       {/* Roster Controls */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 0.25rem' }}>
+      <div className="flex-row items-center justify-between" style={{ padding: '0 0.25rem' }}>
         <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
           Showing <strong>{displayItems.length}</strong> characters and groups
           {filtersActive && ' (filtered)'}
         </div>
-        <button
+        <Button
+          variant="secondary"
+          size="md"
           onClick={() => setIsCreatingGroup(true)}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.4rem',
-            padding: '0.45rem 0.9rem',
-            background: 'var(--bg-tertiary)',
-            border: '1px solid var(--border-color)',
-            color: 'var(--text-primary)',
-            borderRadius: '6px',
-            fontSize: '0.85rem',
-            fontWeight: 500,
-            cursor: 'pointer',
-          }}
+          icon={<Plus size={14} />}
         >
-          <Plus size={15} /> New Character Group
-        </button>
+          <ResponsiveText textKey='newCharacterGroup' />
+        </Button>
       </div>
 
-      {/* Characters Virtual List */}
+      {/* Characters Virtual List (1-character-per-row stack) */}
       {loading ? (
-        <div className="glass-panel" style={{ textAlign: 'center', padding: '3rem' }}>
+        <PanelSurface style={{ textAlign: 'center', padding: '3rem' }}>
           <Loader2 size={32} className="animate-spin" style={{ color: 'var(--accent-secondary)', margin: '0 auto 1rem auto' }} />
           <p style={{ color: 'var(--text-secondary)' }}>Loading characters...</p>
-        </div>
+        </PanelSurface>
       ) : error ? (
-        <div className="glass-panel" style={{ textAlign: 'center', padding: '2rem', color: 'var(--danger)' }}>
+        <div className="banner-danger">
           {error}
         </div>
       ) : (
-        <VirtualScrollList
-          items={displayItems}
-          onEdit={(char, parent) => setEditingChar({ char, parent })}
-          onEditGroup={g => setEditingGroup(g)}
-          onAddTagFilter={tag => {
-            if (!tagsFilter.includes(tag)) setTagsFilter([...tagsFilter, tag]);
-          }}
-        />
+        <div className="character-list-stack">
+          <VirtualScrollList
+            items={displayItems}
+            onEdit={(char, parent) => setEditingChar({ char, parent })}
+            onEditGroup={g => setEditingGroup(g)}
+            onAssignWriter={setAssigningChar}
+            onAddTagFilter={tag => {
+              if (!tagsFilter.includes(tag)) setTagsFilter([...tagsFilter, tag]);
+            }}
+          />
+        </div>
       )}
 
       {/* Edit Character Modal */}
@@ -323,6 +313,17 @@ export const CharactersTab = ({
             setEditingGroup(null);
           }}
           onSaved={fetchCharacters}
+        />
+      )}
+
+      {/* Assign Writer Modal */}
+      {assigningChar && (
+        <AssignWriterModal
+          backupId={backupId}
+          character={assigningChar}
+          writers={writers}
+          onClose={() => setAssigningChar(null)}
+          onAssigned={fetchCharacters}
         />
       )}
     </div>

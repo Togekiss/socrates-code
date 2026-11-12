@@ -1,15 +1,10 @@
 import React, { useState } from 'react';
-import { Filter, X } from 'lucide-react';
+import { User, UserCheck, Folder, Hash } from 'lucide-react';
+import { CollapsibleFilterBar, SegmentedControl, FilterChip, Badge } from '../ui';
+import { resolveCharacterName } from '../../utils/characters';
 import type { Character } from '../../types';
 
-/**
- * ScenesFilter.tsx
- * 
- * Component responsible for rendering the complex filter sidebar in the Scenes, Chat Sessions,
- * and Events tabs.
- */
-
-interface ScenesFilterProps {
+export interface ScenesFilterProps {
   charactersFilter: number[];
   setCharactersFilter: (v: number[]) => void;
   characterLogic: 'AND' | 'OR';
@@ -41,273 +36,394 @@ interface ScenesFilterProps {
 }
 
 export const ScenesFilter: React.FC<ScenesFilterProps> = ({
-  charactersFilter, setCharactersFilter, characterLogic, setCharacterLogic,
-  writersFilter, setWritersFilter, writerLogic, setWriterLogic,
-  categoriesFilter, setCategoriesFilter,
-  typesFilter, setTypesFilter,
-  statusesFilter, setStatusesFilter,
-  includeAlterEgos, setIncludeAlterEgos,
-  includeFamiliars, setIncludeFamiliars,
-  includeNPCs, setIncludeNPCs,
-  before, setBefore,
-  after, setAfter,
-  byMe, setByMe,
+  charactersFilter,
+  setCharactersFilter,
+  characterLogic,
+  setCharacterLogic,
+  writersFilter,
+  setWritersFilter,
+  writerLogic,
+  setWriterLogic,
+  categoriesFilter,
+  setCategoriesFilter,
+  typesFilter,
+  setTypesFilter,
+  statusesFilter,
+  setStatusesFilter,
+  includeAlterEgos,
+  setIncludeAlterEgos,
+  includeFamiliars,
+  setIncludeFamiliars,
+  includeNPCs,
+  setIncludeNPCs,
+  before,
+  setBefore,
+  after,
+  setAfter,
+  byMe,
+  setByMe,
   mode = 'scenes',
   allCharacters,
 }) => {
-  const [collapsed, setCollapsed] = useState(false);
   const [writerInput, setWriterInput] = useState('');
   const [categoryInput, setCategoryInput] = useState('');
 
   const addCharFilter = (id: number) => {
-    if (!charactersFilter.includes(id)) setCharactersFilter([...charactersFilter, id]);
+    if (!charactersFilter.includes(id)) {
+      setCharactersFilter([...charactersFilter, id]);
+    }
   };
 
-  const removeCharFilter = (id: number) => setCharactersFilter(charactersFilter.filter(x => x !== id));
-  
+  const removeCharFilter = (id: number) => {
+    setCharactersFilter(charactersFilter.filter(x => x !== id));
+  };
+
   const addWriterFilter = (e: React.FormEvent) => {
     e.preventDefault();
-    if (writerInput.trim() && !writersFilter.includes(writerInput.trim())) {
-      setWritersFilter([...writersFilter, writerInput.trim()]);
+    const trimmed = writerInput.trim();
+    if (trimmed && !writersFilter.includes(trimmed)) {
+      setWritersFilter([...writersFilter, trimmed]);
     }
     setWriterInput('');
   };
-  const removeWriterFilter = (w: string) => setWritersFilter(writersFilter.filter(x => x !== w));
+
+  const removeWriterFilter = (w: string) => {
+    setWritersFilter(writersFilter.filter(x => x !== w));
+  };
 
   const addCategoryFilter = (e: React.FormEvent) => {
     e.preventDefault();
-    if (categoryInput.trim() && !categoriesFilter.includes(categoryInput.trim())) {
-      setCategoriesFilter([...categoriesFilter, categoryInput.trim()]);
+    const trimmed = categoryInput.trim();
+    if (trimmed && !categoriesFilter.includes(trimmed)) {
+      setCategoriesFilter([...categoriesFilter, trimmed]);
     }
     setCategoryInput('');
   };
-  const removeCategoryFilter = (c: string) => setCategoriesFilter(categoriesFilter.filter(x => x !== c));
 
-  const toggleArrayItem = (arr: string[], setArr: (v: string[]) => void, item: string) => {
-    if (arr.includes(item)) setArr(arr.filter(x => x !== item));
-    else setArr([...arr, item]);
+  const removeCategoryFilter = (c: string) => {
+    setCategoriesFilter(categoriesFilter.filter(x => x !== c));
   };
 
-  const getCharName = (id: number) => {
-    const main = allCharacters.find(c => c.id === id);
-    if (main) return main.names?.[0] || main.name;
-    for (const c of allCharacters) {
-      if (c.versions) {
-        const nested = c.versions.find(v => v.id === id);
-        if (nested) return nested.name;
-      }
+  const toggleArrayItem = (arr: string[], setArr: (v: string[]) => void, item: string) => {
+    if (arr.includes(item)) {
+      setArr(arr.filter(x => x !== item));
+    } else {
+      setArr([...arr, item]);
     }
-    return `Unknown (${id})`;
   };
 
   const isChannelFilterMode = mode === 'sessions' || mode === 'events';
   const statusOptions = mode === 'events' ? ['closed', 'open'] : ['closed', 'open', 'no_end_tag'];
+  const filtersTitle = mode === 'events' ? 'Event Searcher' : mode === 'sessions' ? 'Chat Session Searcher' : 'Scenes Searcher';
+
+  const activeCount =
+    charactersFilter.length +
+    writersFilter.length +
+    (byMe ? 1 : 0) +
+    categoriesFilter.length +
+    statusesFilter.length +
+    typesFilter.length +
+    (before ? 1 : 0) +
+    (after ? 1 : 0);
+
+  const handleClearAll = () => {
+    setCharactersFilter([]);
+    setWritersFilter([]);
+    setByMe(false);
+    setCategoriesFilter([]);
+    setStatusesFilter([]);
+    setTypesFilter([]);
+    setBefore('');
+    setAfter('');
+    setIncludeAlterEgos(true);
+    setIncludeFamiliars(true);
+    setIncludeNPCs(true);
+  };
+
+  // Summary pills shown when the filter bar is collapsed
+  const summaryPills = (
+    <div className="flex-row items-center gap-xs flex-wrap">
+      {byMe && <Badge variant="accent">★ By Me</Badge>}
+      {charactersFilter.length > 0 && (
+        <Badge variant="neutral">
+          {charactersFilter.length} char{charactersFilter.length > 1 ? 's' : ''}
+        </Badge>
+      )}
+      {writersFilter.length > 0 && (
+        <Badge variant="neutral">
+          {writersFilter.length} writer{writersFilter.length > 1 ? 's' : ''}
+        </Badge>
+      )}
+      {categoriesFilter.length > 0 && (
+        <Badge variant="neutral">
+          {categoriesFilter.length} {isChannelFilterMode ? 'channels' : 'categories'}
+        </Badge>
+      )}
+      {statusesFilter.length > 0 && (
+        <Badge variant="neutral">
+          {statusesFilter.map(s => (s === 'no_end_tag' ? 'issues' : s)).join(', ')}
+        </Badge>
+      )}
+      {typesFilter.length > 0 && (
+        <Badge variant="neutral">{typesFilter.join(', ')}</Badge>
+      )}
+      {(before || after) && <Badge variant="neutral">Date range</Badge>}
+    </div>
+  );
 
   return (
-    <div style={{ background: 'var(--bg-secondary)', borderRadius: '8px', border: '1px solid var(--border-color)', marginBottom: '1rem' }}>
-      <div 
-        onClick={() => setCollapsed(!collapsed)}
-        style={{ padding: '0.75rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', userSelect: 'none' }}
-      >
-        <Filter size={16} color="var(--accent-secondary)" />
-        <strong style={{ fontSize: '0.9rem', color: 'var(--text-primary)' }}>Filters</strong>
-      </div>
-      
-      {!collapsed && (
-        <div style={{ padding: '1rem', borderTop: '1px solid var(--border-color)', display: 'flex', flexWrap: 'wrap', gap: '0.5rem 1.5rem' }}>
-          {/* Characters */}
-          <div style={{ flex: '1 1 300px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
-              <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Characters</label>
-              <button 
-                onClick={() => {
-                  const newLogic = characterLogic === 'AND' ? 'OR' : 'AND';
-                  setCharacterLogic(newLogic);
-                  if (newLogic === 'AND') {
-                    setIncludeAlterEgos(false);
-                    setIncludeFamiliars(false);
-                    setIncludeNPCs(false);
-                  }
-                }} 
-                style={{ fontSize: '0.7rem', padding: '0.1rem 0.4rem', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'white', borderRadius: '4px', cursor: 'pointer' }}
-              >
-                Logic: {characterLogic}
-              </button>
-            </div>
-            
-            <select 
-              value="" 
-              onChange={e => addCharFilter(Number(e.target.value))}
-              style={{ width: '100%', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'white', padding: '0.5rem', borderRadius: '4px' }}
+    <CollapsibleFilterBar
+      title={filtersTitle}
+      activeCount={activeCount}
+      summaryPills={summaryPills}
+      onClearAll={handleClearAll}
+    >
+      <div className='filter-cols-row'> 
+        {/* Characters Filter Block */}
+        <div className="filter-col filter-col-md">
+          <div className="filter-col-header">
+            <label className="text-secondary text-sm font-semibold">Characters</label>
+            <SegmentedControl<'AND' | 'OR'>
+              options={[
+                { value: 'AND', label: 'AND' },
+                { value: 'OR', label: 'OR' },
+              ]}
+              value={characterLogic}
+              onChange={newLogic => {
+                setCharacterLogic(newLogic);
+                if (newLogic === 'AND') {
+                  setIncludeAlterEgos(false);
+                  setIncludeFamiliars(false);
+                  setIncludeNPCs(false);
+                } else {
+                  setIncludeAlterEgos(true);
+                  setIncludeFamiliars(true);
+                  setIncludeNPCs(true);
+                }
+              }}
+              ariaLabel="Character Logic"
+            />
+          </div>
+
+          <select
+            value=""
+            onChange={e => addCharFilter(Number(e.target.value))}
+            className="select"
+          >
+            <option value="" disabled>
+              Select character to filter...
+            </option>
+            {allCharacters.flatMap(c => [
+              <option key={c.id} value={c.id}>
+                {c.names?.[0] || c.name}
+              </option>,
+              ...(c.versions || []).map(v => (
+                <option key={v.id} value={v.id}>
+                  {' '}
+                  └ {v.name} ({v.version_type || 'Alt'})
+                </option>
+              )),
+            ])}
+          </select>
+
+          
+
+          {/* Sub-Type Inclusions */}
+          <div className="flex-row flex-wrap gap-xs mt-sm">
+            <FilterChip
+              active={characterLogic === 'OR' && includeAlterEgos}
+              onClick={() => setIncludeAlterEgos(!includeAlterEgos)}
+              className={characterLogic === 'AND' ? 'chip-sm opacity-50 pointer-events-none' : 'chip-sm'}
+              title={characterLogic === 'AND' ? 'Disabled in AND mode' : 'Include Alter Egos'}
             >
-              <option value="" disabled>Select character...</option>
-              {allCharacters.flatMap(c => [
-                <option key={c.id} value={c.id}>{c.names?.[0] || c.name}</option>,
-                ...(c.versions || []).map(v => (
-                  <option key={v.id} value={v.id}>  └ {v.name} ({v.version_type || 'Alt'})</option>
-                ))
-              ])}
-            </select>
-            
-            {charactersFilter.length > 0 && (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.5rem' }}>
-                {charactersFilter.map(id => (
-                  <div key={id} style={{ background: 'var(--accent-secondary)', color: '#000', padding: '0.2rem 0.5rem', borderRadius: '12px', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                    {getCharName(id)}
-                    <button type="button" onClick={() => removeCharFilter(id)} style={{ background: 'transparent', border: 'none', color: '#000', padding: 0, cursor: 'pointer', display: 'flex' }}><X size={12} /></button>
-                  </div>
-                ))}
-              </div>
-            )}
-            
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.75rem' }}>
-              <button 
-                onClick={() => setIncludeAlterEgos(!includeAlterEgos)} 
-                disabled={characterLogic === 'AND'}
-                style={{ padding: '0.2rem 0.5rem', borderRadius: '4px', fontSize: '0.75rem', border: '1px solid var(--border-color)', background: includeAlterEgos ? 'var(--accent-primary)' : 'var(--bg-tertiary)', color: includeAlterEgos ? '#000' : 'white', opacity: characterLogic === 'AND' ? 0.5 : 1, cursor: characterLogic === 'AND' ? 'default' : 'pointer' }}
-              >
-                + Alter Egos
-              </button>
-              <button 
-                onClick={() => setIncludeFamiliars(!includeFamiliars)} 
-                disabled={characterLogic === 'AND'}
-                style={{ padding: '0.2rem 0.5rem', borderRadius: '4px', fontSize: '0.75rem', border: '1px solid var(--border-color)', background: includeFamiliars ? 'var(--accent-primary)' : 'var(--bg-tertiary)', color: includeFamiliars ? '#000' : 'white', opacity: characterLogic === 'AND' ? 0.5 : 1, cursor: characterLogic === 'AND' ? 'default' : 'pointer' }}
-              >
-                + Familiars
-              </button>
-              <button 
-                onClick={() => setIncludeNPCs(!includeNPCs)} 
-                disabled={characterLogic === 'AND'}
-                style={{ padding: '0.2rem 0.5rem', borderRadius: '4px', fontSize: '0.75rem', border: '1px solid var(--border-color)', background: includeNPCs ? 'var(--accent-primary)' : 'var(--bg-tertiary)', color: includeNPCs ? '#000' : 'white', opacity: characterLogic === 'AND' ? 0.5 : 1, cursor: characterLogic === 'AND' ? 'default' : 'pointer' }}
-              >
-                + NPCs
-              </button>
-            </div>
+              + Alter Egos
+            </FilterChip>
+            <FilterChip
+              active={characterLogic === 'OR' && includeFamiliars}
+              onClick={() => setIncludeFamiliars(!includeFamiliars)}
+              className={characterLogic === 'AND' ? 'chip-sm opacity-50 pointer-events-none' : 'chip-sm'}
+              title={characterLogic === 'AND' ? 'Disabled in AND mode' : 'Include Familiars'}
+            >
+              + Familiars
+            </FilterChip>
+            <FilterChip
+              active={characterLogic === 'OR' && includeNPCs}
+              onClick={() => setIncludeNPCs(!includeNPCs)}
+              className={characterLogic === 'AND' ? 'chip-sm opacity-50 pointer-events-none' : 'chip-sm'}
+              title={characterLogic === 'AND' ? 'Disabled in AND mode' : 'Include NPCs'}
+            >
+              + NPCs
+            </FilterChip>
           </div>
+        </div>
+        
+        
 
-          {/* Writers */}
-          <div style={{ flex: '1 1 200px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
-              <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Writers</label>
-              <div style={{ display: 'flex', gap: '0.35rem' }}>
-                <button
-                  type="button"
-                  onClick={() => setByMe(!byMe)}
-                  style={{
-                    fontSize: '0.7rem',
-                    padding: '0.1rem 0.45rem',
-                    background: byMe ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
-                    border: '1px solid var(--border-color)',
-                    color: byMe ? '#fff' : 'white',
-                    borderRadius: '4px',
-                    cursor: 'pointer',
-                    fontWeight: byMe ? 'bold' : 'normal'
-                  }}
-                  title="Filter to items written by the logged-in Discord user"
-                >
-                  ★ By Me
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setWriterLogic(writerLogic === 'AND' ? 'OR' : 'AND')}
-                  style={{ fontSize: '0.7rem', padding: '0.1rem 0.4rem', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'white', borderRadius: '4px', cursor: 'pointer' }}
-                >
-                  Logic: {writerLogic}
-                </button>
-              </div>
-            </div>
-            <form onSubmit={addWriterFilter} style={{ display: 'flex', gap: '0.5rem' }}>
-              <input
-                type="text"
-                value={writerInput}
-                onChange={e => setWriterInput(e.target.value)}
-                placeholder={byMe ? 'Bound to user session' : 'Add writer...'}
-                disabled={byMe}
-                style={{ flex: 1, background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'white', padding: '0.5rem', borderRadius: '4px', opacity: byMe ? 0.5 : 1 }}
+        {/* Writers Filter Block */}
+        <div className="filter-col filter-col-md">
+          <div className="filter-col-header">
+            <label className="text-secondary text-sm font-semibold">Writers</label>
+            <div className="flex-row items-center gap-xs">
+              <FilterChip
+                active={byMe}
+                onClick={() => setByMe(!byMe)}
+                title="Filter to items written by your linked Discord user"
+              >
+                ★ By Me
+              </FilterChip>
+              <SegmentedControl<'AND' | 'OR'>
+                options={[
+                  { value: 'AND', label: 'AND' },
+                  { value: 'OR', label: 'OR' },
+                ]}
+                value={writerLogic}
+                onChange={setWriterLogic}
+                ariaLabel="Writer Logic"
               />
-            </form>
-            {writersFilter.length > 0 && (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.5rem' }}>
-                {writersFilter.map(w => (
-                  <div key={w} style={{ background: 'var(--accent-secondary)', color: '#000', padding: '0.2rem 0.5rem', borderRadius: '12px', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                    {w} <button type="button" onClick={() => removeWriterFilter(w)} style={{ background: 'transparent', border: 'none', color: '#000', padding: 0, cursor: 'pointer', display: 'flex' }}><X size={12} /></button>
-                  </div>
-                ))}
-              </div>
-            )}
+            </div>
           </div>
 
-          {/* Categories / Channels */}
-          <div style={{ flex: '1 1 200px' }}>
-            <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>
+          <form onSubmit={addWriterFilter} className="flex-row gap-xs">
+            <input
+              type="text"
+              value={writerInput}
+              onChange={e => setWriterInput(e.target.value)}
+              placeholder={byMe ? 'Bound to user session' : 'Add writer...'}
+              disabled={byMe}
+              className="input"
+            />
+          </form>
+        </div>
+
+        {/* Categories / Channels Filter Block */}
+        <div className="filter-col filter-col-md">
+          <div className="filter-col-header">
+            <label className="text-secondary text-sm font-semibold">
               {isChannelFilterMode ? 'Channel (OR)' : 'Category (OR)'}
             </label>
-            <form onSubmit={addCategoryFilter} style={{ display: 'flex', gap: '0.5rem' }}>
-              <input
-                type="text"
-                value={categoryInput}
-                onChange={e => setCategoryInput(e.target.value)}
-                placeholder={isChannelFilterMode ? 'Add channel...' : 'Add category...'}
-                style={{ flex: 1, background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'white', padding: '0.5rem', borderRadius: '4px' }}
-              />
-            </form>
-            {categoriesFilter.length > 0 && (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.5rem' }}>
-                {categoriesFilter.map(c => (
-                  <div key={c} style={{ background: 'var(--accent-secondary)', color: '#000', padding: '0.2rem 0.5rem', borderRadius: '12px', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                    {c} <button type="button" onClick={() => removeCategoryFilter(c)} style={{ background: 'transparent', border: 'none', color: '#000', padding: 0, cursor: 'pointer', display: 'flex' }}><X size={12} /></button>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
+          <form onSubmit={addCategoryFilter} className="flex-row gap-xs">
+            <input
+              type="text"
+              value={categoryInput}
+              onChange={e => setCategoryInput(e.target.value)}
+              placeholder={isChannelFilterMode ? 'Add channel...' : 'Add category...'}
+              className="input"
+            />
+          </form>
+        </div>
+      
+        {/* Status & Type Filter Block */}
+        <div className="filter-col filter-col-auto">
+          <div className="filter-col-header">
+            <label className="text-secondary text-sm font-semibold">Status (OR)</label>
+          </div>
+          <div className="flex-row flex-wrap gap-xs">
+            {statusOptions.map(s => (
+              <FilterChip
+                key={s}
+                active={statusesFilter.includes(s)}
+                onClick={() => toggleArrayItem(statusesFilter, setStatusesFilter, s)}
+              >
+                {s === 'no_end_tag' ? 'issues' : s}
+              </FilterChip>
+            ))}
+          </div>
+        </div>
 
-          {/* Status & Type */}
-          <div style={{ flex: '1 1 150px' }}>
-            <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Status (OR)</label>
-            <div style={{ display: 'flex', gap: '0.5rem' }}>
-              {statusOptions.map(s => (
-                <button key={s} onClick={() => toggleArrayItem(statusesFilter, setStatusesFilter, s)} style={{ padding: '0.2rem 0.5rem', borderRadius: '4px', border: '1px solid var(--border-color)', background: statusesFilter.includes(s) ? 'var(--accent-primary)' : 'var(--bg-tertiary)', color: statusesFilter.includes(s) ? '#000' : 'white' }}>{s.replace('no_end_tag', 'issues')}</button>
+        {!isChannelFilterMode && (
+          <div className="filter-col filter-col-auto">
+            <div className="filter-col-header">
+              <label className="text-secondary text-sm font-semibold">Type (OR)</label>
+            </div>
+            <div className="flex-row flex-wrap gap-xs">
+              {['channel', 'thread', 'DM'].map(t => (
+                <FilterChip
+                  key={t}
+                  active={typesFilter.includes(t)}
+                  onClick={() => toggleArrayItem(typesFilter, setTypesFilter, t)}
+                >
+                  {t}
+                </FilterChip>
               ))}
             </div>
-            
-            {!isChannelFilterMode && (
-              <>
-                <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '1rem', marginBottom: '0.25rem' }}>Type (OR)</label>
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  {['channel', 'thread', 'DM'].map(t => (
-                    <button key={t} onClick={() => toggleArrayItem(typesFilter, setTypesFilter, t)} style={{ padding: '0.2rem 0.5rem', borderRadius: '4px', border: '1px solid var(--border-color)', background: typesFilter.includes(t) ? 'var(--accent-primary)' : 'var(--bg-tertiary)', color: typesFilter.includes(t) ? '#000' : 'white' }}>{t}</button>
-                  ))}
-                </div>
-              </>
-            )}
           </div>
+        )}
+        
 
-          {/* Dates */}
-          <div style={{ flex: '1 1 260px' }}>
-            <div style={{ display: 'flex', gap: '0.75rem' }}>
-              <div style={{ flex: 1 }}>
-                <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Before</label>
-                <input 
-                  type="date" 
-                  value={before} 
-                  onChange={e => setBefore(e.target.value)} 
-                  style={{ width: '100%', padding: '0.5rem', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'white', borderRadius: '4px' }} 
-                />
-              </div>
-              <div style={{ flex: 1 }}>
-                <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>After</label>
-                <input 
-                  type="date" 
-                  value={after} 
-                  onChange={e => setAfter(e.target.value)} 
-                  style={{ width: '100%', padding: '0.5rem', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'white', borderRadius: '4px' }} 
-                />
-              </div>
+        {/* Date Range Filter Block */}
+        <div className="filter-group">
+          <div className="filter-col filter-col-xs">
+            <div className="filter-col-header">
+              <label className="text-secondary text-sm font-semibold">Before</label>
+            </div>
+            <div>
+              <input
+                type="date"
+                value={before}
+                onChange={e => setBefore(e.target.value)}
+                className="input"
+              />  
+            </div>
+          </div>
+          <div className="filter-col filter-col-xs">
+            <div className="filter-col-header">
+              <label className="text-secondary text-sm font-semibold">After</label>
+            </div>
+            <div>
+              <input
+                type="date"
+                value={after}
+                onChange={e => setAfter(e.target.value)}
+                className="input"
+              />
             </div>
           </div>
         </div>
+      </div>
+
+      {/* Inline Active Filter Chips Row (ordered: Characters -> Writers -> Categories/Channels) */}
+      {(charactersFilter.length > 0 || writersFilter.length > 0 || categoriesFilter.length > 0) && (
+        <div className="filter-active-chips-row">
+          <span className="filter-active-chips-label">Filters:</span>
+          {charactersFilter.map(id => (
+            <FilterChip
+              key={`char-${id}`}
+              active
+              variant="accent"
+              icon={<User size={12} />}
+              onRemove={() => removeCharFilter(id)}
+              title="Remove character filter"
+            >
+              {resolveCharacterName(id, allCharacters) || `Unknown (${id})`}
+            </FilterChip>
+          ))}
+          {writersFilter.map(w => (
+            <FilterChip
+              key={`writer-${w}`}
+              active
+              variant="info"
+              icon={<UserCheck size={12} />}
+              onRemove={() => removeWriterFilter(w)}
+              title="Remove writer filter"
+            >
+              {w}
+            </FilterChip>
+          ))}
+          {categoriesFilter.map(c => (
+            <FilterChip
+              key={`cat-${c}`}
+              active
+              variant="success"
+              icon={isChannelFilterMode ? <Hash size={12} /> : <Folder size={12} />}
+              onRemove={() => removeCategoryFilter(c)}
+              title={isChannelFilterMode ? 'Remove channel filter' : 'Remove category filter'}
+            >
+              {c}
+            </FilterChip>
+          ))}
+        </div>
       )}
-    </div>
+    </CollapsibleFilterBar>
   );
 };

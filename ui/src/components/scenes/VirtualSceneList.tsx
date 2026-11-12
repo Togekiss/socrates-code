@@ -16,8 +16,16 @@ interface VirtualSceneListProps {
   onEdit?: (item: Scene | ChatSession) => void;
 }
 
-export const VirtualSceneList: React.FC<VirtualSceneListProps> = ({ 
-  scenes, allCharacters, charactersFilter, setCharactersFilter, loadMore, hasMore, loading, mode = 'scenes', onEdit
+export const VirtualSceneList: React.FC<VirtualSceneListProps> = ({
+  scenes,
+  allCharacters,
+  charactersFilter,
+  setCharactersFilter,
+  loadMore,
+  hasMore,
+  loading,
+  mode = 'scenes',
+  onEdit,
 }) => {
   const parentRef = useRef<HTMLDivElement>(null);
 
@@ -28,35 +36,30 @@ export const VirtualSceneList: React.FC<VirtualSceneListProps> = ({
     overscan: 10,
   });
 
+  const virtualItems = virtualizer.getVirtualItems();
+
   // Watch for scrolling near the bottom
   React.useEffect(() => {
-    const [lastItem] = [...virtualizer.getVirtualItems()].reverse();
-    if (!lastItem) return;
-    
+    if (virtualItems.length === 0) return;
+    const lastItem = virtualItems[virtualItems.length - 1];
+
     if (lastItem.index >= scenes.length - 1 && hasMore && !loading) {
       loadMore();
     }
-  }, [virtualizer.getVirtualItems(), hasMore, loading, scenes.length, loadMore]);
+  }, [virtualItems, hasMore, loading, scenes.length, loadMore]);
 
   if (scenes.length === 0 && !loading) {
     return (
-      <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-secondary)' }}>
-        {mode === 'sessions' ? 'No chat sessions match the current filters.' : 'No scenes match the current filters.'}
+      <div className="text-secondary text-center p-xl">
+        {mode === 'sessions'
+          ? 'No chat sessions match the current filters.'
+          : 'No scenes match the current filters.'}
       </div>
     );
   }
 
   return (
-    <div
-      ref={parentRef}
-      style={{
-        height: '600px',
-        overflowY: 'auto',
-        position: 'relative',
-        borderRadius: '8px',
-        background: 'rgba(0,0,0,0.2)'
-      }}
-    >
+    <div ref={parentRef} className="virtual-list-container">
       <div
         style={{
           height: `${virtualizer.getTotalSize()}px`,
@@ -64,7 +67,7 @@ export const VirtualSceneList: React.FC<VirtualSceneListProps> = ({
           position: 'relative',
         }}
       >
-        {virtualizer.getVirtualItems().map((virtualRow) => {
+        {virtualizer.getVirtualItems().map(virtualRow => {
           const isLoaderRow = virtualRow.index > scenes.length - 1;
           const item = scenes[virtualRow.index];
 
@@ -79,12 +82,14 @@ export const VirtualSceneList: React.FC<VirtualSceneListProps> = ({
                 left: 0,
                 width: '100%',
                 transform: `translateY(${virtualRow.start}px)`,
-                padding: '0.25rem 0'
+                padding: '0 0 0.65rem 0',
               }}
             >
               {isLoaderRow ? (
-                <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
-                  {mode === 'sessions' ? 'Loading more chat sessions...' : 'Loading more scenes...'}
+                <div className="text-secondary text-center p-md">
+                  {mode === 'sessions'
+                    ? 'Loading more chat sessions...'
+                    : 'Loading more scenes...'}
                 </div>
               ) : mode === 'sessions' ? (
                 <SessionCard
@@ -95,8 +100,8 @@ export const VirtualSceneList: React.FC<VirtualSceneListProps> = ({
                   onEdit={onEdit}
                 />
               ) : (
-                <SceneCard 
-                  scene={item} 
+                <SceneCard
+                  scene={item}
                   allCharacters={allCharacters}
                   charactersFilter={charactersFilter}
                   setCharactersFilter={setCharactersFilter}

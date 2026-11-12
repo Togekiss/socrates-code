@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { X, Trash2, Loader2 } from 'lucide-react';
+import { Trash2 } from 'lucide-react';
 import { api } from '../../api';
 import type { WriterDetailed } from '../../types';
+import { Modal, ChipInput, Button } from '../ui';
 
 interface WriterEditModalProps {
   backupId: string;
@@ -18,7 +19,7 @@ export const WriterEditModal: React.FC<WriterEditModalProps> = ({
 }) => {
   const isNew = !writer || !writer.id;
   const [displayName, setDisplayName] = useState(writer?.display_name || '');
-  const [aliases, setAliases] = useState((writer?.aliases || []).join(', '));
+  const [aliases, setAliases] = useState<string[]>(writer?.aliases || []);
   const [discordUserId, setDiscordUserId] = useState(writer?.discord_user_id || '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -29,10 +30,7 @@ export const WriterEditModal: React.FC<WriterEditModalProps> = ({
       return;
     }
 
-    const aliasesArray = aliases
-      .split(',')
-      .map(s => s.trim())
-      .filter(Boolean);
+    const aliasesArray = aliases.map(s => s.trim()).filter(Boolean);
 
     setSaving(true);
     setError(null);
@@ -80,248 +78,90 @@ export const WriterEditModal: React.FC<WriterEditModalProps> = ({
     }
   };
 
-  return (
-    <div
-      style={{
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        background: 'rgba(0, 0, 0, 0.75)',
-        zIndex: 100,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        backdropFilter: 'blur(4px)',
-      }}
-      onClick={e => {
-        if (e.target === e.currentTarget && !saving) onClose();
-      }}
-    >
-      <div
-        style={{
-          background: 'var(--bg-primary)',
-          width: '500px',
-          maxWidth: '92vw',
-          borderRadius: '12px',
-          border: '1px solid var(--border-color)',
-          display: 'flex',
-          flexDirection: 'column',
-          boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)',
-        }}
-      >
-        {/* Header */}
-        <div
-          style={{
-            padding: '1rem 1.25rem',
-            borderBottom: '1px solid var(--border-color)',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-          }}
-        >
-          <h2 style={{ margin: 0, fontSize: '1.2rem', color: 'var(--text-primary)' }}>
-            {isNew ? 'Create New Writer' : `Edit Writer: ${writer.display_name}`}
-          </h2>
-          <button
-            onClick={onClose}
+  const modalFooter = (
+    <div className="flex-row items-center justify-between w-full" style={{ width: '100%' }}>
+      <div>
+        {!isNew && (
+          <Button
+            variant="danger"
+            size="sm"
+            onClick={handleDelete}
             disabled={saving}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: 'var(--text-secondary)',
-              cursor: 'pointer',
-              display: 'flex',
-            }}
+            icon={<Trash2 size={14} />}
           >
-            <X size={20} />
-          </button>
-        </div>
+            Delete Writer
+          </Button>
+        )}
+      </div>
 
-        {/* Body */}
-        <div style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          {error && (
-            <div
-              style={{
-                background: 'rgba(239, 68, 68, 0.15)',
-                border: '1px solid var(--danger)',
-                color: 'var(--danger)',
-                padding: '0.65rem 0.85rem',
-                borderRadius: '6px',
-                fontSize: '0.85rem',
-              }}
-            >
-              {error}
-            </div>
-          )}
-
-          <div>
-            <label
-              style={{
-                display: 'block',
-                fontSize: '0.85rem',
-                fontWeight: 600,
-                color: 'var(--text-secondary)',
-                marginBottom: '0.35rem',
-              }}
-            >
-              Display Name *
-            </label>
-            <input
-              type="text"
-              value={displayName}
-              onChange={e => setDisplayName(e.target.value)}
-              placeholder="e.g. Stephen King"
-              style={{
-                width: '100%',
-                padding: '0.5rem 0.75rem',
-                background: 'var(--bg-tertiary)',
-                border: '1px solid var(--border-color)',
-                borderRadius: '6px',
-                color: 'white',
-                fontSize: '0.9rem',
-              }}
-            />
-          </div>
-
-          <div>
-            <label
-              style={{
-                display: 'block',
-                fontSize: '0.85rem',
-                fontWeight: 600,
-                color: 'var(--text-secondary)',
-                marginBottom: '0.35rem',
-              }}
-            >
-              Aliases (comma-separated)
-            </label>
-            <input
-              type="text"
-              value={aliases}
-              onChange={e => setAliases(e.target.value)}
-              placeholder="e.g. Richard Bachman, SK"
-              style={{
-                width: '100%',
-                padding: '0.5rem 0.75rem',
-                background: 'var(--bg-tertiary)',
-                border: '1px solid var(--border-color)',
-                borderRadius: '6px',
-                color: 'white',
-                fontSize: '0.9rem',
-              }}
-            />
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem', display: 'block' }}>
-              Used for matching character credits and heuristics.
-            </span>
-          </div>
-
-          <div>
-            <label
-              style={{
-                display: 'block',
-                fontSize: '0.85rem',
-                fontWeight: 600,
-                color: 'var(--text-secondary)',
-                marginBottom: '0.35rem',
-              }}
-            >
-              Linked Discord User ID (Snowflake)
-            </label>
-            <input
-              type="text"
-              value={discordUserId}
-              onChange={e => setDiscordUserId(e.target.value)}
-              placeholder="e.g. 123456789012345678"
-              style={{
-                width: '100%',
-                padding: '0.5rem 0.75rem',
-                background: 'var(--bg-tertiary)',
-                border: '1px solid var(--border-color)',
-                borderRadius: '6px',
-                color: 'white',
-                fontSize: '0.9rem',
-              }}
-            />
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem', display: 'block' }}>
-              Enables &quot;★ By Me&quot; filtering for this Discord account.
-            </span>
-          </div>
-        </div>
-
-        {/* Footer */}
-        <div
-          style={{
-            padding: '1rem 1.25rem',
-            borderTop: '1px solid var(--border-color)',
-            display: 'flex',
-            justifyContent: isNew ? 'flex-end' : 'space-between',
-            alignItems: 'center',
-            background: 'var(--bg-secondary)',
-            borderRadius: '0 0 12px 12px',
-          }}
-        >
-          {!isNew && (
-            <button
-              onClick={handleDelete}
-              disabled={saving}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.4rem',
-                padding: '0.45rem 0.85rem',
-                background: 'rgba(239, 68, 68, 0.15)',
-                border: '1px solid var(--danger)',
-                color: 'var(--danger)',
-                borderRadius: '6px',
-                cursor: 'pointer',
-                fontSize: '0.85rem',
-              }}
-            >
-              <Trash2 size={14} /> Delete Writer
-            </button>
-          )}
-
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <button
-              onClick={onClose}
-              disabled={saving}
-              style={{
-                padding: '0.45rem 1rem',
-                background: 'transparent',
-                border: '1px solid var(--border-color)',
-                color: 'var(--text-primary)',
-                borderRadius: '6px',
-                cursor: 'pointer',
-                fontSize: '0.85rem',
-              }}
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleSave}
-              disabled={saving}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.4rem',
-                padding: '0.45rem 1.25rem',
-                background: 'var(--accent-primary)',
-                border: 'none',
-                color: '#fff',
-                borderRadius: '6px',
-                fontWeight: 600,
-                cursor: saving ? 'not-allowed' : 'pointer',
-                fontSize: '0.85rem',
-              }}
-            >
-              {saving && <Loader2 size={14} className="animate-spin" />}
-              {isNew ? 'Create Writer' : 'Save Changes'}
-            </button>
-          </div>
-        </div>
+      <div className="flex-row items-center gap-sm">
+        <Button variant="ghost" onClick={onClose} disabled={saving}>
+          Cancel
+        </Button>
+        <Button variant="primary" onClick={handleSave} loading={saving}>
+          {isNew ? 'Create Writer' : 'Save Changes'}
+        </Button>
       </div>
     </div>
+  );
+
+  return (
+    <Modal
+      isOpen={true}
+      onClose={onClose}
+      title={isNew ? 'Create New Writer' : `Edit Writer: ${writer.display_name}`}
+      size="md"
+      footer={modalFooter}
+    >
+      <div className="flex-col gap-md">
+        {error && (
+          <div className="banner-danger">
+            <span>{error}</span>
+          </div>
+        )}
+
+        {/* Display Name */}
+        <div className="form-group">
+          <label htmlFor="writer-name" className="form-label">
+            Display Name
+          </label>
+          <input
+            id="writer-name"
+            type="text"
+            className="input"
+            value={displayName}
+            onChange={e => setDisplayName(e.target.value)}
+            placeholder="e.g. JaneDoe, WriterAlias"
+          />
+        </div>
+
+        {/* Aliases ChipInput */}
+        <ChipInput
+          id="writer-aliases"
+          label="Aliases & Nicknames"
+          values={aliases}
+          onChange={setAliases}
+          placeholder="Type alias and press Enter..."
+        />
+
+        {/* Discord User Snowflake */}
+        <div className="form-group">
+          <label htmlFor="writer-discord-id" className="form-label">
+            Discord User ID (Snowflake)
+          </label>
+          <input
+            id="writer-discord-id"
+            type="text"
+            className="input"
+            value={discordUserId}
+            onChange={e => setDiscordUserId(e.target.value)}
+            placeholder="e.g. 123456789012345678"
+          />
+          <span className="form-hint">
+            Links this profile to a Discord user ID for &quot;★ By Me&quot; character filtering.
+          </span>
+        </div>
+      </div>
+    </Modal>
   );
 };

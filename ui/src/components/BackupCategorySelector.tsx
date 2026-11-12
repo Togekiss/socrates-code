@@ -21,11 +21,12 @@ interface BackupCategorySelectorProps {
 
 const selectStyle: React.CSSProperties = {
   flex: 1,
-  padding: '0.5rem',
+  padding: '0.45rem 0.65rem',
   background: 'var(--bg-tertiary)',
   border: '1px solid var(--border-color)',
-  color: 'white',
-  borderRadius: '4px',
+  color: 'var(--text-primary)',
+  borderRadius: 'var(--radius-sm)',
+  fontSize: '0.875rem',
 };
 
 export const BackupCategorySelector: React.FC<BackupCategorySelectorProps> = ({
@@ -109,12 +110,13 @@ export const BackupCategorySelector: React.FC<BackupCategorySelectorProps> = ({
                 style={{
                   background: 'var(--bg-tertiary)',
                   padding: '0.25rem 0.5rem',
-                  borderRadius: '4px',
-                  fontSize: '0.85rem',
+                  borderRadius: 'var(--radius-sm)',
+                  fontSize: '0.82rem',
                   display: 'flex',
                   alignItems: 'center',
                   gap: '0.4rem',
                   border: '1px solid var(--border-color)',
+                  color: 'var(--text-primary)',
                 }}
               >
                 {cat}
@@ -166,12 +168,12 @@ export const BackupCategorySelector: React.FC<BackupCategorySelectorProps> = ({
               <span
                 key={cat}
                 style={{
-                  background: 'rgba(59, 130, 246, 0.15)',
-                  border: '1px solid var(--accent-primary)',
-                  color: '#93c5fd',
+                  background: 'var(--accent-subtle)',
+                  border: '1px solid var(--accent-border)',
+                  color: 'var(--accent-light)',
                   padding: '0.25rem 0.5rem',
-                  borderRadius: '4px',
-                  fontSize: '0.85rem',
+                  borderRadius: 'var(--radius-sm)',
+                  fontSize: '0.82rem',
                   display: 'flex',
                   alignItems: 'center',
                   gap: '0.4rem',
@@ -224,23 +226,23 @@ export const BackupCategorySelector: React.FC<BackupCategorySelectorProps> = ({
           {eventCategoriesList.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.5rem' }}>
               {eventCategoriesList.map((cat: string) => (
-                <span
-                  key={cat}
-                  style={{
-                    background: 'rgba(139, 92, 246, 0.15)',
-                    border: '1px solid #8b5cf6',
-                    color: '#c4b5fd',
-                    padding: '0.25rem 0.5rem',
-                    borderRadius: '4px',
-                    fontSize: '0.85rem',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.4rem',
-                  }}
-                >
-                  {cat}
-                  <X size={14} style={{ cursor: 'pointer' }} onClick={() => removeEventCategory(cat)} />
-                </span>
+              <span
+                key={cat}
+                style={{
+                  background: 'var(--badge-accent-bg, rgba(139, 92, 246, 0.15))',
+                  border: '1px solid var(--badge-accent-border, rgba(139, 92, 246, 0.35))',
+                  color: 'var(--accent-secondary)',
+                  padding: '0.25rem 0.5rem',
+                  borderRadius: 'var(--radius-sm)',
+                  fontSize: '0.82rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.4rem',
+                }}
+              >
+                {cat}
+                <X size={14} style={{ cursor: 'pointer' }} onClick={() => removeEventCategory(cat)} />
+              </span>
               ))}
             </div>
           )}

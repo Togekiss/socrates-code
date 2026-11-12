@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { createPortal } from 'react-dom';
-import { X, Save, Loader2, Tag, Trash2 } from 'lucide-react';
+import { Tag, Save, Trash2 } from 'lucide-react';
+import { Modal, Button } from '../ui';
 import { api } from '../../api';
 import { SceneMergeSection } from './SceneMergeSection';
 import type { ChatSession, Scene } from '../../types';
@@ -23,24 +23,26 @@ export const SceneEditModal: React.FC<SceneEditModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const sceneIdentifier = (scene as any).scene_pk ?? (scene as any).pk ?? scene.scene_key ?? scene.id;
+  const sceneIdentifier =
+    scene.scene_pk ?? scene.pk ?? scene.scene_key ?? scene.id;
   const isSession = scene.kind === 'session';
   const itemType = isSession ? 'session' : 'scene';
   const itemTypeCapital = isSession ? 'Session' : 'Scene';
-  const modalTitle = `Edit ${itemTypeCapital} Name`;
-  const channelDisplay = scene.category && scene.channel ? `${scene.category} > #${scene.channel}` : (scene.channel || 'Channel');
+  const modalTitle = (
+    <div className="flex-row items-center gap-xs">
+      <Tag size={18} className="text-accent" />
+      <span>Edit {itemTypeCapital} Name</span>
+    </div>
+  );
+
+  const channelDisplay =
+    scene.category && scene.channel
+      ? `${scene.category} > #${scene.channel}`
+      : scene.channel || 'Channel';
 
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !saving) onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [saving, onClose]);
 
   const handleSave = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -83,88 +85,28 @@ export const SceneEditModal: React.FC<SceneEditModalProps> = ({
     }
   };
 
-  return createPortal(
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(0, 0, 0, 0.75)',
-        zIndex: 1000,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        backdropFilter: 'blur(4px)',
-        padding: '1rem',
-      }}
-      onClick={e => {
-        if (e.target === e.currentTarget && !saving) onClose();
-      }}
+  return (
+    <Modal
+      isOpen={true}
+      onClose={onClose}
+      title={modalTitle}
+      size="md"
     >
-      <div
-        style={{
-          background: 'var(--bg-primary)',
-          border: '1px solid var(--border-color)',
-          borderRadius: '8px',
-          maxWidth: '520px',
-          width: '100%',
-          padding: '1.5rem',
-          boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5)',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '1rem',
-        }}
-      >
-        {/* Header */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div>
-            <h3 style={{ margin: 0, fontSize: '1.15rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
-              <Tag size={18} style={{ color: 'var(--accent-secondary)' }} />
-              {modalTitle}
-            </h3>
-            <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
-              {channelDisplay} {scene.thread_name ? `(${scene.thread_name})` : ''} • <span style={{ fontFamily: 'monospace' }}>{scene.scene_key}</span>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={saving}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: 'var(--text-secondary)',
-              cursor: saving ? 'not-allowed' : 'pointer',
-              padding: '0.25rem',
-              display: 'flex',
-              alignItems: 'center',
-              borderRadius: '4px',
-            }}
-          >
-            <X size={18} />
-          </button>
+      <div className="flex-col gap-md">
+        <div className="text-secondary text-sm">
+          {channelDisplay} {scene.thread_name ? `(${scene.thread_name})` : ''} •{' '}
+          <span className="font-mono">{scene.scene_key}</span>
         </div>
 
         {error && (
-          <div
-            style={{
-              background: 'rgba(239, 68, 68, 0.15)',
-              border: '1px solid var(--danger)',
-              color: '#f87171',
-              padding: '0.55rem 0.75rem',
-              borderRadius: '6px',
-              fontSize: '0.85rem',
-            }}
-          >
-            {error}
+          <div className="banner-danger">
+            <span className="text-md">{error}</span>
           </div>
         )}
 
-        {/* Edit Form */}
-        <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
-            <label style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
-              Custom Name
-            </label>
+        <form onSubmit={handleSave} className="flex-col gap-md">
+          <div className="flex-col gap-xs">
+            <label className="text-secondary text-sm font-semibold">Custom Name</label>
             <input
               ref={inputRef}
               type="text"
@@ -173,91 +115,50 @@ export const SceneEditModal: React.FC<SceneEditModalProps> = ({
               placeholder={isSession ? 'e.g., Casual Banter at 2AM' : 'e.g., The Coffee Shop Meeting'}
               disabled={saving}
               maxLength={128}
-              style={{
-                width: '100%',
-                padding: '0.55rem 0.75rem',
-                background: 'var(--bg-tertiary)',
-                border: '1px solid var(--border-color)',
-                color: 'var(--text-primary)',
-                borderRadius: '6px',
-                fontSize: '0.9rem',
-                outline: 'none',
-                boxSizing: 'border-box',
-              }}
+              className="input"
             />
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+            <span className="text-muted text-sm">
               Give this {itemType} a descriptive label. Leave blank or clear to reset to default.
             </span>
           </div>
 
-          {/* Action Buttons for Custom Name */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+          <div className="flex-row justify-between items-center gap-sm">
             {scene.custom_name ? (
-              <button
-                type="button"
+              <Button
+                variant="danger"
+                size="sm"
                 onClick={handleClear}
                 disabled={saving}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '0.35rem',
-                  padding: '0.45rem 0.75rem',
-                  background: 'rgba(239, 68, 68, 0.12)',
-                  border: '1px solid rgba(239, 68, 68, 0.35)',
-                  color: '#f87171',
-                  borderRadius: '6px',
-                  fontSize: '0.82rem',
-                  fontWeight: 500,
-                  cursor: saving ? 'not-allowed' : 'pointer',
-                }}
+                icon={<Trash2 size={13} />}
               >
-                <Trash2 size={13} /> Clear Name
-              </button>
-            ) : <div />}
+                Clear Name
+              </Button>
+            ) : (
+              <div />
+            )}
 
-            <div style={{ display: 'flex', gap: '0.5rem' }}>
-              <button
-                type="button"
+            <div className="flex-row gap-xs">
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={onClose}
                 disabled={saving}
-                style={{
-                  padding: '0.45rem 0.9rem',
-                  background: 'transparent',
-                  border: '1px solid var(--border-color)',
-                  color: 'var(--text-secondary)',
-                  borderRadius: '6px',
-                  fontSize: '0.85rem',
-                  cursor: saving ? 'not-allowed' : 'pointer',
-                }}
               >
                 Cancel
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
                 type="submit"
-                disabled={saving}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '0.35rem',
-                  padding: '0.45rem 1rem',
-                  background: 'var(--accent-secondary)',
-                  border: 'none',
-                  color: '#fff',
-                  borderRadius: '6px',
-                  fontSize: '0.85rem',
-                  fontWeight: 600,
-                  cursor: saving ? 'not-allowed' : 'pointer',
-                  opacity: saving ? 0.7 : 1,
-                }}
+                loading={saving}
+                icon={<Save size={14} />}
               >
-                {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-                {saving ? 'Saving...' : 'Save'}
-              </button>
+                Save
+              </Button>
             </div>
           </div>
         </form>
 
-        {/* Merge Section */}
         <SceneMergeSection
           backupId={backupId}
           sceneIdentifier={sceneIdentifier}
@@ -271,7 +172,6 @@ export const SceneEditModal: React.FC<SceneEditModalProps> = ({
           onError={msg => setError(msg)}
         />
       </div>
-    </div>,
-    document.body
+    </Modal>
   );
 };

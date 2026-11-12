@@ -11,6 +11,7 @@ import { ActionConfirmationModal } from './curation/ActionConfirmationModal';
 import { ManualSplitModal } from './curation/ManualSplitModal';
 import { SceneIssueCard } from './curation/SceneIssueCard';
 import { SceneIssuesFilters } from './curation/SceneIssuesFilters';
+import { Pagination } from './ui';
 import type { SceneIssue, SceneIssuesResponse } from '../types';
 
 interface SceneIssuesTabProps {
@@ -115,7 +116,7 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+    <div className="flex-col gap-md">
       {/* Header & Filter Controls */}
       <SceneIssuesFilters
         totalItems={data.total_items}
@@ -125,6 +126,7 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
           setPage(1);
         }}
         statusCounts={statusCounts}
+        scopeCounts={data.scope_counts}
         kindFilter={kindFilter}
         onKindChange={k => {
           setKindFilter(k);
@@ -143,7 +145,7 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
         onOpenManualSplit={() => setIsManualSplitOpen(true)}
       />
 
-      {/* Informational Guide (Muted appearance, styled like Scenes tab Filters box) */}
+      {/* Informational Guide */}
       <div
         style={{
           background: 'var(--bg-secondary)',
@@ -162,13 +164,13 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
             userSelect: 'none',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <Info size={16} color="var(--accent-secondary)" />
-            <strong style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
-              How "Scene Issues" Work
+          <div className="flex-row items-center gap-xs">
+            <Info size={16} className="text-accent" />
+            <strong className="text-secondary text-md">
+              How &quot;Scene Issues&quot; Work
             </strong>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+          <div className="flex-row items-center gap-xs text-muted text-sm">
             <span>{guideCollapsed ? 'Show' : 'Hide'}</span>
             <ChevronDown
               size={14}
@@ -195,47 +197,23 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
           >
             <div>
               Socrates detects scenes using pattern recognition. When{' '}
-              <code style={{ color: 'var(--accent-secondary)' }}>[END]</code> tags aren't clear, it makes a decision and leaves it here for human review.
+              <code style={{ color: 'var(--accent-secondary)' }}>[END]</code> tags aren&apos;t clear, it makes a decision and leaves it here for human review.
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', marginTop: '0.15rem' }}>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
-                <span
-                  style={{
-                    background: 'rgba(234, 179, 8, 0.15)',
-                    border: '1px solid rgba(234, 179, 8, 0.35)',
-                    color: '#facc15',
-                    padding: '0.08rem 0.4rem',
-                    borderRadius: '4px',
-                    fontSize: '0.7rem',
-                    fontWeight: 700,
-                    letterSpacing: '0.02em',
-                    flexShrink: 0,
-                  }}
-                >
+            <div className="flex-col gap-xs mt-xs">
+              <div className="flex-row items-baseline gap-xs">
+                <span className="badge badge-warning text-sm" style={{ fontSize: '0.7rem', padding: '0.1rem 0.4rem', flexShrink: 0 }}>
                   AUTO SPLIT
                 </span>
-                <span style={{ fontSize: '0.825rem', color: 'var(--text-muted)' }}>
+                <span className="text-muted text-sm">
                   Socrates registered this as the start of a new scene. If this is a mistake, you can merge the two scenes.
                 </span>
               </div>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
-                <span
-                  style={{
-                    background: 'rgba(139, 92, 246, 0.15)',
-                    border: '1px solid rgba(139, 92, 246, 0.35)',
-                    color: '#c4b5fd',
-                    padding: '0.08rem 0.4rem',
-                    borderRadius: '4px',
-                    fontSize: '0.7rem',
-                    fontWeight: 700,
-                    letterSpacing: '0.02em',
-                    flexShrink: 0,
-                  }}
-                >
+              <div className="flex-row items-baseline gap-xs">
+                <span className="badge badge-accent text-sm" style={{ fontSize: '0.7rem', padding: '0.1rem 0.4rem', flexShrink: 0 }}>
                   SOFT BOUNDARY
                 </span>
-                <span style={{ fontSize: '0.825rem', color: 'var(--text-muted)' }}>
-                  Socrates doubted, but didn't start a new scene. If this is a mistake, you can register this as a new scene.
+                <span className="text-muted text-sm">
+                  Socrates doubted, but didn&apos;t start a new scene. If this is a mistake, you can register this as a new scene.
                 </span>
               </div>
             </div>
@@ -245,24 +223,24 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
 
       {/* Issues List */}
       {loading ? (
-        <div className="glass-panel" style={{ textAlign: 'center', padding: '3rem' }}>
-          <Loader2 size={32} className="animate-spin" style={{ color: 'var(--accent-secondary)', margin: '0 auto 1rem auto' }} />
-          <p style={{ color: 'var(--text-secondary)' }}>Loading scene issues...</p>
+        <div className="glass-panel text-center p-xl">
+          <Loader2 size={32} className="animate-spin text-accent" style={{ margin: '0 auto 1rem auto' }} />
+          <p className="text-secondary">Loading scene issues...</p>
         </div>
       ) : data.issues.length === 0 ? (
-        <div className="glass-panel" style={{ textAlign: 'center', padding: '3rem' }}>
-          <CheckCircle size={36} style={{ color: 'var(--success)', marginBottom: '0.5rem' }} />
-          <h3 style={{ margin: '0 0 0.5rem 0', color: 'var(--text-primary)' }}>
+        <div className="glass-panel text-center p-xl">
+          <CheckCircle size={36} className="text-success mb-xs" style={{ margin: '0 auto' }} />
+          <h3 className="text-primary mt-xs mb-xs">
             No scene issues found
           </h3>
-          <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+          <p className="text-secondary text-md">
             {statusFilter === 'unresolved'
               ? 'All scene issues for this backup have been resolved!'
               : 'No scene issues match your selected filters.'}
           </p>
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+        <div className="flex-col gap-sm">
           {data.issues.map(iss => (
             <SceneIssueCard
               key={iss.id}
@@ -276,46 +254,13 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
         </div>
       )}
 
-      {/* Pagination Controls */}
-      {data.total_pages > 1 && (
-        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '0.75rem', marginTop: '0.5rem' }}>
-          <button
-            disabled={page <= 1}
-            onClick={() => setPage(p => Math.max(1, p - 1))}
-            style={{
-              padding: '0.4rem 0.85rem',
-              background: 'var(--bg-tertiary)',
-              border: '1px solid var(--border-color)',
-              color: 'white',
-              borderRadius: '6px',
-              cursor: page <= 1 ? 'not-allowed' : 'pointer',
-              opacity: page <= 1 ? 0.45 : 1,
-              fontSize: '0.85rem',
-            }}
-          >
-            Previous
-          </button>
-          <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-            Page {page} of {data.total_pages} ({data.total_items} items)
-          </span>
-          <button
-            disabled={page >= data.total_pages}
-            onClick={() => setPage(p => p + 1)}
-            style={{
-              padding: '0.4rem 0.85rem',
-              background: 'var(--bg-tertiary)',
-              border: '1px solid var(--border-color)',
-              color: 'white',
-              borderRadius: '6px',
-              cursor: page >= data.total_pages ? 'not-allowed' : 'pointer',
-              opacity: page >= data.total_pages ? 0.45 : 1,
-              fontSize: '0.85rem',
-            }}
-          >
-            Next
-          </button>
-        </div>
-      )}
+      {/* Pagination */}
+      <Pagination
+        currentPage={data.current_page}
+        totalPages={data.total_pages}
+        totalItems={data.total_items}
+        onPageChange={setPage}
+      />
 
       {/* Resolve Issue Modal */}
       {resolvingIssue && (
@@ -346,7 +291,6 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
           onSuccess={fetchIssues}
         />
       )}
-
     </div>
   );
 };

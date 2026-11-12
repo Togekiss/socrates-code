@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import {
   Database,
@@ -14,11 +15,11 @@ import {
   UserCheck,
   MessageSquareCode,
   ExternalLink,
-  Loader2,
 } from 'lucide-react';
 import type { BackupInfo, CurationSummary } from '../types';
 import type { TabType } from './Sidebar';
 import { AiDisclosure } from './AiDisclosure';
+import { PanelSurface, StatCard, DataCard, Badge, Button } from './ui';
 
 interface StatusTabProps {
   backupId: string | null;
@@ -44,8 +45,10 @@ export const StatusTab = ({
   onUpgrade,
   isUpgrading,
 }: StatusTabProps) => {
+  const navigate = useNavigate();
   const [info, setInfo] = useState<BackupInfo | null>(parentInfo || null);
   const [summary, setSummary] = useState<CurationSummary | null>(parentSummary || null);
+  const [numWriters, setNumWriters] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -56,8 +59,9 @@ export const StatusTab = ({
     Promise.all([
       api.getBackupInfo(backupId).then(setInfo),
       api.getCurationSummary(backupId).then(setSummary).catch(() => null),
+      api.getWriters(backupId).then(w => setNumWriters(Array.isArray(w) ? w.length : 0)).catch(() => 0),
     ]).catch(err => setError(err.message));
-  }, [backupId]);
+  }, [backupId, parentInfo]);
 
   useEffect(() => {
     if (parentInfo) setInfo(parentInfo);
@@ -69,10 +73,10 @@ export const StatusTab = ({
 
   if (!backupId) {
     return (
-      <div className="glass-panel" style={{ textAlign: 'center', padding: '3rem' }}>
-        <Database size={48} style={{ opacity: 0.5, marginBottom: '1rem' }} />
-        <h2>Please select a backup</h2>
-        <p style={{ color: 'var(--text-secondary)' }}>
+      <div className="empty-state">
+        <Database size={48} className="empty-state-icon" />
+        <h2 className="empty-state-title">Please select a backup</h2>
+        <p className="empty-state-desc">
           Please select a backup from the dropdown menu to view its status.
         </p>
       </div>
@@ -81,16 +85,24 @@ export const StatusTab = ({
 
   if (error) {
     return (
-      <div className="glass-panel" style={{ textAlign: 'center', padding: '3rem' }}>
-        <AlertCircle size={48} style={{ color: 'var(--danger)', marginBottom: '1rem' }} />
-        <h2>Error Loading Backup</h2>
-        <p style={{ color: 'var(--text-secondary)' }}>{error}</p>
+      <div className="banner-danger">
+        <div className="banner-content">
+          <AlertCircle size={28} className="flex-shrink-0" />
+          <div>
+            <h3 className="banner-title">Error Loading Backup</h3>
+            <p className="banner-subtitle">{error}</p>
+          </div>
+        </div>
       </div>
     );
   }
 
   if (!info) {
-    return <div style={{ color: 'var(--text-secondary)', padding: '2rem' }}>Loading status...</div>;
+    return (
+      <PanelSurface className="text-secondary" style={{ padding: '2rem' }}>
+        Loading status...
+      </PanelSurface>
+    );
   }
 
   const title = info.name || info.server_name || backupId;
@@ -98,246 +110,211 @@ export const StatusTab = ({
   const numSessions = info.number_of_sessions ?? 0;
   const numEvents = info.number_of_events ?? 0;
   const numCharacters = getCount(info.number_of_characters, info.characters);
+  const numWritersVal = info.number_of_writers ?? numWriters;
   const numCategories = getCount(info.number_of_categories, info.categories);
   const numChannels = getCount(info.number_of_channels, info.channels);
   const numThreads = getCount(info.number_of_threads, info.threads);
 
-  const statCardBase: React.CSSProperties = {
-    background: 'var(--bg-tertiary)',
-    padding: '1.25rem',
-    borderRadius: '10px',
-    border: '1px solid transparent',
-    transition: 'border-color 0.2s ease',
-  };
-
   return (
-    <div>
-      <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+    <div className="status-tab flex-col gap-lg">
+      <PanelSurface className="flex-col gap-lg">
         {/* Header */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+        <div className="flex-row items-center justify-between flex-wrap gap-md">
           <div>
             <h2 style={{ fontSize: '1.5rem', margin: 0, color: 'var(--text-primary)' }}>{title}</h2>
             <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>ID: {backupId}</span>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+
+          <div className="flex-row items-center gap-sm flex-wrap">
             {info.schema_version !== undefined && info.schema_version !== null && (
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.5rem',
-                  padding: '0.4rem 0.8rem',
-                  borderRadius: '20px',
-                  background: 'var(--bg-tertiary)',
-                  color: info.is_schema_outdated ? 'var(--danger)' : 'var(--success)',
-                }}
-              >
-                <Database size={18} />
-                <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>
+              <Badge variant={info.is_schema_outdated ? 'danger' : 'success'}>
+                <Database size={14} />
+                <span>
                   {info.is_schema_outdated
                     ? `Schema v${info.schema_version} (Outdated)`
                     : `Schema v${info.schema_version}`}
                 </span>
-              </div>
+              </Badge>
             )}
+
             {info.is_schema_outdated && onUpgrade && (
-              <button
+              <Button
+                variant="danger"
+                size="sm"
                 onClick={onUpgrade}
-                disabled={isUpgrading}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '0.4rem',
-                  background: 'var(--danger)',
-                  color: '#fff',
-                  border: 'none',
-                  padding: '0.4rem 0.8rem',
-                  borderRadius: '20px',
-                  fontWeight: 600,
-                  fontSize: '0.85rem',
-                  cursor: isUpgrading ? 'not-allowed' : 'pointer',
-                  opacity: isUpgrading ? 0.7 : 1,
-                }}
+                loading={isUpgrading}
               >
-                {isUpgrading && <Loader2 size={14} className="animate-spin" />}
-                {isUpgrading ? 'Upgrading...' : 'Upgrade Database'}
-              </button>
+                Upgrade Database
+              </Button>
             )}
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.5rem',
-                padding: '0.4rem 0.8rem',
-                borderRadius: '20px',
-                background: 'var(--bg-tertiary)',
-                color:
-                  info.status === 'success'
-                    ? 'var(--success)'
-                    : info.status === 'failed'
-                    ? 'var(--danger)'
-                    : 'var(--warning)',
-              }}
+
+            <Badge
+              variant={
+                info.status === 'success'
+                  ? 'success'
+                  : info.status === 'failed'
+                  ? 'danger'
+                  : 'warning'
+              }
             >
               {info.status === 'success' ? (
-                <CheckCircle size={18} />
+                <CheckCircle size={14} />
               ) : info.status === 'failed' ? (
-                <AlertCircle size={18} />
+                <AlertCircle size={14} />
               ) : (
-                <Clock size={18} />
+                <Clock size={14} />
               )}
-              <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>
+              <span>
                 {info.status === 'success' ? 'Ready' : info.status === 'failed' ? 'Failed' : 'Pending / Running'}
               </span>
-            </div>
+            </Badge>
           </div>
         </div>
 
         {/* Dataset Statistics */}
         <div>
-          <h3 style={{ fontSize: '0.95rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
+          <h3 className="sidebar-group-title" style={{ padding: 0, marginBottom: '0.75rem' }}>
             Dataset Overview
           </h3>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '1rem' }}>
-            <div className="stat-card" style={statCardBase}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', marginBottom: '0.5rem', fontSize: '0.9rem' }}>
-                <Folder size={16} /> Categories
-              </div>
-              <div style={{ fontSize: '1.75rem', fontWeight: 700 }}>{numCategories}</div>
-            </div>
-
-            <div className="stat-card" style={statCardBase}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', marginBottom: '0.5rem', fontSize: '0.9rem' }}>
-                <Hash size={16} /> Channels
-              </div>
-              <div style={{ fontSize: '1.75rem', fontWeight: 700 }}>{numChannels}</div>
-            </div>
-
-            <div className="stat-card" style={statCardBase}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', marginBottom: '0.5rem', fontSize: '0.9rem' }}>
-                <MessageSquare size={16} /> Threads
-              </div>
-              <div style={{ fontSize: '1.75rem', fontWeight: 700 }}>{numThreads}</div>
-            </div>
-
-            <div
-              className="stat-card"
-              style={{ ...statCardBase, cursor: numScenes > 0 ? 'pointer' : 'default' }}
-              onClick={() => numScenes > 0 && setTab('scenes')}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: 'var(--text-secondary)', marginBottom: '0.5rem', fontSize: '0.9rem' }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <Database size={16} /> Scenes
-                </span>
-                {numScenes > 0 && <ExternalLink size={14} />}
-              </div>
-              <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--accent-secondary)' }}>{numScenes}</div>
-            </div>
-
-            <div
-              className="stat-card"
-              style={{ ...statCardBase, cursor: numSessions > 0 ? 'pointer' : 'default' }}
-              onClick={() => numSessions > 0 && setTab('chat_sessions')}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: 'var(--text-secondary)', marginBottom: '0.5rem', fontSize: '0.9rem' }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <MessageSquare size={16} /> Chat Sessions
-                </span>
-                {numSessions > 0 && <ExternalLink size={14} />}
-              </div>
-              <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--accent-secondary)' }}>{numSessions}</div>
-            </div>
-
-            <div
-              className="stat-card"
-              style={{ ...statCardBase, cursor: numEvents > 0 ? 'pointer' : 'default' }}
-              onClick={() => numEvents > 0 && setTab('events')}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: 'var(--text-secondary)', marginBottom: '0.5rem', fontSize: '0.9rem' }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <Calendar size={16} /> Events
-                </span>
-                {numEvents > 0 && <ExternalLink size={14} />}
-              </div>
-              <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--accent-secondary)' }}>{numEvents}</div>
-            </div>
-
-            <div
-              className="stat-card"
-              style={{ ...statCardBase, cursor: numCharacters > 0 ? 'pointer' : 'default' }}
-              onClick={() => numCharacters > 0 && setTab('characters')}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: 'var(--text-secondary)', marginBottom: '0.5rem', fontSize: '0.9rem' }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <Users size={16} /> Characters
-                </span>
-                {numCharacters > 0 && <ExternalLink size={14} />}
-              </div>
-              <div style={{ fontSize: '1.75rem', fontWeight: 700 }}>{numCharacters}</div>
-            </div>
+          <div className="stat-cards-grid">
+            <StatCard
+              label="Categories"
+              value={numCategories}
+              icon={<Folder size={18} />}
+            />
+            <StatCard
+              label="Channels"
+              value={numChannels}
+              icon={<Hash size={18} />}
+            />
+            <StatCard
+              label="Threads"
+              value={numThreads}
+              icon={<MessageSquare size={18} />}
+            />
+            <StatCard
+              label="Scenes"
+              value={numScenes}
+              icon={<Database size={18} />}
+              onClick={numScenes > 0 ? () => setTab('scenes') : undefined}
+            />
+            <StatCard
+              label="Chat Sessions"
+              value={numSessions}
+              icon={<MessageSquare size={18} />}
+              onClick={numSessions > 0 ? () => setTab('chat_sessions') : undefined}
+            />
+            <StatCard
+              label="Events"
+              value={numEvents}
+              icon={<Calendar size={18} />}
+              onClick={numEvents > 0 ? () => setTab('events') : undefined}
+            />
+            <StatCard
+              label="Characters"
+              value={numCharacters}
+              icon={<Users size={18} />}
+              onClick={numCharacters > 0 ? () => setTab('characters') : undefined}
+            />
+            <StatCard
+              label="Writers"
+              value={numWritersVal}
+              icon={<UserCheck size={18} />}
+              onClick={numWritersVal > 0 ? () => setTab('writers') : undefined}
+            />
           </div>
         </div>
 
         {/* Curation & Review Queues Dashboard */}
         {summary && (
           <div>
-            <h3 style={{ fontSize: '0.95rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
+            <h3 className="sidebar-group-title" style={{ padding: 0, marginBottom: '0.75rem' }}>
               Curation &amp; Review Queues
             </h3>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
-              <div
-                className="stat-card"
+            <div className="curation-summary-grid">
+              <DataCard
+                accent="danger"
                 onClick={() => setTab('scene_issues')}
-                style={{ background: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.25)', padding: '1.25rem', borderRadius: '10px', cursor: 'pointer' }}
+                tabIndex={0}
+                role="button"
+                style={{ cursor: 'pointer' }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: 'var(--danger)', marginBottom: '0.5rem', fontSize: '0.9rem', fontWeight: 600 }}>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><AlertTriangle size={16} /> Scene Issues</span>
+                <div className="flex-row items-center justify-between" style={{ color: 'var(--danger-text)', marginBottom: '0.5rem', fontSize: '0.9rem', fontWeight: 600 }}>
+                  <span className="flex-row items-center gap-xs">
+                    <AlertTriangle size={16} /> Scene Issues
+                  </span>
                   <ExternalLink size={14} />
                 </div>
-                <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--danger)' }}>{summary.unresolved_issues}</div>
-                <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
+                <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--danger-text)' }}>
+                  {summary.unresolved_issues}
+                </div>
+                <div className="stat-card-subtext" style={{ marginTop: '0.25rem' }}>
                   {summary.unresolved_issues === 1 ? '1 unresolved issue' : `${summary.unresolved_issues} unresolved issues`}
                 </div>
-              </div>
+              </DataCard>
 
-              <div
-                className="stat-card"
+              <DataCard
+                accent="warning"
                 onClick={() => setTab('flagged_messages')}
-                style={{ background: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.25)', padding: '1.25rem', borderRadius: '10px', cursor: 'pointer' }}
+                tabIndex={0}
+                role="button"
+                style={{ cursor: 'pointer' }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: 'var(--warning)', marginBottom: '0.5rem', fontSize: '0.9rem', fontWeight: 600 }}>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><MessageSquareCode size={16} /> Flagged Messages</span>
+                <div className="flex-row items-center justify-between" style={{ color: 'var(--warning-text)', marginBottom: '0.5rem', fontSize: '0.9rem', fontWeight: 600 }}>
+                  <span className="flex-row items-center gap-xs">
+                    <MessageSquareCode size={16} /> Flagged Messages
+                  </span>
                   <ExternalLink size={14} />
                 </div>
-                <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--warning)' }}>{summary.flagged_messages}</div>
-                <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>Non-tupper dialogue to review</div>
-              </div>
+                <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--warning-text)' }}>
+                  {summary.flagged_messages}
+                </div>
+                <div className="stat-card-subtext" style={{ marginTop: '0.25rem' }}>
+                  Non-tupper dialogue to review
+                </div>
+              </DataCard>
 
-              <div
-                className="stat-card"
+              <DataCard
+                accent="accent"
                 onClick={() => setTab('writers')}
-                style={{ background: 'rgba(139, 92, 246, 0.08)', border: '1px solid rgba(139, 92, 246, 0.25)', padding: '1.25rem', borderRadius: '10px', cursor: 'pointer' }}
+                tabIndex={0}
+                role="button"
+                style={{ cursor: 'pointer' }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: 'var(--accent-secondary)', marginBottom: '0.5rem', fontSize: '0.9rem', fontWeight: 600 }}>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><UserCheck size={16} /> Unlinked Writers</span>
+                <div className="flex-row items-center justify-between" style={{ color: 'var(--accent-secondary)', marginBottom: '0.5rem', fontSize: '0.9rem', fontWeight: 600 }}>
+                  <span className="flex-row items-center gap-xs">
+                    <UserCheck size={16} /> Unlinked Writers
+                  </span>
                   <ExternalLink size={14} />
                 </div>
-                <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--accent-secondary)' }}>{summary.unlinked_writers}</div>
-                <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>Writers with no Discord ID linked</div>
-              </div>
+                <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--accent-secondary)' }}>
+                  {summary.unlinked_writers}
+                </div>
+                <div className="stat-card-subtext" style={{ marginTop: '0.25rem' }}>
+                  Writers with no Discord ID linked
+                </div>
+              </DataCard>
 
-              <div
-                className="stat-card"
-                onClick={() => setTab('writers')}
-                style={{ background: 'rgba(148, 163, 184, 0.08)', border: '1px solid rgba(148, 163, 184, 0.25)', padding: '1.25rem', borderRadius: '10px', cursor: 'pointer' }}
+              <DataCard
+                accent="accent"
+                onClick={() => navigate('/characters?unassigned=1')}
+                tabIndex={0}
+                role="button"
+                style={{ cursor: 'pointer' }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: 'var(--text-secondary)', marginBottom: '0.5rem', fontSize: '0.9rem', fontWeight: 600 }}>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><UserCheck size={16} /> Unassigned Chars</span>
+                <div className="flex-row items-center justify-between" style={{ color: 'var(--text-primary)', marginBottom: '0.5rem', fontSize: '0.9rem', fontWeight: 600 }}>
+                  <span className="flex-row items-center gap-xs">
+                    <Users size={16} /> Unassigned Chars
+                  </span>
                   <ExternalLink size={14} />
                 </div>
-                <div style={{ fontSize: '1.75rem', fontWeight: 700 }}>{summary.unassigned_characters}</div>
-                <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>Characters without a writer</div>
-              </div>
+                <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                  {summary.unassigned_characters}
+                </div>
+                <div className="stat-card-subtext" style={{ marginTop: '0.25rem' }}>
+                  Characters without a writer
+                </div>
+              </DataCard>
             </div>
           </div>
         )}
@@ -345,7 +322,7 @@ export const StatusTab = ({
         <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', textAlign: 'right' }}>
           Exported at: {info.last_run ? new Date(info.last_run).toLocaleString() : info.updated_at ? new Date(info.updated_at).toLocaleString() : 'Unknown'}
         </div>
-      </div>
+      </PanelSurface>
 
       <AiDisclosure />
     </div>
