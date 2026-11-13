@@ -629,7 +629,7 @@ def upgrade_single_backup(
             try:
                 from index_scenes import index_scenes
                 index_scenes(backup_id=backup_id, backup_path=backup_path)
-            except Exception:
+            except Exception as e:
                 t.log("error", f"Scene re-indexing failed: {exc.unwrap(e)}")
                 raise
 

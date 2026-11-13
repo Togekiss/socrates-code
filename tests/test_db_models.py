@@ -913,6 +913,12 @@ class TestSqliteTmpCacheAndSync(unittest.TestCase):
                         with self.assertRaises(exc.DatabaseUpgradeError):
                             upgrade_single_backup(backup_dict, dry_run=False, reindex_scenes=False)
 
+                    # 3. Failed reindex_scenes during upgrade logs original error and raises DatabaseUpgradeError
+                    with patch("index_scenes.index_scenes", side_effect=RuntimeError("Simulated reindex failure")):
+                        with self.assertRaises(exc.DatabaseUpgradeError) as reindex_ctx:
+                            upgrade_single_backup(backup_dict, dry_run=False, reindex_scenes=True)
+                        self.assertIn("Simulated reindex failure", str(reindex_ctx.exception))
+
                     # Verify safety backup file was cleaned up and source_sqlite is still readable
                     self.assertFalse(os.path.exists(f"{source_sqlite}.bak"))
                     conn = sqlite3.connect(source_sqlite)
@@ -926,6 +932,55 @@ class TestSqliteTmpCacheAndSync(unittest.TestCase):
                 finally:
                     close_all_engines()
                     invalidate_sqlite_tmp_cache(backup_id=backup_id, backup_path=base_path)
+
+    def test_reset_test_backup_invalidates_tmp_cache(self):
+        from unittest.mock import patch
+        from db import status_service
+        from db.session import (
+            close_all_engines,
+            get_tmp_sqlite_path,
+            has_db,
+            invalidate_sqlite_tmp_cache,
+        )
+        import tests.reset_test_backup as rtb
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_root = Path(tmpdir)
+            clean_dir = fake_root / "Backups" / "Elysium-sql-tests-clean"
+            target_dir = fake_root / "Backups" / "Elysium-sql-tests"
+            tmp_cache_root = fake_root / "tmp_cache"
+            clean_dir.mkdir(parents=True, exist_ok=True)
+            target_dir.mkdir(parents=True, exist_ok=True)
+            tmp_cache_root.mkdir(parents=True, exist_ok=True)
+            (clean_dir / "backup_config.json").write_text("{}", encoding="utf-8")
+
+            base_path = target_dir.as_posix()
+            source_sqlite = os.path.abspath((target_dir / "backup.sqlite").as_posix()).replace("\\", "/")
+
+            env = {
+                "SOCRATES_SQLITE_TMP_CACHE": "1",
+                "SOCRATES_SQLITE_TMP_DIR": tmp_cache_root.as_posix(),
+                "SOCRATES_SQLITE_SYNC_TIMER": "0",
+            }
+            with patch.dict(os.environ, env, clear=False), patch.object(rtb, "DATA_ROOT", fake_root):
+                try:
+                    close_all_engines()
+                    status_service.init_backup_export(
+                        backup_id="reset_tmp_test",
+                        backup_path=base_path,
+                        backup_name="Reset Tmp Test",
+                    )
+                    expected_tmp = get_tmp_sqlite_path(source_sqlite)
+                    self.assertTrue(os.path.exists(expected_tmp))
+                    self.assertTrue(has_db(backup_path=base_path))
+
+                    self.assertTrue(rtb.reset_test_backup())
+                    self.assertFalse(os.path.exists(source_sqlite))
+                    self.assertFalse(os.path.exists(expected_tmp))
+                    self.assertFalse(has_db(backup_path=base_path))
+                finally:
+                    close_all_engines()
+                    invalidate_sqlite_tmp_cache(backup_path=base_path)
 
 
 if __name__ == "__main__":
