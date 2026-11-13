@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { CheckCircle, Loader2 } from 'lucide-react';
-import { api } from '../api';
+import { api, getErrorMessage } from '../api';
 import { PromoteMessageModal } from './curation/PromoteMessageModal';
 import { AddFlaggedMessageModal } from './curation/AddFlaggedMessageModal';
 import { FlaggedMessageCard } from './curation/FlaggedMessageCard';
@@ -33,15 +33,30 @@ export const FlaggedMessagesTab = ({ backupId, onRefreshSummary }: FlaggedMessag
   const [resolutionFilter, setResolutionFilter] = useState<string>('');
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const [promotingMsg, setPromotingMsg] = useState<FlaggedMessage | null>(null);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [resolvingId, setResolvingId] = useState<string | null>(null);
   const [reopeningId, setReopeningId] = useState<string | null>(null);
 
+  useEffect(() => {
+    setPage(1);
+    setData({
+      total_items: 0,
+      messages: [],
+      current_page: 1,
+      per_page: 50,
+      total_pages: 1,
+    });
+    setStatusCounts({ unresolved: 0, resolved: 0, all: 0 });
+    setError(null);
+  }, [backupId]);
+
   const fetchMessages = useCallback(() => {
     if (!backupId) return;
     setLoading(true);
+    setError(null);
 
     const params = new URLSearchParams();
     params.append('page', page.toString());
@@ -59,12 +74,21 @@ export const FlaggedMessagesTab = ({ backupId, onRefreshSummary }: FlaggedMessag
           setStatusCounts(res.status_counts);
         }
       })
-      .catch(console.error)
+      .catch(err => {
+        console.error(err);
+        setData({
+          total_items: 0,
+          messages: [],
+          current_page: 1,
+          per_page: 50,
+          total_pages: 1,
+        });
+        setError(getErrorMessage(err, 'Failed to load flagged messages.'));
+      })
       .finally(() => {
         setLoading(false);
-        if (onRefreshSummary) onRefreshSummary();
       });
-  }, [backupId, statusFilter, sceneTypeFilter, kindFilter, resolutionFilter, page, onRefreshSummary]);
+  }, [backupId, statusFilter, sceneTypeFilter, kindFilter, resolutionFilter, page]);
 
   useEffect(() => {
     fetchMessages();
@@ -75,8 +99,10 @@ export const FlaggedMessagesTab = ({ backupId, onRefreshSummary }: FlaggedMessag
     try {
       await api.resolveFlaggedMessage(backupId, msg.message_id, { resolution });
       fetchMessages();
+      if (onRefreshSummary) onRefreshSummary();
     } catch (err) {
       console.error(`Failed to resolve message as ${resolution}:`, err);
+      setError(getErrorMessage(err, `Failed to resolve message as ${resolution}.`));
     } finally {
       setResolvingId(null);
     }
@@ -87,8 +113,10 @@ export const FlaggedMessagesTab = ({ backupId, onRefreshSummary }: FlaggedMessag
     try {
       await api.reopenFlaggedMessage(backupId, messageId);
       fetchMessages();
+      if (onRefreshSummary) onRefreshSummary();
     } catch (err) {
       console.error('Failed to reopen flagged message:', err);
+      setError(getErrorMessage(err, 'Failed to reopen flagged message.'));
     } finally {
       setReopeningId(null);
     }
@@ -130,6 +158,10 @@ export const FlaggedMessagesTab = ({ backupId, onRefreshSummary }: FlaggedMessag
           <Loader2 size={32} className="animate-spin text-accent" style={{ margin: '0 auto 1rem auto' }} />
           <p className="text-secondary">Loading flagged messages...</p>
         </div>
+      ) : error ? (
+        <div className="banner-danger">
+          <span className="text-md">{error}</span>
+        </div>
       ) : data.messages.length === 0 ? (
         <div className="glass-panel text-center p-xl">
           <CheckCircle size={36} className="text-success mb-xs" style={{ margin: '0 auto' }} />
@@ -170,7 +202,10 @@ export const FlaggedMessagesTab = ({ backupId, onRefreshSummary }: FlaggedMessag
           backupId={backupId}
           message={promotingMsg}
           onClose={() => setPromotingMsg(null)}
-          onPromoted={fetchMessages}
+          onPromoted={() => {
+            fetchMessages();
+            if (onRefreshSummary) onRefreshSummary();
+          }}
         />
       )}
 
@@ -180,6 +215,7 @@ export const FlaggedMessagesTab = ({ backupId, onRefreshSummary }: FlaggedMessag
           onClose={() => setIsAddModalOpen(false)}
           onSuccess={newMsg => {
             fetchMessages();
+            if (onRefreshSummary) onRefreshSummary();
             setPromotingMsg(newMsg);
           }}
         />

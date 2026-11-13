@@ -996,13 +996,22 @@ def _query_events_in_session(
                 eff_char_ids.append(mc.char_id)
 
     if eff_char_ids:
+        chars_by_cid = {}
+        fetched_chars = (
+            session.query(CharacterModel)
+            .options(selectinload(CharacterModel.children))
+            .filter(
+                CharacterModel.backup_id == str(backup_id),
+                CharacterModel.char_id.in_(eff_char_ids),
+            )
+            .all()
+        )
+        chars_by_cid = {c.char_id: c for c in fetched_chars}
+
         resolved_clusters = []
         for cid in eff_char_ids:
             family_pks = set()
-            char = session.query(CharacterModel).filter(
-                CharacterModel.backup_id == str(backup_id),
-                CharacterModel.char_id == cid,
-            ).first()
+            char = chars_by_cid.get(cid)
             if char:
                 family_pks.add(char.pk)
                 for child in char.children:
@@ -1021,7 +1030,6 @@ def _query_events_in_session(
             "per_page": per_page,
             "total_pages": 0,
             "events": [],
-            "scenes": [],
         } if page is not None else []
 
         if character_logic == "AND":
@@ -1050,13 +1058,19 @@ def _query_events_in_session(
     if eff_writers and isinstance(eff_writers, (list, tuple, set)):
         w_lower = [w.strip().lower() for w in eff_writers if isinstance(w, str) and w.strip()]
         if w_lower:
-            matched_writers = session.query(WriterModel).outerjoin(WriterAliasModel).filter(
-                WriterModel.backup_id == str(backup_id),
-                or_(
-                    func.lower(WriterModel.display_name).in_(w_lower),
-                    func.lower(WriterAliasModel.alias).in_(w_lower),
-                ),
-            ).all()
+            matched_writers = (
+                session.query(WriterModel)
+                .outerjoin(WriterAliasModel)
+                .options(selectinload(WriterModel.characters).selectinload(CharacterModel.children))
+                .filter(
+                    WriterModel.backup_id == str(backup_id),
+                    or_(
+                        func.lower(WriterModel.display_name).in_(w_lower),
+                        func.lower(WriterAliasModel.alias).in_(w_lower),
+                    ),
+                )
+                .all()
+            )
 
             empty_res = {
                 "total_items": 0,
@@ -1064,7 +1078,6 @@ def _query_events_in_session(
                 "per_page": per_page,
                 "total_pages": 0,
                 "events": [],
-                "scenes": [],
             } if page is not None else []
 
             if not matched_writers:
@@ -1133,7 +1146,6 @@ def _query_events_in_session(
             "per_page": per_page,
             "total_pages": total_pages,
             "events": formatted_events,
-            "scenes": formatted_events,
         }
 
     return formatted_events
@@ -1161,6 +1173,7 @@ def query_events(
     b_id = str(backup_id or session_or_backup_id)
     b_path = str(base_path or backup_id_or_base_path)
     require_db(b_path, backup_id=b_id)
+    init_db(engine_or_backup_id=b_id, backup_path=b_path)
 
     with db_session(backup_id=b_id, backup_path=b_path) as session:
         return _query_events_in_session(session, b_id, **kwargs)

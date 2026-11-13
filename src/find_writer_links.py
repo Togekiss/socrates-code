@@ -13,6 +13,7 @@ for p in (SRC_DIR.as_posix(), PROJECT_ROOT.as_posix()):
         sys.path.insert(0, p)
 
 import utils.tricks as t
+from sqlalchemy.orm import selectinload
 from db.models import FlaggedMessageModel, WriterModel
 from db.session import db_session, has_db
 
@@ -46,6 +47,7 @@ def find_writer_link_suggestions(
         # 1. Fetch unlinked writers
         unlinked_writers = (
             session.query(WriterModel)
+            .options(selectinload(WriterModel.aliases))
             .filter(
                 WriterModel.backup_id == str(backup_id),
                 WriterModel.discord_user_id.is_(None),
@@ -56,9 +58,9 @@ def find_writer_link_suggestions(
         if not unlinked_writers:
             return []
 
-        # 2. Collect candidates from flagged messages
-        flagged_messages = (
-            session.query(FlaggedMessageModel)
+        # 2. Collect candidates from flagged messages (author JSON column only, avoiding large content blobs)
+        flagged_authors = (
+            session.query(FlaggedMessageModel.author)
             .filter(FlaggedMessageModel.backup_id == str(backup_id))
             .all()
         )
@@ -66,8 +68,7 @@ def find_writer_link_suggestions(
         # author_id -> {username, nickname, count}
         candidates: Dict[str, Dict[str, Any]] = {}
 
-        for msg in flagged_messages:
-            author = msg.author
+        for (author,) in flagged_authors:
             if not isinstance(author, dict):
                 continue
             aid = str(author.get("id") or "")

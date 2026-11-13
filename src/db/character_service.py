@@ -1,8 +1,9 @@
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from sqlalchemy import or_, and_, func
+from sqlalchemy.orm import joinedload, selectinload
 
-from db.session import db_session, require_db
+from db.session import db_session, require_db, init_db
 from db.models import (
     CharacterModel,
     CharacterNameModel,
@@ -14,8 +15,15 @@ from db.models import (
     SceneModel,
     ChannelModel,
 )
+from db.serializers import build_character_list_dict
 from db.snapshots import export_character_list_snapshot
 from utils import tricks as t
+
+
+def _require_valid_db(backup_id: str, base_path: str) -> None:
+    """Ensures a backup database exists and matches CURRENT_SCHEMA_VERSION."""
+    require_db(backup_path=base_path, backup_id=backup_id)
+    init_db(engine_or_backup_id=backup_id, backup_path=base_path)
 
 
 def get_character_activity_stats(
@@ -80,7 +88,7 @@ def get_character_activity_stats(
 
 def get_character_count(backup_id: str, base_path: str) -> int:
     """Returns the total number of top-level characters in SQLite."""
-    require_db(base_path, backup_id=backup_id)
+    _require_valid_db(backup_id, base_path)
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
         return session.query(func.count(CharacterModel.pk)).filter(
             CharacterModel.backup_id == str(backup_id),
@@ -90,7 +98,7 @@ def get_character_count(backup_id: str, base_path: str) -> int:
 
 def get_writer_count(backup_id: str, base_path: str) -> int:
     """Returns the total number of writers in SQLite."""
-    require_db(base_path, backup_id=backup_id)
+    _require_valid_db(backup_id, base_path)
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
         return session.query(func.count(WriterModel.pk)).filter(
             WriterModel.backup_id == str(backup_id)
@@ -110,7 +118,7 @@ def get_characters(
     If format_type == 'normalized', returns { writers, groups, characters }.
     Supports optional filtering by writer ID or writer name / alias.
     """
-    require_db(base_path, backup_id=backup_id)
+    _require_valid_db(backup_id, base_path)
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
         target_writer_pk = None
         if by_writer_id is not None:
@@ -137,7 +145,7 @@ def get_characters(
         stats_by_pk, stats_by_id = get_character_activity_stats(session, backup_id)
 
         if format_type in ("normalized", "db"):
-            data = export_character_list_snapshot(session, backup_id, write_to_disk=False)
+            data = build_character_list_dict(session, backup_id)
             for c_entry in data.get("characters", []):
                 cid = c_entry.get("char_id")
                 st = stats_by_id.get(cid, {"scene_count": 0, "last_active_at": None, "last_channel_name": None})
@@ -154,9 +162,18 @@ def get_characters(
                 data["characters"] = [c for c in data.get("characters", []) if c.get("writer_id") == target_writer_pk]
             return data
 
-        query = session.query(CharacterModel).filter(
-            CharacterModel.backup_id == str(backup_id),
-            CharacterModel.parent_pk.is_(None)
+        query = (
+            session.query(CharacterModel)
+            .options(
+                selectinload(CharacterModel.names),
+                joinedload(CharacterModel.writer).selectinload(WriterModel.aliases),
+                selectinload(CharacterModel.children).selectinload(CharacterModel.names),
+                selectinload(CharacterModel.children).joinedload(CharacterModel.writer).selectinload(WriterModel.aliases),
+            )
+            .filter(
+                CharacterModel.backup_id == str(backup_id),
+                CharacterModel.parent_pk.is_(None)
+            )
         )
 
         if target_writer_pk is not None:
@@ -241,7 +258,7 @@ def save_new_characters(
     """Batch-inserts newly discovered characters/Tuppers into SQLite."""
     if not new_characters:
         return
-    require_db(base_path, backup_id=backup_id)
+    _require_valid_db(backup_id, base_path)
 
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
         for char_id, name in new_characters:
@@ -291,18 +308,31 @@ def get_character_family_ids(
     """
     Resolves the unique char_ids for all versions/family members of a character with the given name.
     """
-    require_db(base_path, backup_id=backup_id)
+    _require_valid_db(backup_id, base_path)
     target_name = name.strip().lower()
     matched_ids: List[int] = []
 
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
-        all_chars = session.query(CharacterModel).filter(
-            CharacterModel.backup_id == str(backup_id)
-        ).all()
+        all_chars = (
+            session.query(CharacterModel)
+            .options(
+                selectinload(CharacterModel.names),
+                selectinload(CharacterModel.children),
+                joinedload(CharacterModel.group).selectinload(CharacterGroupModel.characters),
+            )
+            .filter(CharacterModel.backup_id == str(backup_id))
+            .all()
+        )
 
-        groups = session.query(CharacterGroupModel).filter(
-            CharacterGroupModel.backup_id == str(backup_id)
-        ).all()
+        groups = (
+            session.query(CharacterGroupModel)
+            .options(
+                selectinload(CharacterGroupModel.names),
+                selectinload(CharacterGroupModel.characters),
+            )
+            .filter(CharacterGroupModel.backup_id == str(backup_id))
+            .all()
+        )
 
         matching_groups = []
         for g in groups:
@@ -346,7 +376,7 @@ def get_character_family_ids(
 
 def merge_characters(backup_id: str, base_path: str, source_id: int, target_id: int) -> None:
     """Merges source character into target character, re-linking scenes and children."""
-    require_db(base_path, backup_id=backup_id)
+    _require_valid_db(backup_id, base_path)
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
         source = session.query(CharacterModel).filter(
             CharacterModel.backup_id == str(backup_id),
@@ -405,7 +435,7 @@ def merge_characters(backup_id: str, base_path: str, source_id: int, target_id: 
 
 def nest_character(backup_id: str, base_path: str, child_id: int, parent_id: int, version_type: str = "npc") -> None:
     """Nests child character under parent character."""
-    require_db(base_path, backup_id=backup_id)
+    _require_valid_db(backup_id, base_path)
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
         child = session.query(CharacterModel).filter(
             CharacterModel.backup_id == str(backup_id),
@@ -433,7 +463,7 @@ def nest_character(backup_id: str, base_path: str, child_id: int, parent_id: int
 
 def unnest_character(backup_id: str, base_path: str, char_id: int) -> None:
     """Moves nested character to the root level."""
-    require_db(base_path, backup_id=backup_id)
+    _require_valid_db(backup_id, base_path)
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
         child = session.query(CharacterModel).filter(
             CharacterModel.backup_id == str(backup_id),
@@ -461,7 +491,7 @@ def update_character(
     writer: Optional[List[str]] = None
 ) -> Dict[str, Any]:
     """Updates character attributes (names, tags, writer) in SQLite and exports snapshot."""
-    require_db(base_path, backup_id=backup_id)
+    _require_valid_db(backup_id, base_path)
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
         char = session.query(CharacterModel).filter(
             CharacterModel.backup_id == str(backup_id),
@@ -548,11 +578,14 @@ def update_character(
 
 def get_writers(backup_id: str, base_path: str) -> List[str]:
     """Retrieves all distinct writer names and aliases."""
-    require_db(base_path, backup_id=backup_id)
+    _require_valid_db(backup_id, base_path)
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
-        writers = session.query(WriterModel).filter(
-            WriterModel.backup_id == str(backup_id)
-        ).all()
+        writers = (
+            session.query(WriterModel)
+            .options(selectinload(WriterModel.aliases))
+            .filter(WriterModel.backup_id == str(backup_id))
+            .all()
+        )
 
         distinct_writers = set()
         for w in writers:
@@ -564,11 +597,18 @@ def get_writers(backup_id: str, base_path: str) -> List[str]:
 
 def get_groups(backup_id: str, base_path: str) -> List[Dict[str, Any]]:
     """Retrieves all character groups for the backup."""
-    require_db(base_path, backup_id=backup_id)
+    _require_valid_db(backup_id, base_path)
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
-        groups = session.query(CharacterGroupModel).filter(
-            CharacterGroupModel.backup_id == str(backup_id)
-        ).order_by(CharacterGroupModel.pk).all()
+        groups = (
+            session.query(CharacterGroupModel)
+            .options(
+                selectinload(CharacterGroupModel.names),
+                selectinload(CharacterGroupModel.characters),
+            )
+            .filter(CharacterGroupModel.backup_id == str(backup_id))
+            .order_by(CharacterGroupModel.pk)
+            .all()
+        )
 
         results = []
         for g in groups:
@@ -582,7 +622,7 @@ def get_groups(backup_id: str, base_path: str) -> List[Dict[str, Any]]:
 
 def create_group(backup_id: str, base_path: str, names: List[str], member_ids: List[int]) -> Dict[str, Any]:
     """Creates a character group and associates member characters."""
-    require_db(base_path, backup_id=backup_id)
+    _require_valid_db(backup_id, base_path)
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
         group = CharacterGroupModel(backup_id=str(backup_id))
         session.add(group)
@@ -617,7 +657,7 @@ def update_group(
     member_ids: Optional[List[int]] = None
 ) -> Dict[str, Any]:
     """Updates group names or associated member characters."""
-    require_db(base_path, backup_id=backup_id)
+    _require_valid_db(backup_id, base_path)
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
         group = session.query(CharacterGroupModel).filter(
             CharacterGroupModel.pk == group_id,

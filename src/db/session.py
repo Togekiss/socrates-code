@@ -1,27 +1,94 @@
+import atexit
 import os
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.pool import Pool
 from .models import Base, SchemaVersionModel, CURRENT_SCHEMA_VERSION
 from utils import exceptions as exc
 
 
+def _checkpoint_dbapi_wal(dbapi_connection, mode: str = "TRUNCATE") -> None:
+    """Flushes committed SQLite WAL frames back into the main .sqlite file cleanly."""
+    if dbapi_connection is None or not dbapi_connection.__class__.__module__.startswith("sqlite3"):
+        return
+    if getattr(dbapi_connection, "in_transaction", False):
+        return
+    try:
+        cursor = dbapi_connection.cursor()
+        try:
+            row = cursor.execute(f"PRAGMA wal_checkpoint({mode})").fetchone()
+            if mode == "TRUNCATE" and row and row[0] != 0:
+                cursor.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        finally:
+            cursor.close()
+    except Exception:
+        pass
+
+
 @event.listens_for(Engine, "connect")
 def _set_sqlite_pragmas(dbapi_connection, connection_record):
-    """Configures high-concurrency WAL mode and foreign key enforcement for SQLite."""
+    """Configures high-concurrency WAL mode, RAM cache, and foreign key enforcement for SQLite."""
     if dbapi_connection.__class__.__module__.startswith("sqlite3"):
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.execute("PRAGMA cache_size=-64000")
+        cursor.execute("PRAGMA temp_store=MEMORY")
         cursor.close()
+        if connection_record is not None:
+            connection_record.info["last_total_changes"] = getattr(dbapi_connection, "total_changes", 0)
+            connection_record.info["needs_wal_checkpoint"] = False
+            connection_record.info["ddl_written"] = False
+
+
+@event.listens_for(Engine, "before_cursor_execute")
+def _track_sqlite_ddl(conn, cursor, statement, parameters, context, executemany):
+    """Marks DDL statements so schema creation/drops also trigger WAL checkpoints on commit."""
+    if conn.dialect.name == "sqlite" and conn.connection is not None:
+        stmt_upper = statement.lstrip().upper()
+        if stmt_upper.startswith(("CREATE", "DROP", "ALTER", "VACUUM")):
+            conn.connection.info["ddl_written"] = True
+
+
+@event.listens_for(Engine, "commit")
+def _mark_wal_checkpoint_on_commit(conn):
+    """Marks pooled SQLite connections for WAL checkpointing whenever a transaction committed writes."""
+    if conn.dialect.name == "sqlite" and conn.connection is not None:
+        rec_info = conn.connection.info
+        cur_changes = getattr(conn.connection.dbapi_connection, "total_changes", 0)
+        if cur_changes > rec_info.get("last_total_changes", 0) or rec_info.pop("ddl_written", False):
+            rec_info["last_total_changes"] = cur_changes
+            rec_info["needs_wal_checkpoint"] = True
+
+
+@event.listens_for(Engine, "rollback")
+def _clear_wal_checkpoint_on_rollback(conn):
+    """Resets write tracking on rolled-back SQLite transactions."""
+    if conn.dialect.name == "sqlite" and conn.connection is not None:
+        rec_info = conn.connection.info
+        rec_info["ddl_written"] = False
+        rec_info["last_total_changes"] = getattr(conn.connection.dbapi_connection, "total_changes", 0)
+
+
+@event.listens_for(Pool, "checkin")
+def _checkpoint_sqlite_on_checkin(dbapi_connection, connection_record):
+    """Checkpoints SQLite WAL back to the main DB file when a write-dirty connection is returned."""
+    if dbapi_connection is None or not dbapi_connection.__class__.__module__.startswith("sqlite3"):
+        return
+    if connection_record is not None and connection_record.info.pop("needs_wal_checkpoint", False):
+        _checkpoint_dbapi_wal(dbapi_connection, mode="TRUNCATE")
+        connection_record.info["last_total_changes"] = getattr(dbapi_connection, "total_changes", 0)
 
 
 _central_engine = None
 _engine_cache = {}
+_initialized_engines = {}  # id(engine) -> bool (True if check_version=True passed)
 
 
 def get_engine(backup_id: Optional[str] = None, backup_path: Optional[str] = None) -> Engine:
@@ -73,10 +140,14 @@ def get_db_schema_version(engine: Engine) -> int:
     from sqlalchemy import inspect
     inspector = inspect(engine)
     if "schema_version" not in inspector.get_table_names():
+        _initialized_engines.pop(id(engine), None)
         return 0
     with Session(engine) as session:
         latest = session.query(SchemaVersionModel).order_by(SchemaVersionModel.version.desc()).first()
-        return latest.version if latest else 0
+        ver = latest.version if latest else 0
+        if ver < CURRENT_SCHEMA_VERSION:
+            _initialized_engines.pop(id(engine), None)
+        return ver
 
 
 def stamp_schema_version(
@@ -93,10 +164,17 @@ def stamp_schema_version(
     if isinstance(engine_or_session, Session):
         engine_or_session.add(record)
         engine_or_session.flush()
+        try:
+            bind = engine_or_session.get_bind()
+            if bind is not None:
+                _initialized_engines.pop(id(bind), None)
+        except Exception:
+            _initialized_engines.clear()
     else:
         with Session(engine_or_session) as session:
             session.add(record)
             session.commit()
+        _initialized_engines.pop(id(engine_or_session), None)
 
 
 def init_db(
@@ -112,6 +190,12 @@ def init_db(
     else:
         engine = get_engine(backup_id=target_id, backup_path=backup_path)
 
+    is_managed_engine = (engine is _central_engine) or (engine in _engine_cache.values())
+    eng_key = id(engine)
+    if is_managed_engine and eng_key in _initialized_engines:
+        if not check_version or _initialized_engines[eng_key]:
+            return engine
+
     from sqlalchemy import inspect
     inspector = inspect(engine)
     existing_tables = inspector.get_table_names()
@@ -120,18 +204,27 @@ def init_db(
         # Brand-new database: create all tables and stamp current schema version
         Base.metadata.create_all(bind=engine)
         stamp_schema_version(engine, CURRENT_SCHEMA_VERSION, description="Initial schema creation")
+        if is_managed_engine:
+            _initialized_engines[eng_key] = True
         return engine
 
     # Database has existing tables: check schema version
     version = get_db_schema_version(engine)
-    if check_version and version < CURRENT_SCHEMA_VERSION:
-        raise exc.DatabaseSchemaMismatchError(
-            f"Database schema version {version} is older than required version {CURRENT_SCHEMA_VERSION}. "
-            f"Please run 'python src/db/upgrade.py --backup-id <backup_id>' to upgrade the database schema."
-        )
+    if version < CURRENT_SCHEMA_VERSION:
+        if check_version:
+            raise exc.DatabaseSchemaMismatchError(
+                f"Database schema version {version} is older than required version {CURRENT_SCHEMA_VERSION}. "
+                f"Please run 'python src/db/upgrade.py --backup-id <backup_id>' to upgrade the database schema."
+            )
+        # Never mutate an outdated database with create_all() during read-only inspection
+        if is_managed_engine:
+            _initialized_engines[eng_key] = False
+        return engine
 
     # Ensure any new tables from latest Base.metadata are created
     Base.metadata.create_all(bind=engine)
+    if is_managed_engine:
+        _initialized_engines[eng_key] = True
     return engine
 
 
@@ -196,14 +289,44 @@ def require_sqlite_db(backup_path: str) -> None:
     require_db(backup_path=backup_path)
 
 
+def checkpoint_wal(
+    engine_or_backup_id=None,
+    backup_path: Optional[str] = None,
+    mode: str = "TRUNCATE",
+) -> None:
+    """Explicitly checkpoints SQLite WAL frames into the main .sqlite database file."""
+    try:
+        if hasattr(engine_or_backup_id, "connect"):
+            engine = engine_or_backup_id
+        else:
+            engine = get_engine(backup_id=engine_or_backup_id, backup_path=backup_path)
+        if engine.dialect.name != "sqlite":
+            return
+        with engine.connect() as conn:
+            conn.execute(text(f"PRAGMA wal_checkpoint({mode})"))
+    except Exception:
+        pass
+
+
 def close_all_engines() -> None:
-    """Disposes and clears all cached SQLAlchemy database engines to release file locks."""
+    """Checkpoints active WALs, disposes cached SQLAlchemy engines, and closes log handlers."""
     global _central_engine, _engine_cache
     if _central_engine:
+        checkpoint_wal(_central_engine)
         _central_engine.dispose()
         _central_engine = None
     for eng in list(_engine_cache.values()):
+        checkpoint_wal(eng)
         eng.dispose()
     _engine_cache.clear()
+    _initialized_engines.clear()
+    try:
+        from utils.tricks import close_log_handlers
+        close_log_handlers()
+    except Exception:
+        pass
+
+
+atexit.register(close_all_engines)
 
 

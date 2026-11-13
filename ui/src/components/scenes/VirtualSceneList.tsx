@@ -12,6 +12,7 @@ interface VirtualSceneListProps {
   loadMore: () => void;
   hasMore: boolean;
   loading: boolean;
+  error?: string | null;
   mode?: 'scenes' | 'sessions';
   onEdit?: (item: Scene | ChatSession) => void;
 }
@@ -24,6 +25,7 @@ export const VirtualSceneList: React.FC<VirtualSceneListProps> = ({
   loadMore,
   hasMore,
   loading,
+  error = null,
   mode = 'scenes',
   onEdit,
 }) => {
@@ -38,15 +40,15 @@ export const VirtualSceneList: React.FC<VirtualSceneListProps> = ({
 
   const virtualItems = virtualizer.getVirtualItems();
 
-  // Watch for scrolling near the bottom
+  // Watch for scrolling near the bottom (never auto-load on empty or errored state)
   React.useEffect(() => {
-    if (virtualItems.length === 0) return;
+    if (virtualItems.length === 0 || scenes.length === 0 || error) return;
     const lastItem = virtualItems[virtualItems.length - 1];
 
     if (lastItem.index >= scenes.length - 1 && hasMore && !loading) {
       loadMore();
     }
-  }, [virtualItems, hasMore, loading, scenes.length, loadMore]);
+  }, [virtualItems, hasMore, loading, error, scenes.length, loadMore]);
 
   if (scenes.length === 0 && !loading) {
     return (

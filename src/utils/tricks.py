@@ -1,5 +1,5 @@
 import datetime
-from typing import Any, Optional
+from typing import Any, Dict, Optional, Tuple
 from pathlib import Path
 import sys
 import os
@@ -7,6 +7,10 @@ import subprocess
 import json
 import re
 import shutil
+import logging
+import logging.handlers
+import threading
+import atexit
 from . import exceptions as exc
 from collections import deque
 
@@ -108,6 +112,7 @@ def save_json_atomic(data, target_path):
     for attempt in range(5):
         try:
             os.replace(temp_path, target)
+            _invalidate_json_caches(target.as_posix())
             return
         except OSError as e:
             if attempt == 4:
@@ -122,14 +127,57 @@ def save_json_atomic(data, target_path):
 def save_to_json(data, file_path):
     save_json_atomic(data, file_path)
 
+_cache_lock = threading.RLock()
+_backups_index_cache: Dict[str, Any] = {"path": None, "mtime": None, "data": None}
+_debug_files_cache: Dict[str, Tuple[Optional[float], bool]] = {}
+
+
+def _invalidate_json_caches(resolved_path: Optional[str] = None) -> None:
+    """Invalidates in-memory backups_index and backup_config caches on write."""
+    with _cache_lock:
+        if resolved_path is None:
+            _backups_index_cache["path"] = None
+            _backups_index_cache["mtime"] = None
+            _backups_index_cache["data"] = None
+            _debug_files_cache.clear()
+            return
+        norm = Path(resolved_path).resolve().as_posix()
+        cached_idx_path = _backups_index_cache.get("path")
+        if cached_idx_path and Path(cached_idx_path).resolve().as_posix() == norm:
+            _backups_index_cache["mtime"] = None
+            _backups_index_cache["data"] = None
+        _debug_files_cache.pop(norm, None)
+
+
 def get_backups_index():
     set_path()
     from res import constants as c
 
-    if not Path(c.BACKUPS_INDEX).exists():
+    index_path = Path(c.BACKUPS_INDEX)
+    if not index_path.exists():
         return []
-    
-    return load_from_json(c.BACKUPS_INDEX)
+
+    resolved = index_path.resolve().as_posix()
+    try:
+        mtime = os.path.getmtime(resolved)
+    except OSError:
+        mtime = None
+
+    with _cache_lock:
+        if (
+            _backups_index_cache["path"] == resolved
+            and _backups_index_cache["mtime"] == mtime
+            and _backups_index_cache["data"] is not None
+            and mtime is not None
+        ):
+            return [dict(b) if isinstance(b, dict) else b for b in _backups_index_cache["data"]]
+
+    data = load_from_json(c.BACKUPS_INDEX)
+    with _cache_lock:
+        _backups_index_cache["path"] = resolved
+        _backups_index_cache["mtime"] = mtime
+        _backups_index_cache["data"] = data if isinstance(data, list) else []
+        return [dict(b) if isinstance(b, dict) else b for b in _backups_index_cache["data"]]
 
 def get_backup_path(backup_id: str) -> str:
     """
@@ -215,22 +263,90 @@ log(level, message)
         message (str): The message to be logged.
 
 """
+_log_lock = threading.RLock()
+_file_loggers: Dict[str, Tuple[logging.Logger, logging.FileHandler, logging.handlers.MemoryHandler]] = {}
+
+
+def _get_file_logger(file_path: str) -> logging.Logger:
+    resolved = Path(file_path).resolve().as_posix()
+    with _log_lock:
+        entry = _file_loggers.get(resolved)
+        if entry is not None:
+            return entry[0]
+
+        Path(resolved).parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(resolved, mode="a", encoding="utf-8", delay=True)
+        file_handler.setFormatter(logging.Formatter("%(message)s"))
+        mem_handler = logging.handlers.MemoryHandler(
+            capacity=64,
+            flushLevel=logging.ERROR,
+            target=file_handler,
+            flushOnClose=True,
+        )
+        logger = logging.getLogger(f"socrates.file.{resolved}")
+        logger.setLevel(logging.DEBUG)
+        logger.propagate = False
+        logger.handlers.clear()
+        logger.addHandler(mem_handler)
+        _file_loggers[resolved] = (logger, file_handler, mem_handler)
+        return logger
+
+
+def write_log_line(file_path: str, level: str, message: str) -> None:
+    """Buffers a formatted log line to the cached file logger for file_path."""
+    timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+    log_line = f"[{timestamp}]{level}: {clean(str(message))}"
+    logger = _get_file_logger(file_path)
+    py_level = logging.ERROR if level == "error" else logging.INFO
+    logger.log(py_level, log_line)
+
+
+def flush_logs(file_path: Optional[str] = None) -> None:
+    """Flushes buffered log records to disk for one file or all cached log files."""
+    with _log_lock:
+        if file_path is not None:
+            resolved = Path(file_path).resolve().as_posix()
+            entry = _file_loggers.get(resolved)
+            if entry is not None:
+                _, file_handler, mem_handler = entry
+                mem_handler.flush()
+                file_handler.flush()
+            return
+        for _, file_handler, mem_handler in list(_file_loggers.values()):
+            try:
+                mem_handler.flush()
+                file_handler.flush()
+            except Exception:
+                pass
+
+
+def close_log_handlers(file_path: Optional[str] = None) -> None:
+    """Flushes and closes cached file log handlers (releasing OS file locks)."""
+    with _log_lock:
+        if file_path is not None:
+            resolved = Path(file_path).resolve().as_posix()
+            entry = _file_loggers.pop(resolved, None)
+            if entry is not None:
+                logger, file_handler, mem_handler = entry
+                try:
+                    mem_handler.flush()
+                    mem_handler.close()
+                    file_handler.close()
+                    logger.handlers.clear()
+                except Exception:
+                    pass
+            return
+        for resolved in list(_file_loggers.keys()):
+            close_log_handlers(resolved)
+
+
+atexit.register(close_log_handlers)
+
+
 def log(level="base", message=""):
     set_path()
     from res import constants as c
 
-    """
-    # Determine caller module
-    stack = inspect.stack()
-    caller_frame = stack[1]
-    caller_module = inspect.getmodule(caller_frame.frame)
-    caller_name = caller_module.__name__ if caller_module else None
-
-    # Prepend tab if not called from export_channels.py
-    if caller_name != "export_channels":
-        message = "\t" + message
-    """
-    
     if level == "base":
         print(GREEN + message + RESET)
     elif level == "info":
@@ -244,37 +360,25 @@ def log(level="base", message=""):
             print(GRAY + message + RESET, end="")
     elif level == "error":
         print(RED + message + RESET)
-    
-    level = "console" if level == "consolelog" else level
-    
-    if c.LOG:
-        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-        
-        # create directory if it doesn't exist
-        Path(c.LOG_FILE).parent.mkdir(parents=True, exist_ok=True)
 
-        log_line = f"[{timestamp}]{level}: {clean(message)}\n"
-        
-        with open(c.LOG_FILE, "a", encoding="utf-8") as file:
-            file.write(log_line)
+    level = "console" if level == "consolelog" else level
+
+    if c.LOG:
+        write_log_line(c.LOG_FILE, level, message)
+
 
 def global_log(level="base", message=""):
     set_path()
     from res import constants as c
-    
+
     if level == "base":
         print(GREEN + message + RESET)
     elif level == "error":
         print(RED + message + RESET)
     else:
         print(message)
-        
-    timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-    
-    Path(c.GLOBAL_LOG_FILE).parent.mkdir(parents=True, exist_ok=True)
 
-    with open(c.GLOBAL_LOG_FILE, "a", encoding="utf-8") as file:
-        file.write(f"[{timestamp}]{level}: {clean(message)}\n")
+    write_log_line(c.GLOBAL_LOG_FILE, level, message)
 
 """
 run_command(command: str, show_lines: int = 0)
@@ -393,8 +497,20 @@ def is_debug_files_enabled(backup_id=None, backup_path=None) -> bool:
         if target_path:
             cfg_file = Path(target_path) / "backup_config.json"
             if cfg_file.exists():
+                resolved = cfg_file.resolve().as_posix()
+                try:
+                    mtime = os.path.getmtime(resolved)
+                except OSError:
+                    mtime = None
+                with _cache_lock:
+                    cached = _debug_files_cache.get(resolved)
+                    if cached is not None and cached[0] == mtime and mtime is not None:
+                        return cached[1]
                 cfg = load_from_json(cfg_file.as_posix())
-                return bool(cfg.get("admin", {}).get("verbosity", {}).get("debugFiles", False))
+                enabled = bool(cfg.get("admin", {}).get("verbosity", {}).get("debugFiles", False))
+                with _cache_lock:
+                    _debug_files_cache[resolved] = (mtime, enabled)
+                return enabled
     except Exception:
         pass
 

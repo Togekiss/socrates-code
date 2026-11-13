@@ -8,7 +8,7 @@ import {
   Users,
   Loader2,
 } from 'lucide-react';
-import { api } from '../api';
+import { api, getErrorMessage } from '../api';
 import { WriterEditModal } from './curation/WriterEditModal';
 import { WriterCard } from './curation/WriterCard';
 import { PanelSurface, Button, Badge } from './ui';
@@ -23,6 +23,7 @@ export const WritersTab = ({ backupId, onRefreshSummary }: WritersTabProps) => {
   const [writers, setWriters] = useState<WriterDetailed[]>([]);
   const [suggestions, setSuggestions] = useState<WriterLinkSuggestion[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
 
   // Modals state
@@ -30,9 +31,16 @@ export const WritersTab = ({ backupId, onRefreshSummary }: WritersTabProps) => {
   const [isCreatingWriter, setIsCreatingWriter] = useState(false);
   const [linkingSuggestionId, setLinkingSuggestionId] = useState<number | null>(null);
 
+  useEffect(() => {
+    setWriters([]);
+    setSuggestions([]);
+    setError(null);
+  }, [backupId]);
+
   const fetchData = useCallback(() => {
     if (!backupId) return;
     setLoading(true);
+    setError(null);
     Promise.all([
       api.getWritersDetailed(backupId),
       api.getWriterLinkSuggestions(backupId).catch(() => []),
@@ -41,12 +49,16 @@ export const WritersTab = ({ backupId, onRefreshSummary }: WritersTabProps) => {
         setWriters(Array.isArray(wData) ? wData : []);
         setSuggestions(Array.isArray(sData) ? sData : []);
       })
-      .catch(console.error)
+      .catch(err => {
+        console.error(err);
+        setWriters([]);
+        setSuggestions([]);
+        setError(getErrorMessage(err, 'Failed to load writers data.'));
+      })
       .finally(() => {
         setLoading(false);
-        if (onRefreshSummary) onRefreshSummary();
       });
-  }, [backupId, onRefreshSummary]);
+  }, [backupId]);
 
   useEffect(() => {
     fetchData();
@@ -63,8 +75,10 @@ export const WritersTab = ({ backupId, onRefreshSummary }: WritersTabProps) => {
         discord_user_id: discordId,
       });
       fetchData();
+      if (onRefreshSummary) onRefreshSummary();
     } catch (err) {
       console.error('Failed to link suggestion:', err);
+      setError(getErrorMessage(err, 'Failed to link writer suggestion.'));
     } finally {
       setLinkingSuggestionId(null);
     }
@@ -225,6 +239,10 @@ export const WritersTab = ({ backupId, onRefreshSummary }: WritersTabProps) => {
           <Loader2 size={32} className="animate-spin" style={{ color: 'var(--accent-secondary)', margin: '0 auto 1rem auto' }} />
           <p style={{ color: 'var(--text-secondary)' }}>Loading writers data...</p>
         </PanelSurface>
+      ) : error ? (
+        <div className="banner-danger">
+          <span className="text-md">{error}</span>
+        </div>
       ) : filteredWriters.length === 0 ? (
         <div className="empty-state">
           <Users size={40} className="empty-state-icon" />
@@ -262,7 +280,10 @@ export const WritersTab = ({ backupId, onRefreshSummary }: WritersTabProps) => {
             setIsCreatingWriter(false);
             setEditingWriter(null);
           }}
-          onSaved={fetchData}
+          onSaved={() => {
+            fetchData();
+            if (onRefreshSummary) onRefreshSummary();
+          }}
         />
       )}
     </div>

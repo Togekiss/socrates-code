@@ -1,7 +1,12 @@
+import json
 import os
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock
+from fastapi import HTTPException
+from sqlalchemy import text, inspect
+from sqlalchemy.exc import OperationalError
 
 # Ensure src and project root are in sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -15,7 +20,7 @@ from tests.reset_test_backup import reset_test_backup
 # pyrefly: ignore [missing-import]
 import utils.tricks as t
 # pyrefly: ignore [missing-import]
-from db.session import db_session, close_all_engines, stamp_schema_version
+from db.session import db_session, init_db, close_all_engines, stamp_schema_version
 # pyrefly: ignore [missing-import]
 from db.migrate import migrate_for_tests
 # pyrefly: ignore [missing-import]
@@ -25,7 +30,12 @@ from db.snapshots import export_character_list_snapshot
 # pyrefly: ignore [missing-import]
 from models import SceneManager
 # pyrefly: ignore [missing-import]
+import utils.exceptions as exc
+# pyrefly: ignore [missing-import]
 from server import (
+    db_connection_exception_handler,
+    schema_mismatch_exception_handler,
+    database_exception_handler,
     get_backup_info,
     get_curation_summary,
     get_my_writer,
@@ -35,7 +45,11 @@ from server import (
     get_sessions,
     get_events,
     get_writers,
+    get_writers_detailed,
+    get_writer_link_suggestions,
     get_groups,
+    get_scene_issues,
+    get_flagged_messages,
     create_group,
     update_group,
     update_character,
@@ -686,6 +700,152 @@ class TestOutdatedSchemaEndpoint(unittest.TestCase):
     def test_outdated_schema_my_writer_does_not_fail(self):
         writer = get_my_writer(self.TEST_BACKUP_ID, user={"sub": "nonexistent_discord_id"})
         self.assertIsNone(writer)
+
+
+class TestErrorHandlingHTTP(unittest.TestCase):
+    """Tests graceful server error handling and exception handler payloads for nonexistent, missing-DB, and outdated-schema backups."""
+
+    TEST_BACKUP_ID = "1791895360"
+    MISSING_BACKUP_ID = "999999999999"
+
+    def setUp(self):
+        reset_test_backup()
+        close_all_engines()
+
+    def tearDown(self):
+        close_all_engines()
+        reset_test_backup()
+
+    @staticmethod
+    def _run_handler(coro):
+        try:
+            coro.send(None)
+        except StopIteration as stop:
+            return stop.value
+        raise AssertionError("Exception handler unexpectedly yielded")
+
+    @staticmethod
+    def _mock_request(path: str = "/api/test"):
+        req = MagicMock()
+        req.url.path = path
+        req.state = MagicMock()
+        return req
+
+    def test_exception_handlers_return_explicit_json_codes(self):
+        req = self._mock_request("/api/backups/1791895360/scenes")
+
+        resp_404 = self._run_handler(
+            db_connection_exception_handler(req, exc.DatabaseConnectionError("No SQLite DB found"))
+        )
+        self.assertEqual(resp_404.status_code, 404)
+        self.assertEqual(json.loads(resp_404.body), {"detail": "No SQLite DB found", "error": "database_not_found"})
+
+        resp_400 = self._run_handler(
+            schema_mismatch_exception_handler(req, exc.DatabaseSchemaMismatchError("Schema outdated"))
+        )
+        self.assertEqual(resp_400.status_code, 400)
+        self.assertEqual(json.loads(resp_400.body), {"detail": "Schema outdated", "error": "schema_mismatch"})
+
+        resp_500 = self._run_handler(
+            database_exception_handler(req, OperationalError("SELECT 1", {}, Exception("line1\nline2")))
+        )
+        self.assertEqual(resp_500.status_code, 500)
+        payload_500 = json.loads(resp_500.body)
+        self.assertEqual(payload_500.get("error"), "database_error")
+        self.assertNotIn("\n", payload_500.get("detail", ""))
+
+    def test_missing_database_raises_database_connection_error(self):
+        mock_req = self._mock_request()
+        fake_user = {"sub": "test_user_123"}
+        calls = [
+            ("get_backup_info", lambda: get_backup_info(self.TEST_BACKUP_ID)),
+            ("get_curation_summary", lambda: get_curation_summary(self.TEST_BACKUP_ID)),
+            ("get_my_writer", lambda: get_my_writer(self.TEST_BACKUP_ID, user=fake_user)),
+            ("get_characters", lambda: get_characters(self.TEST_BACKUP_ID)),
+            ("get_characters_by_me", lambda: get_characters(self.TEST_BACKUP_ID, by_me=True, request=mock_req)),
+            ("get_groups", lambda: get_groups(self.TEST_BACKUP_ID)),
+            ("get_writers", lambda: get_writers(self.TEST_BACKUP_ID)),
+            ("get_writers_detailed", lambda: get_writers_detailed(self.TEST_BACKUP_ID)),
+            ("get_writer_link_suggestions", lambda: get_writer_link_suggestions(self.TEST_BACKUP_ID)),
+            ("get_scenes", lambda: get_scenes(self.TEST_BACKUP_ID)),
+            ("get_scenes_by_me", lambda: get_scenes(self.TEST_BACKUP_ID, by_me=True, request=mock_req)),
+            ("get_sessions", lambda: get_sessions(self.TEST_BACKUP_ID)),
+            ("get_sessions_by_me", lambda: get_sessions(self.TEST_BACKUP_ID, by_me=True, request=mock_req)),
+            ("get_events", lambda: get_events(self.TEST_BACKUP_ID)),
+            ("get_events_by_me", lambda: get_events(self.TEST_BACKUP_ID, by_me=True, request=mock_req)),
+            ("get_scene_issues", lambda: get_scene_issues(self.TEST_BACKUP_ID)),
+            ("get_flagged_messages", lambda: get_flagged_messages(self.TEST_BACKUP_ID)),
+        ]
+        for name, fn in calls:
+            with self.subTest(endpoint=name):
+                with self.assertRaises(exc.DatabaseConnectionError):
+                    fn()
+
+    def test_nonexistent_backup_raises_404_or_missing_db_not_500(self):
+        fake_user = {"sub": "test_user_123"}
+        calls = [
+            ("get_backup_info", lambda: get_backup_info(self.MISSING_BACKUP_ID)),
+            ("get_curation_summary", lambda: get_curation_summary(self.MISSING_BACKUP_ID)),
+            ("get_my_writer", lambda: get_my_writer(self.MISSING_BACKUP_ID, user=fake_user)),
+            ("get_characters", lambda: get_characters(self.MISSING_BACKUP_ID)),
+            ("get_scenes", lambda: get_scenes(self.MISSING_BACKUP_ID)),
+            ("get_sessions", lambda: get_sessions(self.MISSING_BACKUP_ID)),
+            ("get_events", lambda: get_events(self.MISSING_BACKUP_ID)),
+            ("get_scene_issues", lambda: get_scene_issues(self.MISSING_BACKUP_ID)),
+            ("get_flagged_messages", lambda: get_flagged_messages(self.MISSING_BACKUP_ID)),
+        ]
+        for name, fn in calls:
+            with self.subTest(endpoint=name):
+                try:
+                    fn()
+                    self.fail(f"{name} unexpectedly succeeded for nonexistent backup")
+                except HTTPException as http_err:
+                    self.assertEqual(http_err.status_code, 404)
+                except exc.DatabaseConnectionError:
+                    pass
+
+    def test_outdated_schema_does_not_mutate_db_or_return_500(self):
+        migrate_for_tests(self.TEST_BACKUP_ID)
+        with db_session(self.TEST_BACKUP_ID) as session:
+            from db.models import SchemaVersionModel
+            session.query(SchemaVersionModel).delete()
+            stamp_schema_version(session, 4)
+            # Simulate an older v4 database that did not yet have the events table
+            session.execute(text("DROP TABLE IF EXISTS events"))
+            session.commit()
+        close_all_engines()
+
+        info_data = get_backup_info(self.TEST_BACKUP_ID)
+        self.assertTrue(info_data.get("is_schema_outdated"))
+        self.assertEqual(info_data.get("schema_version"), 4)
+        self.assertEqual(info_data.get("number_of_events"), 0)
+
+        summary_data = get_curation_summary(self.TEST_BACKUP_ID)
+        self.assertIsInstance(summary_data, dict)
+
+        writer_data = get_my_writer(self.TEST_BACKUP_ID, user={"sub": "nonexistent_discord_id"})
+        self.assertIsNone(writer_data)
+
+        # Ensure read-only status/summary endpoints did NOT run create_all() to recreate 'events'
+        tables = set(inspect(init_db(self.TEST_BACKUP_ID, check_version=False)).get_table_names())
+        self.assertNotIn("events", tables)
+
+        # Schema-dependent endpoints should fail explicitly with DatabaseSchemaMismatchError (400), never 500
+        mismatch_calls = [
+            ("get_scenes", lambda: get_scenes(self.TEST_BACKUP_ID)),
+            ("get_sessions", lambda: get_sessions(self.TEST_BACKUP_ID)),
+            ("get_events", lambda: get_events(self.TEST_BACKUP_ID)),
+            ("get_characters", lambda: get_characters(self.TEST_BACKUP_ID)),
+            ("get_groups", lambda: get_groups(self.TEST_BACKUP_ID)),
+            ("get_writers_detailed", lambda: get_writers_detailed(self.TEST_BACKUP_ID)),
+            ("get_writer_link_suggestions", lambda: get_writer_link_suggestions(self.TEST_BACKUP_ID)),
+            ("get_scene_issues", lambda: get_scene_issues(self.TEST_BACKUP_ID)),
+            ("get_flagged_messages", lambda: get_flagged_messages(self.TEST_BACKUP_ID)),
+        ]
+        for name, fn in mismatch_calls:
+            with self.subTest(endpoint=name):
+                with self.assertRaises(exc.DatabaseSchemaMismatchError):
+                    fn()
 
 
 if __name__ == "__main__":

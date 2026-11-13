@@ -366,6 +366,7 @@ def query_scenes(
     Supports both unpaginated filtering (when page is None) and paginated responses (when page is int).
     """
     require_db(base_path, backup_id=backup_id)
+    init_db(engine_or_backup_id=backup_id, backup_path=base_path)
 
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
         backup = session.query(BackupModel).filter_by(backup_id=str(backup_id)).first()
@@ -427,13 +428,24 @@ def query_scenes(
 
         # Filter by character_ids
         if character_ids and isinstance(character_ids, (list, tuple, set)):
+            cid_list = list(character_ids)
+            chars_by_cid = {}
+            if cid_list:
+                fetched_chars = (
+                    session.query(CharacterModel)
+                    .options(selectinload(CharacterModel.children))
+                    .filter(
+                        CharacterModel.backup_id == str(backup_id),
+                        CharacterModel.char_id.in_(cid_list),
+                    )
+                    .all()
+                )
+                chars_by_cid = {c.char_id: c for c in fetched_chars}
+
             resolved_clusters = []
-            for cid in character_ids:
+            for cid in cid_list:
                 family_pks = set()
-                char = session.query(CharacterModel).filter(
-                    CharacterModel.backup_id == str(backup_id),
-                    CharacterModel.char_id == cid
-                ).first()
+                char = chars_by_cid.get(cid)
                 if char:
                     family_pks.add(char.pk)
                     for child in char.children:
@@ -467,13 +479,19 @@ def query_scenes(
         if writer_names and isinstance(writer_names, (list, tuple, set)):
             w_lower = [w.strip().lower() for w in writer_names if isinstance(w, str) and w.strip()]
             if w_lower:
-                matched_writers = session.query(WriterModel).outerjoin(WriterAliasModel).filter(
-                    WriterModel.backup_id == str(backup_id),
-                    or_(
-                        func.lower(WriterModel.display_name).in_(w_lower),
-                        func.lower(WriterAliasModel.alias).in_(w_lower)
+                matched_writers = (
+                    session.query(WriterModel)
+                    .outerjoin(WriterAliasModel)
+                    .options(selectinload(WriterModel.characters).selectinload(CharacterModel.children))
+                    .filter(
+                        WriterModel.backup_id == str(backup_id),
+                        or_(
+                            func.lower(WriterModel.display_name).in_(w_lower),
+                            func.lower(WriterAliasModel.alias).in_(w_lower)
+                        )
                     )
-                ).all()
+                    .all()
+                )
 
                 if not matched_writers:
                     return {"total_items": 0, "current_page": page or 1, "per_page": per_page, "total_pages": 0, "scenes": []} if page is not None else []
@@ -526,7 +544,14 @@ def query_scenes(
         else:
             query = query.order_by(SceneModel.start_at.asc(), SceneModel.pk.asc())
 
-        query = query.options(selectinload(SceneModel.issues))
+        query = query.options(
+            joinedload(SceneModel.channel),
+            joinedload(SceneModel.category),
+            selectinload(SceneModel.issues),
+            selectinload(SceneModel.participants)
+            .joinedload(SceneParticipantModel.character)
+            .selectinload(CharacterModel.names),
+        )
 
         if page is not None:
             total_pages = math.ceil(total_items / per_page) if per_page > 0 else 1

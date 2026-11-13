@@ -5,7 +5,7 @@ import {
   Info,
   ChevronDown,
 } from 'lucide-react';
-import { api } from '../api';
+import { api, getErrorMessage } from '../api';
 import { ResolveIssueModal } from './curation/ResolveIssueModal';
 import { ActionConfirmationModal } from './curation/ActionConfirmationModal';
 import { ManualSplitModal } from './curation/ManualSplitModal';
@@ -38,6 +38,7 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
   const [reasonFilter, setReasonFilter] = useState<string>('');
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [resolvingIssue, setResolvingIssue] = useState<SceneIssue | null>(null);
   const [oppositeAction, setOppositeAction] = useState<{ action: 'merge' | 'split'; issue: SceneIssue } | null>(null);
   const [reopeningId, setReopeningId] = useState<number | null>(null);
@@ -54,9 +55,23 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
     });
   };
 
+  useEffect(() => {
+    setPage(1);
+    setData({
+      total_items: 0,
+      issues: [],
+      current_page: 1,
+      per_page: 50,
+      total_pages: 1,
+    });
+    setStatusCounts({ unresolved: 0, resolved: 0, all: 0 });
+    setError(null);
+  }, [backupId]);
+
   const fetchIssues = useCallback(() => {
     if (!backupId) return;
     setLoading(true);
+    setError(null);
 
     const params = new URLSearchParams();
     params.append('page', page.toString());
@@ -74,12 +89,21 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
           setStatusCounts(res.status_counts);
         }
       })
-      .catch(console.error)
+      .catch(err => {
+        console.error(err);
+        setData({
+          total_items: 0,
+          issues: [],
+          current_page: 1,
+          per_page: 50,
+          total_pages: 1,
+        });
+        setError(getErrorMessage(err, 'Failed to load scene issues.'));
+      })
       .finally(() => {
         setLoading(false);
-        if (onRefreshSummary) onRefreshSummary();
       });
-  }, [backupId, statusFilter, kindFilter, sceneTypeFilter, reasonFilter, page, onRefreshSummary]);
+  }, [backupId, statusFilter, kindFilter, sceneTypeFilter, reasonFilter, page]);
 
   useEffect(() => {
     fetchIssues();
@@ -100,8 +124,10 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
     try {
       await api.reopenSceneIssue(backupId, issueId);
       fetchIssues();
+      if (onRefreshSummary) onRefreshSummary();
     } catch (err) {
       console.error('Failed to reopen issue:', err);
+      setError(getErrorMessage(err, 'Failed to reopen scene issue.'));
     } finally {
       setReopeningId(null);
     }
@@ -227,6 +253,10 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
           <Loader2 size={32} className="animate-spin text-accent" style={{ margin: '0 auto 1rem auto' }} />
           <p className="text-secondary">Loading scene issues...</p>
         </div>
+      ) : error ? (
+        <div className="banner-danger">
+          <span className="text-md">{error}</span>
+        </div>
       ) : data.issues.length === 0 ? (
         <div className="glass-panel text-center p-xl">
           <CheckCircle size={36} className="text-success mb-xs" style={{ margin: '0 auto' }} />
@@ -268,7 +298,10 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
           backupId={backupId}
           issue={resolvingIssue}
           onClose={() => setResolvingIssue(null)}
-          onResolved={fetchIssues}
+          onResolved={() => {
+            fetchIssues();
+            if (onRefreshSummary) onRefreshSummary();
+          }}
         />
       )}
 
@@ -279,7 +312,10 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
           issue={oppositeAction.issue}
           action={oppositeAction.action}
           onClose={handleCloseOppositeAction}
-          onResolved={fetchIssues}
+          onResolved={() => {
+            fetchIssues();
+            if (onRefreshSummary) onRefreshSummary();
+          }}
         />
       )}
 
@@ -288,7 +324,10 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
         <ManualSplitModal
           backupId={backupId}
           onClose={() => setIsManualSplitOpen(false)}
-          onSuccess={fetchIssues}
+          onSuccess={() => {
+            fetchIssues();
+            if (onRefreshSummary) onRefreshSummary();
+          }}
         />
       )}
     </div>

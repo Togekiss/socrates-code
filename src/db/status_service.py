@@ -4,6 +4,7 @@ from typing import Optional, Dict, Any, List
 
 from db.session import db_session, init_db, require_db, has_db, has_sqlite_db
 from db.models import BackupModel, ExportModel, BackupStepModel, ChannelModel, Step, Status, Scope
+from db.serializers import build_backup_info_dict
 from db.snapshots import export_backup_info_snapshot
 import utils.tricks as t
 import utils.exceptions as exc
@@ -100,11 +101,10 @@ def load_backup_state(
     """
     require_db(backup_path, backup_id=backup_id)
     with db_session(backup_id=backup_id, backup_path=backup_path) as session:
-        return export_backup_info_snapshot(
+        return build_backup_info_dict(
             session=session,
             backup_id=str(backup_id),
             scope=str(scope),
-            write_to_disk=False
         )
 
 

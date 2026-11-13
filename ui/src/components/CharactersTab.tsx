@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Plus, Loader2 } from 'lucide-react';
-import { api } from '../api';
+import { api, getErrorMessage } from '../api';
 import { CharactersFilter } from './characters/CharactersFilter';
 import { VirtualScrollList, type VirtualListItem } from './characters/VirtualScrollList';
 import { CharacterEditModal } from './characters/CharacterEditModal';
@@ -66,6 +66,9 @@ export const CharactersTab = ({
 
   const fetchCharacters = useCallback(() => {
     setLoading(true);
+    setError(null);
+    setCharacters(null);
+    setGroups(null);
     Promise.all([
       api.getCharacters(backupId, byMe),
       api.getGroups(backupId),
@@ -78,7 +81,7 @@ export const CharactersTab = ({
         if (writerRes !== undefined) setMyWriter(writerRes);
         if (Array.isArray(writersRes)) setWriters(writersRes);
       })
-      .catch(err => setError(err.message))
+      .catch(err => setError(getErrorMessage(err, 'Failed to load characters.')))
       .finally(() => setLoading(false));
   }, [backupId, byMe]);
 

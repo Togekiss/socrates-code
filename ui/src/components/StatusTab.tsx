@@ -26,6 +26,8 @@ interface StatusTabProps {
   setTab: (tab: TabType) => void;
   curationSummary?: CurationSummary | null;
   backupInfo?: BackupInfo | null;
+  backupError?: string | null;
+  isLoading?: boolean;
   onUpgrade?: () => void;
   isUpgrading?: boolean;
 }
@@ -42,34 +44,72 @@ export const StatusTab = ({
   setTab,
   curationSummary: parentSummary,
   backupInfo: parentInfo,
+  backupError: parentError,
+  isLoading: parentLoading,
   onUpgrade,
   isUpgrading,
 }: StatusTabProps) => {
   const navigate = useNavigate();
-  const [info, setInfo] = useState<BackupInfo | null>(parentInfo || null);
-  const [summary, setSummary] = useState<CurationSummary | null>(parentSummary || null);
-  const [numWriters, setNumWriters] = useState<number>(0);
-  const [error, setError] = useState<string | null>(null);
+  const isParentManaged = parentInfo !== undefined || parentError !== undefined || parentLoading !== undefined;
+  const [info, setInfo] = useState<BackupInfo | null>(parentInfo ?? null);
+  const [summary, setSummary] = useState<CurationSummary | null>(parentSummary ?? null);
+  const [numWriters, setNumWriters] = useState<number>(parentInfo?.number_of_writers ?? 0);
+  const [error, setError] = useState<string | null>(parentError ?? null);
 
   useEffect(() => {
-    if (!backupId) return;
+    if (!backupId || isParentManaged) return;
+    let cancelled = false;
+    setInfo(null);
+    setSummary(null);
+    setNumWriters(0);
     setError(null);
-    if (!parentInfo) setInfo(null);
 
-    Promise.all([
-      api.getBackupInfo(backupId).then(setInfo),
-      api.getCurationSummary(backupId).then(setSummary).catch(() => null),
-      api.getWriters(backupId).then(w => setNumWriters(Array.isArray(w) ? w.length : 0)).catch(() => 0),
-    ]).catch(err => setError(err.message));
-  }, [backupId, parentInfo]);
+    api
+      .getBackupInfo(backupId)
+      .then(res => {
+        if (!cancelled) setInfo(res);
+      })
+      .catch(err => {
+        if (!cancelled) setError(err?.message || 'Failed to load backup state.');
+      });
+
+    api
+      .getCurationSummary(backupId)
+      .then(res => {
+        if (!cancelled) setSummary(res);
+      })
+      .catch(() => null);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [backupId, isParentManaged]);
 
   useEffect(() => {
-    if (parentInfo) setInfo(parentInfo);
-  }, [parentInfo]);
+    if (!isParentManaged) return;
+    setInfo(parentInfo ?? null);
+    setSummary(parentSummary ?? null);
+    setError(parentError ?? null);
+    setNumWriters(parentInfo?.number_of_writers ?? 0);
+  }, [isParentManaged, parentInfo, parentSummary, parentError]);
 
+  const infoId = info?.id;
+  const infoWritersCount = info?.number_of_writers;
   useEffect(() => {
-    if (parentSummary) setSummary(parentSummary);
-  }, [parentSummary]);
+    if (!backupId || !infoId || typeof infoWritersCount === 'number') return;
+    let cancelled = false;
+    api
+      .getWriters(backupId)
+      .then(w => {
+        if (!cancelled) setNumWriters(Array.isArray(w) ? w.length : 0);
+      })
+      .catch(() => {
+        if (!cancelled) setNumWriters(0);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [backupId, infoId, infoWritersCount]);
 
   if (!backupId) {
     return (

@@ -3,6 +3,7 @@ import sys
 import json
 import subprocess
 import time
+from contextlib import asynccontextmanager
 
 ################ File summary #################
 
@@ -24,6 +25,7 @@ Main functionality:
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Depends, Cookie, Response, Request, Body
 from fastapi.responses import StreamingResponse, FileResponse, RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 from typing import Dict, Any, List, Optional
 import httpx
@@ -39,6 +41,7 @@ import utils.tricks as t
 from utils import exceptions as exc
 from db import character_service, curation_service, status_service
 from db.models import Step, Status, IssueResolution
+from sqlalchemy.exc import SQLAlchemyError
 
 
 class MergeCharactersRequest(BaseModel):
@@ -147,7 +150,14 @@ class AuthCallback(BaseModel):
     code: str
 
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(fastapi_app: FastAPI):
+    yield
+    from db.session import close_all_engines
+    close_all_engines()
+
+
+app = FastAPI(lifespan=lifespan)
 
 cors_origins = [
     "http://localhost:5173",
@@ -169,6 +179,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+
+@app.exception_handler(exc.DatabaseConnectionError)
+async def db_connection_exception_handler(request: Request, e: exc.DatabaseConnectionError):
+    return JSONResponse(
+        status_code=404,
+        content={"detail": str(e), "error": "database_not_found"}
+    )
 
 
 @app.exception_handler(exc.DatabaseSchemaMismatchError)
@@ -176,6 +195,17 @@ async def schema_mismatch_exception_handler(request: Request, e: exc.DatabaseSch
     return JSONResponse(
         status_code=400,
         content={"detail": str(e), "error": "schema_mismatch"}
+    )
+
+
+@app.exception_handler(exc.DatabaseError)
+@app.exception_handler(SQLAlchemyError)
+async def database_exception_handler(request: Request, e: Exception):
+    err_line = str(e).splitlines()[0] if str(e) else type(e).__name__
+    t.global_log("error", f"API: Database error on {request.url.path}: {err_line}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Database error: {err_line}", "error": "database_error"}
     )
 
 
@@ -199,13 +229,10 @@ def get_backup_path(backup_id: str):
 
 
 def api_log(backup_id: str, level: str, message: str):
-    import datetime
     try:
         base_path = get_backup_path(backup_id)
         log_path = (Path(base_path) / "log.txt").as_posix()
-        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(f"[{timestamp}]{level}: API: {message}\n")
+        t.write_log_line(log_path, level, f"API: {message}")
     except Exception:
         # Fallback to global log if backup_id is invalid
         t.global_log(level, f"API ({backup_id}): {message}")
@@ -490,53 +517,72 @@ def get_all_backup_paths(user = Depends(get_current_user)):
 def get_backup_info(backup_id: str):
     base_path = get_backup_path(backup_id)
 
-    from db.session import get_engine, get_db_schema_version, has_db
-    from db.models import CURRENT_SCHEMA_VERSION
+    from sqlalchemy import func
+    from db.session import db_session, has_db, require_db
+    from db.models import CURRENT_SCHEMA_VERSION, SchemaVersionModel, CharacterModel, WriterModel
+    from db.serializers import build_backup_info_dict
 
     current_schema_version = CURRENT_SCHEMA_VERSION
     schema_version = None
     is_schema_outdated = False
 
-    if has_db(base_path, backup_id=backup_id):
+    if not has_db(base_path, backup_id=backup_id):
+        require_db(base_path, backup_id=backup_id)
+
+    with db_session(backup_id=backup_id, backup_path=base_path) as session:
         try:
-            engine = get_engine(backup_id=backup_id, backup_path=base_path)
-            schema_version = get_db_schema_version(engine)
+            latest = session.query(SchemaVersionModel).order_by(SchemaVersionModel.version.desc()).first()
+            schema_version = latest.version if latest else 0
             is_schema_outdated = bool(schema_version < current_schema_version) if schema_version is not None else False
         except Exception as e:
+            session.rollback()
+            schema_version = 0
+            is_schema_outdated = True
             t.global_log("debug", f"API: Failed to check schema version for {backup_id}: {e}")
 
-    try:
-        data = status_service.load_backup_state(backup_id, base_path)
-    except Exception as e:
-        if is_schema_outdated:
-            t.global_log("debug", f"API: Failed to load backup state on outdated schema ({e}), using fallback info")
-            index = t.get_backups_index()
-            backup_meta = next((b for b in index if str(b.get("backup_id")) == str(backup_id)), {})
-            data = {
-                "id": backup_meta.get("server_id", backup_id),
-                "name": backup_meta.get("backup_name", backup_meta.get("server_name", f"Backup {backup_id}")),
-                "server_name": backup_meta.get("server_name", ""),
-                "status": "pending",
-                "steps": {},
-                "number_of_categories": 0,
-                "number_of_channels": 0,
-                "number_of_threads": 0,
-                "number_of_scenes": 0,
-                "number_of_sessions": 0,
-                "number_of_events": 0,
-                "number_of_characters": 0,
-                "number_of_writers": 0,
-                "categories": [],
-            }
-        else:
-            raise HTTPException(status_code=404, detail=f"Failed to load backup state: {e}")
+        try:
+            data = build_backup_info_dict(
+                session=session,
+                backup_id=str(backup_id),
+                is_schema_outdated=is_schema_outdated,
+            )
+        except Exception as e:
+            session.rollback()
+            if is_schema_outdated:
+                t.global_log("debug", f"API: Failed to load backup state on outdated schema ({e}), using fallback info")
+                index = t.get_backups_index()
+                backup_meta = next((b for b in index if str(b.get("backup_id")) == str(backup_id)), {})
+                data = {
+                    "id": backup_meta.get("server_id", backup_id),
+                    "name": backup_meta.get("backup_name", backup_meta.get("server_name", f"Backup {backup_id}")),
+                    "server_name": backup_meta.get("server_name", ""),
+                    "status": "pending",
+                    "steps": {},
+                    "number_of_categories": 0,
+                    "number_of_channels": 0,
+                    "number_of_threads": 0,
+                    "number_of_scenes": 0,
+                    "number_of_sessions": 0,
+                    "number_of_events": 0,
+                    "number_of_characters": 0,
+                    "number_of_writers": 0,
+                    "categories": [],
+                }
+            else:
+                raise HTTPException(status_code=404, detail=f"Failed to load backup state: {e}")
 
-    try:
-        data["number_of_characters"] = character_service.get_character_count(backup_id, base_path)
-        data["number_of_writers"] = character_service.get_writer_count(backup_id, base_path)
-    except Exception:
-        data["number_of_characters"] = 0
-        data["number_of_writers"] = 0
+        try:
+            data["number_of_characters"] = session.query(func.count(CharacterModel.pk)).filter(
+                CharacterModel.backup_id == str(backup_id),
+                CharacterModel.parent_pk.is_(None),
+            ).scalar() or 0
+            data["number_of_writers"] = session.query(func.count(WriterModel.pk)).filter(
+                WriterModel.backup_id == str(backup_id),
+            ).scalar() or 0
+        except Exception:
+            session.rollback()
+            data["number_of_characters"] = 0
+            data["number_of_writers"] = 0
 
     data["current_schema_version"] = current_schema_version
     data["schema_version"] = schema_version
@@ -749,6 +795,10 @@ def get_characters(
     if not isinstance(by_me, bool):
         by_me = False
 
+    from db.session import require_db, init_db
+    require_db(base_path, backup_id=backup_id)
+    init_db(engine_or_backup_id=backup_id, backup_path=base_path)
+
     writer_id = None
     if by_me and request:
         user = get_optional_user(request)
@@ -768,13 +818,14 @@ def get_characters(
             format_type=format,
             by_writer_id=writer_id
         )
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"Failed to load characters: {e}")
 
 
 @app.post("/api/backups/{backup_id}/characters/merge")
 def merge_characters(backup_id: str, req: MergeCharactersRequest):
-    api_log(backup_id, "info", f"Merging character {req.source_id} into {req.target_id}...")
     base_path = get_backup_path(backup_id)
     try:
         character_service.merge_characters(backup_id, base_path, req.source_id, req.target_id)
@@ -782,6 +833,8 @@ def merge_characters(backup_id: str, req: MergeCharactersRequest):
         SceneManager.clear_cache(backup_id)
         api_log(backup_id, "base", "Merge completed successfully.")
         return {"status": "success"}
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except Exception as e:
         api_log(backup_id, "error", f"Merge failed: {e}")
         raise HTTPException(status_code=400, detail=str(e))
@@ -789,7 +842,6 @@ def merge_characters(backup_id: str, req: MergeCharactersRequest):
 
 @app.post("/api/backups/{backup_id}/characters/nest")
 def nest_character(backup_id: str, req: NestCharacterRequest):
-    api_log(backup_id, "info", f"Nesting character {req.child_id} under {req.parent_id} as {req.version_type}...")
     base_path = get_backup_path(backup_id)
     try:
         character_service.nest_character(backup_id, base_path, req.child_id, req.parent_id, req.version_type)
@@ -797,6 +849,8 @@ def nest_character(backup_id: str, req: NestCharacterRequest):
         SceneManager.clear_cache(backup_id)
         api_log(backup_id, "base", "Nest completed successfully.")
         return {"status": "success"}
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except Exception as e:
         api_log(backup_id, "error", f"Nest failed: {e}")
         raise HTTPException(status_code=400, detail=str(e))
@@ -804,7 +858,6 @@ def nest_character(backup_id: str, req: NestCharacterRequest):
 
 @app.post("/api/backups/{backup_id}/characters/{char_id}/unnest")
 def unnest_character(backup_id: str, char_id: int):
-    api_log(backup_id, "info", f"Unnesting character {char_id}...")
     base_path = get_backup_path(backup_id)
     try:
         character_service.unnest_character(backup_id, base_path, char_id)
@@ -812,6 +865,8 @@ def unnest_character(backup_id: str, char_id: int):
         SceneManager.clear_cache(backup_id)
         api_log(backup_id, "base", "Unnest completed successfully.")
         return {"status": "success"}
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except Exception as e:
         api_log(backup_id, "error", f"Unnest failed: {e}")
         raise HTTPException(status_code=400, detail=str(e))
@@ -819,7 +874,6 @@ def unnest_character(backup_id: str, char_id: int):
 
 @app.put("/api/backups/{backup_id}/characters/{char_id}")
 def update_character(backup_id: str, char_id: int, req: UpdateCharacterRequest):
-    api_log(backup_id, "info", f"Updating character {char_id} attributes...")
     base_path = get_backup_path(backup_id)
     try:
         char_dict = character_service.update_character(
@@ -834,6 +888,8 @@ def update_character(backup_id: str, char_id: int, req: UpdateCharacterRequest):
         SceneManager.clear_cache(backup_id)
         api_log(backup_id, "base", "Attributes updated successfully.")
         return {"status": "success", "character": char_dict}
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except ValueError as e:
         api_log(backup_id, "error", f"Character {char_id} update failed: {e}")
         raise HTTPException(status_code=404 if "not found" in str(e).lower() else 400, detail=str(e))
@@ -847,6 +903,8 @@ def get_writers(backup_id: str):
     base_path = get_backup_path(backup_id)
     try:
         return character_service.get_writers(backup_id, base_path)
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -897,6 +955,9 @@ def get_scenes(
     if not isinstance(sort, str): sort = "asc"
 
     if by_me and request:
+        from db.session import require_db, init_db
+        require_db(base_path, backup_id=backup_id)
+        init_db(engine_or_backup_id=backup_id, backup_path=base_path)
         user = get_optional_user(request)
         if user and user.get("sub"):
             writer_info = curation_service.get_my_writer(backup_id, base_path, str(user["sub"]))
@@ -945,7 +1006,6 @@ def get_scenes(
 
 @app.put("/api/backups/{backup_id}/scenes/{scene_id}")
 def update_scene(backup_id: str, scene_id: str, req: UpdateSceneMetadataRequest):
-    api_log(backup_id, "info", f"Updating scene #{scene_id} metadata...")
     base_path = get_backup_path(backup_id)
     try:
         check_not_indexing(backup_id, base_path)
@@ -960,6 +1020,8 @@ def update_scene(backup_id: str, scene_id: str, req: UpdateSceneMetadataRequest)
         SceneManager.clear_cache(backup_id)
         api_log(backup_id, "base", f"Scene #{scene_id} metadata updated successfully.")
         return res
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except exc.ConflictError as e:
         api_log(backup_id, "error", f"Scene update conflict: {e}")
         raise HTTPException(status_code=409, detail=str(e))
@@ -976,12 +1038,13 @@ def update_scene(backup_id: str, scene_id: str, req: UpdateSceneMetadataRequest)
 
 @app.get("/api/backups/{backup_id}/scenes/{scene_id}/merge-neighbors")
 def get_scene_merge_neighbors(backup_id: str, scene_id: str):
-    api_log(backup_id, "info", f"Fetching merge neighbors for scene '{scene_id}'...")
     base_path = get_backup_path(backup_id)
     try:
         check_not_indexing(backup_id, base_path)
         res = curation_service.get_scene_merge_neighbors(backup_id, base_path, scene_id)
         return res
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except exc.NotFoundError as e:
         api_log(backup_id, "error", f"Scene merge neighbors not found: {e}")
         raise HTTPException(status_code=404, detail=str(e))
@@ -995,7 +1058,6 @@ def get_scene_merge_neighbors(backup_id: str, scene_id: str):
 
 @app.post("/api/backups/{backup_id}/scenes/{scene_id}/merge")
 def merge_scene(backup_id: str, scene_id: str, req: MergeSceneRequest):
-    api_log(backup_id, "info", f"Merging scene '{scene_id}' in direction '{req.direction}' (force={req.force})...")
     base_path = get_backup_path(backup_id)
     try:
         check_not_indexing(backup_id, base_path)
@@ -1012,6 +1074,8 @@ def merge_scene(backup_id: str, scene_id: str, req: MergeSceneRequest):
             SceneManager.clear_cache(backup_id)
             api_log(backup_id, "base", f"Scene '{scene_id}' merged successfully with {req.direction} scene.")
         return res
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except exc.ConflictError as e:
         api_log(backup_id, "error", f"Scene merge conflict: {e}")
         raise HTTPException(status_code=409, detail=str(e))
@@ -1065,6 +1129,9 @@ def get_sessions(
     if not isinstance(sort, str): sort = "asc"
 
     if by_me and request:
+        from db.session import require_db, init_db
+        require_db(base_path, backup_id=backup_id)
+        init_db(engine_or_backup_id=backup_id, backup_path=base_path)
         user = get_optional_user(request)
         if user and user.get("sub"):
             writer_info = curation_service.get_my_writer(backup_id, base_path, str(user["sub"]))
@@ -1161,6 +1228,9 @@ def get_events(
     if not isinstance(sort, str): sort = "asc"
 
     if by_me and request:
+        from db.session import require_db, init_db
+        require_db(base_path, backup_id=backup_id)
+        init_db(engine_or_backup_id=backup_id, backup_path=base_path)
         user = get_optional_user(request)
         if user and user.get("sub"):
             writer_info = curation_service.get_my_writer(backup_id, base_path, str(user["sub"]))
@@ -1212,7 +1282,6 @@ def get_events(
 
 @app.put("/api/backups/{backup_id}/events/{event_pk}")
 def update_event(backup_id: str, event_pk: int, req: UpdateEventMetadataRequest):
-    api_log(backup_id, "info", f"Updating event #{event_pk} metadata...")
     base_path = get_backup_path(backup_id)
     try:
         check_not_indexing(backup_id, base_path)
@@ -1227,6 +1296,8 @@ def update_event(backup_id: str, event_pk: int, req: UpdateEventMetadataRequest)
         SceneManager.clear_cache(backup_id)
         api_log(backup_id, "base", "Event metadata updated successfully.")
         return res
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except exc.ConflictError as e:
         api_log(backup_id, "error", f"Event update conflict: {e}")
         raise HTTPException(status_code=409, detail=str(e))
@@ -1246,7 +1317,6 @@ def merge_events(backup_id: str, req: MergeEventsRequest):
     eff_pks = list(req.event_pks or [])
     if not eff_pks and req.target_event_pk is not None and req.source_event_pk is not None:
         eff_pks = [req.target_event_pk, req.source_event_pk]
-    api_log(backup_id, "info", f"Merging events {eff_pks}...")
     base_path = get_backup_path(backup_id)
     try:
         check_not_indexing(backup_id, base_path)
@@ -1260,6 +1330,8 @@ def merge_events(backup_id: str, req: MergeEventsRequest):
         SceneManager.clear_cache(backup_id)
         api_log(backup_id, "base", "Events merged successfully.")
         return res
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except exc.ConflictError as e:
         api_log(backup_id, "error", f"Merge events conflict: {e}")
         raise HTTPException(status_code=409, detail=str(e))
@@ -1278,7 +1350,6 @@ def merge_events(backup_id: str, req: MergeEventsRequest):
 def split_event(backup_id: str, event_pk: int, req: SplitEventRequest):
     raw_ids = req.scene_ids or req.scene_pks or req.channel_ids or []
     ids_to_extract = [str(x) for x in raw_ids]
-    api_log(backup_id, "info", f"Splitting event #{event_pk} scenes {ids_to_extract}...")
     base_path = get_backup_path(backup_id)
     try:
         check_not_indexing(backup_id, base_path)
@@ -1293,6 +1364,8 @@ def split_event(backup_id: str, event_pk: int, req: SplitEventRequest):
         SceneManager.clear_cache(backup_id)
         api_log(backup_id, "base", "Event split successfully.")
         return res
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except exc.ConflictError as e:
         api_log(backup_id, "error", f"Split event conflict: {e}")
         raise HTTPException(status_code=409, detail=str(e))
@@ -1315,13 +1388,14 @@ def get_groups(backup_id: str):
     base_path = get_backup_path(backup_id)
     try:
         return character_service.get_groups(backup_id, base_path)
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/backups/{backup_id}/groups")
 def create_group(backup_id: str, req: CreateGroupRequest):
-    api_log(backup_id, "info", f"Creating group with names {req.names}...")
     base_path = get_backup_path(backup_id)
     try:
         res = character_service.create_group(backup_id, base_path, req.names, req.member_ids)
@@ -1329,6 +1403,8 @@ def create_group(backup_id: str, req: CreateGroupRequest):
         SceneManager.clear_cache(backup_id)
         api_log(backup_id, "base", "Group created successfully.")
         return res
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except Exception as e:
         api_log(backup_id, "error", f"Group creation failed: {e}")
         raise HTTPException(status_code=400, detail=str(e))
@@ -1336,7 +1412,6 @@ def create_group(backup_id: str, req: CreateGroupRequest):
 
 @app.put("/api/backups/{backup_id}/groups/{group_id}")
 def update_group(backup_id: str, group_id: int, req: UpdateGroupRequest):
-    api_log(backup_id, "info", f"Updating group #{group_id}...")
     base_path = get_backup_path(backup_id)
     try:
         res = character_service.update_group(backup_id, base_path, group_id, names=req.names, member_ids=req.member_ids)
@@ -1344,6 +1419,8 @@ def update_group(backup_id: str, group_id: int, req: UpdateGroupRequest):
         SceneManager.clear_cache(backup_id)
         api_log(backup_id, "base", "Group updated successfully.")
         return res
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except ValueError as e:
         api_log(backup_id, "error", f"Group update failed: {e}")
         raise HTTPException(status_code=404, detail=str(e))
@@ -1354,7 +1431,6 @@ def update_group(backup_id: str, group_id: int, req: UpdateGroupRequest):
 
 @app.delete("/api/backups/{backup_id}/groups/{group_id}")
 def delete_group(backup_id: str, group_id: int):
-    api_log(backup_id, "info", f"Deleting group #{group_id}...")
     base_path = get_backup_path(backup_id)
     try:
         res = curation_service.delete_group(backup_id, base_path, group_id)
@@ -1362,6 +1438,8 @@ def delete_group(backup_id: str, group_id: int):
         SceneManager.clear_cache(backup_id)
         api_log(backup_id, "base", "Group deleted successfully.")
         return res
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except ValueError as e:
         api_log(backup_id, "error", f"Group deletion failed: {e}")
         raise HTTPException(status_code=404, detail=str(e))
@@ -1378,13 +1456,14 @@ def get_writers_detailed(backup_id: str):
     base_path = get_backup_path(backup_id)
     try:
         return curation_service.get_writers_detailed(backup_id, base_path)
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/backups/{backup_id}/writers")
 def create_writer(backup_id: str, req: CreateWriterRequest):
-    api_log(backup_id, "info", f"Creating writer '{req.display_name}'...")
     base_path = get_backup_path(backup_id)
     try:
         res = curation_service.create_writer(
@@ -1396,6 +1475,8 @@ def create_writer(backup_id: str, req: CreateWriterRequest):
         )
         api_log(backup_id, "base", "Writer created successfully.")
         return res
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except ValueError as e:
         api_log(backup_id, "error", f"Writer creation failed: {e}")
         raise HTTPException(status_code=400, detail=str(e))
@@ -1406,7 +1487,6 @@ def create_writer(backup_id: str, req: CreateWriterRequest):
 
 @app.put("/api/backups/{backup_id}/writers/{writer_id}")
 def update_writer(backup_id: str, writer_id: int, req: UpdateWriterRequest):
-    api_log(backup_id, "info", f"Updating writer #{writer_id}...")
     base_path = get_backup_path(backup_id)
     try:
         res = curation_service.update_writer(
@@ -1419,6 +1499,8 @@ def update_writer(backup_id: str, writer_id: int, req: UpdateWriterRequest):
         )
         api_log(backup_id, "base", "Writer updated successfully.")
         return res
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except ValueError as e:
         api_log(backup_id, "error", f"Writer update failed: {e}")
         raise HTTPException(status_code=404 if "not found" in str(e).lower() else 400, detail=str(e))
@@ -1429,7 +1511,6 @@ def update_writer(backup_id: str, writer_id: int, req: UpdateWriterRequest):
 
 @app.delete("/api/backups/{backup_id}/writers/{writer_id}")
 def delete_writer(backup_id: str, writer_id: int):
-    api_log(backup_id, "info", f"Deleting writer #{writer_id}...")
     base_path = get_backup_path(backup_id)
     try:
         res = curation_service.delete_writer(backup_id, base_path, writer_id=writer_id)
@@ -1437,6 +1518,8 @@ def delete_writer(backup_id: str, writer_id: int):
         SceneManager.clear_cache(backup_id)
         api_log(backup_id, "base", "Writer deleted successfully.")
         return res
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except ValueError as e:
         api_log(backup_id, "error", f"Writer deletion failed: {e}")
         raise HTTPException(status_code=404, detail=str(e))
@@ -1450,6 +1533,8 @@ def get_writer_link_suggestions(backup_id: str):
     base_path = get_backup_path(backup_id)
     try:
         return curation_service.get_writer_link_suggestions(backup_id, base_path)
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1459,6 +1544,8 @@ def get_curation_summary(backup_id: str):
     base_path = get_backup_path(backup_id)
     try:
         return curation_service.get_curation_summary(backup_id, base_path)
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1471,13 +1558,14 @@ def get_unassigned_characters(backup_id: str):
     base_path = get_backup_path(backup_id)
     try:
         return curation_service.get_unassigned_characters(backup_id, base_path)
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.put("/api/backups/{backup_id}/characters/{char_id}/assign-writer")
 def assign_character_writer(backup_id: str, char_id: int, req: AssignCharacterWriterRequest):
-    api_log(backup_id, "info", f"Assigning character #{char_id} to writer #{req.writer_id}...")
     base_path = get_backup_path(backup_id)
     try:
         res = curation_service.assign_character_writer(backup_id, base_path, char_id=char_id, writer_id=req.writer_id)
@@ -1485,6 +1573,8 @@ def assign_character_writer(backup_id: str, char_id: int, req: AssignCharacterWr
         SceneManager.clear_cache(backup_id)
         api_log(backup_id, "base", "Character assigned to writer successfully.")
         return res
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except ValueError as e:
         api_log(backup_id, "error", f"Assigning writer failed: {e}")
         raise HTTPException(status_code=404, detail=str(e))
@@ -1518,6 +1608,8 @@ def get_scene_issues(
             page=page,
             per_page=per_page
         )
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1535,7 +1627,6 @@ def check_not_indexing(backup_id: str, base_path: str):
 
 @app.put("/api/backups/{backup_id}/scene-issues/{issue_id}/resolve")
 def resolve_scene_issue(backup_id: str, issue_id: int, req: ResolveIssueRequest):
-    api_log(backup_id, "info", f"Resolving scene issue #{issue_id} with resolution '{req.resolution}'...")
     base_path = get_backup_path(backup_id)
     try:
         check_not_indexing(backup_id, base_path)
@@ -1544,6 +1635,8 @@ def resolve_scene_issue(backup_id: str, issue_id: int, req: ResolveIssueRequest)
         )
         api_log(backup_id, "base", "Scene issue resolved.")
         return res
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except exc.ConflictError as e:
         api_log(backup_id, "error", f"Resolving scene issue conflict: {e}")
         raise HTTPException(status_code=409, detail=str(e))
@@ -1560,13 +1653,14 @@ def resolve_scene_issue(backup_id: str, issue_id: int, req: ResolveIssueRequest)
 
 @app.put("/api/backups/{backup_id}/scene-issues/{issue_id}/reopen")
 def reopen_scene_issue(backup_id: str, issue_id: int):
-    api_log(backup_id, "info", f"Reopening scene issue #{issue_id}...")
     base_path = get_backup_path(backup_id)
     try:
         check_not_indexing(backup_id, base_path)
         res = curation_service.reopen_scene_issue(backup_id, base_path, issue_id=issue_id)
         api_log(backup_id, "base", "Scene issue reopened.")
         return res
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except exc.ConflictError as e:
         api_log(backup_id, "error", f"Reopening scene issue conflict: {e}")
         raise HTTPException(status_code=409, detail=str(e))
@@ -1583,7 +1677,6 @@ def reopen_scene_issue(backup_id: str, issue_id: int):
 
 @app.post("/api/backups/{backup_id}/scene-issues/manual-split")
 def create_manual_scene_split(backup_id: str, req: ManualSplitRequest):
-    api_log(backup_id, "info", f"Creating manual scene split at {req.discord_link}...")
     base_path = get_backup_path(backup_id)
     try:
         check_not_indexing(backup_id, base_path)
@@ -1592,6 +1685,8 @@ def create_manual_scene_split(backup_id: str, req: ManualSplitRequest):
         )
         api_log(backup_id, "base", "Manual scene split created.")
         return res
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except exc.ConflictError as e:
         api_log(backup_id, "error", f"Manual scene split conflict: {e}")
         raise HTTPException(status_code=409, detail=str(e))
@@ -1631,13 +1726,14 @@ def get_flagged_messages(
             page=page,
             per_page=per_page
         )
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/backups/{backup_id}/flagged-messages/manual")
 def add_manual_flagged_message(backup_id: str, req: ManualFlaggedMessageRequest):
-    api_log(backup_id, "info", f"Adding manual flagged message from {req.discord_link}...")
     base_path = get_backup_path(backup_id)
     try:
         check_not_indexing(backup_id, base_path)
@@ -1646,6 +1742,8 @@ def add_manual_flagged_message(backup_id: str, req: ManualFlaggedMessageRequest)
         )
         api_log(backup_id, "base", "Manual flagged message added.")
         return res
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except exc.ConflictError as e:
         api_log(backup_id, "error", f"Add manual flagged message conflict: {e}")
         raise HTTPException(status_code=409, detail=str(e))
@@ -1662,7 +1760,6 @@ def add_manual_flagged_message(backup_id: str, req: ManualFlaggedMessageRequest)
 
 @app.put("/api/backups/{backup_id}/flagged-messages/{message_id}/resolve")
 def resolve_flagged_message(backup_id: str, message_id: str, req: ResolveFlaggedMessageRequest):
-    api_log(backup_id, "info", f"Resolving flagged message #{message_id} with resolution '{req.resolution}'...")
     base_path = get_backup_path(backup_id)
     try:
         check_not_indexing(backup_id, base_path)
@@ -1677,6 +1774,8 @@ def resolve_flagged_message(backup_id: str, message_id: str, req: ResolveFlagged
         )
         api_log(backup_id, "base", "Flagged message resolved.")
         return res
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except exc.ConflictError as e:
         api_log(backup_id, "error", f"Resolving flagged message conflict: {e}")
         raise HTTPException(status_code=409, detail=str(e))
@@ -1693,13 +1792,14 @@ def resolve_flagged_message(backup_id: str, message_id: str, req: ResolveFlagged
 
 @app.put("/api/backups/{backup_id}/flagged-messages/{message_id}/reopen")
 def reopen_flagged_message(backup_id: str, message_id: str):
-    api_log(backup_id, "info", f"Reopening flagged message #{message_id}...")
     base_path = get_backup_path(backup_id)
     try:
         check_not_indexing(backup_id, base_path)
         res = curation_service.reopen_flagged_message(backup_id, base_path, message_id=message_id)
         api_log(backup_id, "base", "Flagged message reopened.")
         return res
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except exc.ConflictError as e:
         api_log(backup_id, "error", f"Reopening flagged message conflict: {e}")
         raise HTTPException(status_code=409, detail=str(e))
@@ -1716,7 +1816,6 @@ def reopen_flagged_message(backup_id: str, message_id: str):
 
 @app.post("/api/backups/{backup_id}/flagged-messages/{message_id}/promote")
 def promote_flagged_message(backup_id: str, message_id: str, req: Optional[PromoteFlaggedMessageRequest] = None):
-    api_log(backup_id, "info", f"Promoting flagged message #{message_id} to override...")
     base_path = get_backup_path(backup_id)
     content = req.content if req else None
     author = req.author if req else None
@@ -1730,6 +1829,8 @@ def promote_flagged_message(backup_id: str, message_id: str, req: Optional[Promo
         )
         api_log(backup_id, "base", "Flagged message promoted successfully.")
         return res
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except ValueError as e:
         api_log(backup_id, "error", f"Promoting flagged message failed: {e}")
         raise HTTPException(status_code=404, detail=str(e))
@@ -1752,18 +1853,21 @@ def get_message_overrides(
             page=page,
             per_page=per_page
         )
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.delete("/api/backups/{backup_id}/message-overrides/{message_id}")
 def delete_message_override(backup_id: str, message_id: str):
-    api_log(backup_id, "info", f"Deleting message override #{message_id}...")
     base_path = get_backup_path(backup_id)
     try:
         res = curation_service.delete_message_override(backup_id, base_path, message_id=message_id)
         api_log(backup_id, "base", "Message override deleted.")
         return res
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except ValueError as e:
         api_log(backup_id, "error", f"Deleting message override failed: {e}")
         raise HTTPException(status_code=404, detail=str(e))
@@ -1783,6 +1887,8 @@ def get_my_writer(backup_id: str, user = Depends(get_current_user)):
         return None
     try:
         return curation_service.get_my_writer(backup_id, base_path, str(discord_user_id))
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1791,6 +1897,7 @@ def get_my_writer(backup_id: str, user = Depends(get_current_user)):
 def get_backup_logs(backup_id: str, lines: int = Query(100)):
     base_path = get_backup_path(backup_id)
     log_file = (Path(base_path) / "log.txt").as_posix()
+    t.flush_logs(log_file)
     if not Path(log_file).exists():
         return {"lines": []}
     try:
@@ -1806,6 +1913,7 @@ def get_backup_logs(backup_id: str, lines: int = Query(100)):
 def get_raw_log(backup_id: str):
     base_path = get_backup_path(backup_id)
     log_file = (Path(base_path) / "log.txt").as_posix()
+    t.flush_logs(log_file)
     if not Path(log_file).exists():
         raise HTTPException(status_code=404, detail="Log file not found")
     return FileResponse(log_file, media_type="text/plain")
@@ -1817,8 +1925,10 @@ def stream_logs(backup_id: str):
     log_file = (Path(base_path) / "log.txt").as_posix()
     
     def log_generator():
+        t.flush_logs(log_file)
         # Wait for the file to be created if it doesn't exist yet
         for _ in range(20):
+            t.flush_logs(log_file)
             if Path(log_file).exists(): break
             time.sleep(0.5)
             
@@ -1834,6 +1944,7 @@ def stream_logs(backup_id: str):
                 yield f"data: {line.strip()}\n\n"
                 
             while True:
+                t.flush_logs(log_file)
                 line = f.readline()
                 if not line:
                     time.sleep(0.1)
@@ -1846,6 +1957,7 @@ def stream_logs(backup_id: str):
 @app.get("/api/logs/global")
 def get_global_logs(lines: int = Query(100)):
     global_log_file = (Path(get_data_root()) / "out" / "log.txt").as_posix()
+    t.flush_logs(global_log_file)
     if not Path(global_log_file).exists():
         return {"logs": []}
         
@@ -1861,6 +1973,7 @@ def get_global_logs(lines: int = Query(100)):
 @app.delete("/api/logs/global")
 def clear_global_logs():
     log_path = (Path(get_data_root()) / "out" / "log.txt").as_posix()
+    t.close_log_handlers(log_path)
     if Path(log_path).exists():
         open(log_path, "w").close()
     return {"status": "cleared"}

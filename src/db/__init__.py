@@ -40,6 +40,10 @@ from .session import (
     has_db,
     require_db,
 )
+from .serializers import (
+    build_backup_info_dict,
+    build_character_list_dict,
+)
 from .snapshots import (
     export_backup_info_snapshot,
     export_character_list_snapshot,
@@ -93,6 +97,8 @@ __all__ = [
     "has_db",
     "require_db",
     "has_sqlite_db",
+    "build_backup_info_dict",
+    "build_character_list_dict",
     "export_backup_info_snapshot",
     "export_character_list_snapshot",
     "sync_channels_to_db",

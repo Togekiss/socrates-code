@@ -1,4 +1,6 @@
 import os
+import shutil
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -450,6 +452,51 @@ class TestAtomicUtilities(unittest.TestCase):
         path_meu_server = t.get_backup_path("1789899843")
         self.assertIn("el_meu_server", path_meu_server)
         self.assertTrue(Path(path_meu_server).exists())
+
+
+class TestSqliteWalCheckpointing(unittest.TestCase):
+    """Ensures SQLite commits checkpoint WAL back into backup.sqlite so standalone .sqlite files stay up to date."""
+
+    def test_status_update_is_checkpointed_into_standalone_sqlite_file(self):
+        from db import status_service
+        from db.session import close_all_engines
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            backup_dir = Path(tmpdir) / "backup_wal_test"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            backup_id = "wal_test_1"
+            base_path = backup_dir.as_posix()
+
+            try:
+                status_service.init_backup_export(
+                    backup_id=backup_id,
+                    backup_path=base_path,
+                    backup_name="WAL Test",
+                )
+                # Step 1: mark index_scenes running
+                status_service.update_step_status(backup_id, base_path, "index_scenes", "running", write_snapshot=False)
+                # Simulate an active read from the pooled engine (uvicorn polling)
+                state_running = status_service.load_backup_state(backup_id, base_path)
+                self.assertEqual(state_running["steps"]["index_scenes"], "running")
+
+                # Step 2: update step to success WITHOUT calling close_all_engines() first
+                status_service.update_step_status(backup_id, base_path, "index_scenes", "success", write_snapshot=False)
+
+                # Copy ONLY backup.sqlite (intentionally omitting -wal and -shm) to verify self-contained state
+                standalone_copy = Path(tmpdir) / "standalone.sqlite"
+                shutil.copy2(backup_dir / "backup.sqlite", standalone_copy)
+
+                conn = sqlite3.connect(standalone_copy.as_posix())
+                try:
+                    rows = conn.execute(
+                        "SELECT step, status FROM backup_steps WHERE step = 'index_scenes'"
+                    ).fetchall()
+                finally:
+                    conn.close()
+
+                self.assertEqual(rows, [("index_scenes", "success")])
+            finally:
+                close_all_engines()
 
 
 if __name__ == "__main__":

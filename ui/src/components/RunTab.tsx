@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { api, API_BASE } from '../api';
 import {
   AlertTriangle,
@@ -17,9 +17,10 @@ import type { BackupConfig, BackupInfo, GlobalConfig } from '../types';
 interface RunTabProps {
   backupId: string;
   onRefreshSummary?: () => void;
+  onBackupInfoChange?: (info: BackupInfo) => void;
 }
 
-export const RunTab = ({ backupId, onRefreshSummary }: RunTabProps) => {
+export const RunTab = ({ backupId, onRefreshSummary, onBackupInfoChange }: RunTabProps) => {
   const [globalConfig, setGlobalConfig] = useState<GlobalConfig | null>(null);
   const [backupInfo, setBackupInfo] = useState<BackupInfo | null>(null);
   const [backupConfig, setBackupConfig] = useState<BackupConfig | null>(null);
@@ -28,6 +29,14 @@ export const RunTab = ({ backupId, onRefreshSummary }: RunTabProps) => {
   const [streamActive, setStreamActive] = useState(false);
   const [isPolling, setIsPolling] = useState(false);
   const [isUpgrading, setIsUpgrading] = useState(false);
+  const wasRunningRef = useRef(false);
+  const activeBackupIdRef = useRef(backupId);
+
+  useEffect(() => {
+    activeBackupIdRef.current = backupId;
+    wasRunningRef.current = false;
+    setBackupInfo(null);
+  }, [backupId]);
 
   const fetchConfig = useCallback(() => {
     api.getGlobalConfig().then(setGlobalConfig).catch(console.error);
@@ -35,24 +44,50 @@ export const RunTab = ({ backupId, onRefreshSummary }: RunTabProps) => {
 
   const fetchBackupData = useCallback(() => {
     if (!backupId) return;
+    const requestedId = backupId;
     api
-      .getBackupInfo(backupId)
+      .getBackupInfo(requestedId)
       .then(res => {
+        if (activeBackupIdRef.current !== requestedId) return;
         setBackupInfo(res);
+        if (res && onBackupInfoChange) {
+          onBackupInfoChange(res);
+        }
         const hasStepRunning = res?.steps
           ? Object.values(res.steps).some(s => s === 'running')
           : false;
-        if (res && res.status !== 'running' && !hasStepRunning) {
+        const nowRunning = res?.status === 'pending' || res?.status === 'running' || hasStepRunning;
+        if (wasRunningRef.current && !nowRunning) {
+          wasRunningRef.current = false;
+          setIsPolling(false);
+          if (onRefreshSummary) {
+            onRefreshSummary();
+          }
+        } else if (nowRunning) {
+          wasRunningRef.current = true;
+        } else if (res && res.status !== 'running' && !hasStepRunning) {
           setIsPolling(false);
         }
       })
-      .catch(() => setBackupInfo(null));
+      .catch(() => {
+        if (activeBackupIdRef.current === requestedId) {
+          setBackupInfo(null);
+        }
+      });
 
     api
-      .getBackupConfig(backupId)
-      .then(setBackupConfig)
-      .catch(() => setBackupConfig(null));
-  }, [backupId]);
+      .getBackupConfig(requestedId)
+      .then(res => {
+        if (activeBackupIdRef.current === requestedId) {
+          setBackupConfig(res);
+        }
+      })
+      .catch(() => {
+        if (activeBackupIdRef.current === requestedId) {
+          setBackupConfig(null);
+        }
+      });
+  }, [backupId, onBackupInfoChange, onRefreshSummary]);
 
   useEffect(() => {
     fetchConfig();
@@ -125,16 +160,27 @@ export const RunTab = ({ backupId, onRefreshSummary }: RunTabProps) => {
     return <AlertTriangle size={16} style={{ color: 'var(--warning)' }} />;
   };
 
+  const markOptimisticRunning = useCallback(
+    (stepKey: 'assign_ids' | 'fix_messages' | 'index_scenes' | 'update') => {
+      wasRunningRef.current = true;
+      if (!backupInfo) return;
+      const newInfo: BackupInfo = {
+        ...backupInfo,
+        status: 'running',
+        steps: { ...backupInfo.steps, [stepKey]: 'running' },
+      };
+      setBackupInfo(newInfo);
+      if (onBackupInfoChange) {
+        onBackupInfoChange(newInfo);
+      }
+    },
+    [backupInfo, onBackupInfoChange]
+  );
+
   const handleAction = (action: string) => {
-    setBackupInfo(prev => {
-      if (!prev) return prev;
-      const newInfo: BackupInfo = { ...prev, status: 'running' };
-      if (!newInfo.steps) newInfo.steps = {};
-      if (action === 'reapply_characters') newInfo.steps.assign_ids = 'running';
-      if (action === 'fix_messages') newInfo.steps.fix_messages = 'running';
-      if (action === 'reindex') newInfo.steps.index_scenes = 'running';
-      return newInfo;
-    });
+    if (action === 'reapply_characters') markOptimisticRunning('assign_ids');
+    else if (action === 'fix_messages') markOptimisticRunning('fix_messages');
+    else if (action === 'reindex') markOptimisticRunning('index_scenes');
     setStreamActive(true);
     setIsPolling(true);
 
@@ -145,20 +191,14 @@ export const RunTab = ({ backupId, onRefreshSummary }: RunTabProps) => {
       })
       .catch(err => {
         console.error('Failed to rerun action:', err);
+        wasRunningRef.current = false;
         fetchBackupData();
         setIsPolling(false);
       });
   };
 
   const handleUpdate = () => {
-    setBackupInfo(prev => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        status: 'running',
-        steps: { ...prev.steps, update: 'running' },
-      };
-    });
+    markOptimisticRunning('update');
     setStreamActive(true);
     setIsPolling(true);
 
@@ -169,6 +209,7 @@ export const RunTab = ({ backupId, onRefreshSummary }: RunTabProps) => {
       })
       .catch(err => {
         console.error('Failed to run backup:', err);
+        wasRunningRef.current = false;
         fetchBackupData();
         setIsPolling(false);
       });
@@ -197,7 +238,12 @@ export const RunTab = ({ backupId, onRefreshSummary }: RunTabProps) => {
     api
       .cancelRun(backupId)
       .then(() => {
+        wasRunningRef.current = false;
+        setIsPolling(false);
         fetchBackupData();
+        if (onRefreshSummary) {
+          onRefreshSummary();
+        }
         setStreamActive(false);
       })
       .catch(err => {
@@ -395,15 +441,7 @@ export const RunTab = ({ backupId, onRefreshSummary }: RunTabProps) => {
             setIsFormOpen(false);
             setStreamActive(true);
             setIsPolling(true);
-            setBackupInfo(prev =>
-              prev
-                ? {
-                    ...prev,
-                    status: 'running',
-                    steps: { ...prev.steps, update: 'running' },
-                  }
-                : prev
-            );
+            markOptimisticRunning('update');
             setTimeout(fetchBackupData, 1000);
           }}
           onSave={savedConfig => {

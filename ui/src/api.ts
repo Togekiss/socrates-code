@@ -42,8 +42,17 @@ export const API_BASE = import.meta.env.DEV ? 'http://localhost:8000/api' : '/ap
 
 export interface ApiError extends Error {
   status?: number;
-  response?: { detail?: string };
+  code?: string;
+  response?: { detail?: string; error?: string };
 }
+
+export const getErrorMessage = (err: unknown, fallback: string): string => {
+  if (err && typeof err === 'object' && 'message' in err && typeof (err as Error).message === 'string') {
+    const msg = (err as Error).message.trim();
+    if (msg) return msg;
+  }
+  return fallback;
+};
 
 // In-flight GET request deduplication cache
 const inFlightGetRequests = new Map<string, Promise<Response>>();
@@ -66,6 +75,7 @@ const fetchWithAuth = async (url: string, options: RequestInit = {}): Promise<Re
       const errorBody = await res.json().catch(() => ({ detail: res.statusText }));
       const error = new Error(errorBody.detail || `Request failed with status ${res.status}`) as ApiError;
       error.status = res.status;
+      error.code = typeof errorBody.error === 'string' ? errorBody.error : undefined;
       error.response = errorBody;
       throw error;
     }

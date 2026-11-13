@@ -271,10 +271,19 @@ function AppContent() {
   const [isLoadingAuth, setIsLoadingAuth] = useState<boolean>(true);
   const [curationSummary, setCurationSummary] = useState<CurationSummary | null>(null);
   const [backupInfo, setBackupInfo] = useState<BackupInfo | null>(null);
+  const [backupError, setBackupError] = useState<string | null>(null);
+  const [isLoadingBackup, setIsLoadingBackup] = useState<boolean>(false);
   const [myWriter, setMyWriter] = useState<MyWriter | null>(null);
   const [isUpgrading, setIsUpgrading] = useState(false);
+  const activeBackupIdRef = useRef<string | null>(selectedBackupId);
+  const lastLoadedBackupIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    activeBackupIdRef.current = selectedBackupId;
+  }, [selectedBackupId]);
 
   const handleSelectBackup = useCallback((id: string | null) => {
+    activeBackupIdRef.current = id;
     setSelectedBackupId(id);
     if (id) {
       sessionStorage.setItem('socrates_selected_backup', id);
@@ -284,23 +293,73 @@ function AppContent() {
   }, []);
 
   const refreshSummary = useCallback(() => {
-    if (!selectedBackupId) {
+    const targetId = selectedBackupId;
+    if (!targetId) {
+      lastLoadedBackupIdRef.current = null;
       setCurationSummary(null);
       setBackupInfo(null);
+      setBackupError(null);
+      setIsLoadingBackup(false);
       setMyWriter(null);
       return;
     }
 
+    const isBackupSwitch = lastLoadedBackupIdRef.current !== targetId;
+    if (isBackupSwitch) {
+      lastLoadedBackupIdRef.current = targetId;
+      setCurationSummary(null);
+      setBackupInfo(null);
+      setBackupError(null);
+      setMyWriter(null);
+      setIsLoadingBackup(true);
+    }
+
+    let infoErrorMsg: string | null = null;
+
     Promise.all([
-      api.getCurationSummary(selectedBackupId).catch(() => null),
-      api.getBackupInfo(selectedBackupId).catch(() => null),
-      api.getMyWriter(selectedBackupId).catch(() => null),
+      api.getCurationSummary(targetId).catch(() => null),
+      api.getBackupInfo(targetId).catch((err: unknown) => {
+        infoErrorMsg =
+          err && typeof err === 'object' && 'message' in err && typeof (err as Error).message === 'string'
+            ? (err as Error).message
+            : 'Failed to load backup state.';
+        return null;
+      }),
+      api.getMyWriter(targetId).catch(() => null),
     ]).then(([summaryRes, infoRes, writerRes]) => {
+      if (activeBackupIdRef.current !== targetId) return;
       setCurationSummary(summaryRes);
       setBackupInfo(infoRes);
+      setBackupError(infoRes ? null : infoErrorMsg);
       setMyWriter(writerRes);
+      setIsLoadingBackup(false);
     });
   }, [selectedBackupId]);
+
+  const handleBackupInfoChange = useCallback(
+    (updatedInfo: BackupInfo) => {
+      if (activeBackupIdRef.current === selectedBackupId) {
+        setBackupInfo(updatedInfo);
+        setBackupError(null);
+      }
+    },
+    [selectedBackupId]
+  );
+
+  const isBackupRunning = Boolean(
+    backupInfo &&
+      (backupInfo.status === 'pending' ||
+        backupInfo.status === 'running' ||
+        Object.values(backupInfo.steps ?? {}).some(s => s === 'running'))
+  );
+
+  useEffect(() => {
+    if (!selectedBackupId || !isBackupRunning) return;
+    const interval = setInterval(() => {
+      refreshSummary();
+    }, 2500);
+    return () => clearInterval(interval);
+  }, [selectedBackupId, isBackupRunning, refreshSummary]);
 
   const handleUpgradeDatabase = async () => {
     if (!selectedBackupId || isUpgrading) return;
@@ -519,6 +578,8 @@ function AppContent() {
                   setTab={handleNavigateTab}
                   curationSummary={curationSummary}
                   backupInfo={backupInfo}
+                  backupError={backupError}
+                  isLoading={isLoadingBackup}
                   onUpgrade={handleUpgradeDatabase}
                   isUpgrading={isUpgrading}
                 />
@@ -567,6 +628,9 @@ function AppContent() {
               >
                 <ScenesTab
                   backupId={selectedBackupId!}
+                  backupInfo={backupInfo}
+                  backupError={backupError}
+                  backupLoading={isLoadingBackup}
                   myWriter={myWriter}
                   onNavigateToWriters={() => navigate('/writers')}
                 />
@@ -583,6 +647,9 @@ function AppContent() {
               >
                 <ChatSessionsTab
                   backupId={selectedBackupId!}
+                  backupInfo={backupInfo}
+                  backupError={backupError}
+                  backupLoading={isLoadingBackup}
                   myWriter={myWriter}
                   onNavigateToWriters={() => navigate('/writers')}
                 />
@@ -599,6 +666,9 @@ function AppContent() {
               >
                 <EventsTab
                   backupId={selectedBackupId!}
+                  backupInfo={backupInfo}
+                  backupError={backupError}
+                  backupLoading={isLoadingBackup}
                   myWriter={myWriter}
                   onNavigateToWriters={() => navigate('/writers')}
                   onRefreshSummary={refreshSummary}
@@ -647,6 +717,7 @@ function AppContent() {
                 <RunTab
                   backupId={selectedBackupId!}
                   onRefreshSummary={refreshSummary}
+                  onBackupInfoChange={handleBackupInfoChange}
                 />
               </RequireBackup>
             }

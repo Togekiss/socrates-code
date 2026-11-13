@@ -54,6 +54,10 @@ def get_writers_detailed(backup_id: str, base_path: str) -> List[Dict[str, Any]]
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
         writers = (
             session.query(WriterModel)
+            .options(
+                selectinload(WriterModel.aliases),
+                selectinload(WriterModel.characters).selectinload(CharacterModel.names),
+            )
             .filter(WriterModel.backup_id == str(backup_id))
             .order_by(WriterModel.display_name)
             .all()
@@ -235,6 +239,8 @@ def delete_writer(backup_id: str, base_path: str, writer_id: int) -> Dict[str, A
 
 def get_writer_link_suggestions(backup_id: str, base_path: str) -> List[Dict[str, Any]]:
     """Returns heuristic suggestions for linking Discord user IDs to unlinked writers."""
+    require_db(base_path, backup_id=backup_id)
+    init_db(engine_or_backup_id=backup_id, backup_path=base_path)
     try:
         from find_writer_links import find_writer_link_suggestions
         return find_writer_link_suggestions(backup_id, base_path)
@@ -254,6 +260,10 @@ def get_unassigned_characters(backup_id: str, base_path: str) -> List[Dict[str, 
         stats_by_pk, _ = get_character_activity_stats(session, backup_id)
         chars = (
             session.query(CharacterModel)
+            .options(
+                selectinload(CharacterModel.names),
+                joinedload(CharacterModel.parent),
+            )
             .filter(
                 CharacterModel.backup_id == str(backup_id),
                 CharacterModel.writer_pk.is_(None),
@@ -2569,9 +2579,9 @@ def get_my_writer(
     if not discord_user_id:
         return None
     require_db(base_path, backup_id=backup_id)
-    init_db(engine_or_backup_id=backup_id, backup_path=base_path, check_version=False)
 
     try:
+        init_db(engine_or_backup_id=backup_id, backup_path=base_path, check_version=False)
         with db_session(backup_id=backup_id, backup_path=base_path) as session:
             writer = (
                 session.query(WriterModel)
@@ -2601,8 +2611,16 @@ def get_my_writer(
 def get_curation_summary(backup_id: str, base_path: str) -> Dict[str, int]:
     """Returns real-time badge counts for curation review queues and unassigned data."""
     require_db(base_path, backup_id=backup_id)
-    init_db(engine_or_backup_id=backup_id, backup_path=base_path, check_version=False)
-    suggestions = get_writer_link_suggestions(backup_id, base_path)
+    try:
+        init_db(engine_or_backup_id=backup_id, backup_path=base_path, check_version=False)
+    except Exception as e:
+        t.log("debug", f"Failed schema inspect during curation summary for {backup_id}: {e}")
+
+    try:
+        suggestions = get_writer_link_suggestions(backup_id, base_path)
+    except Exception:
+        suggestions = []
+
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
         try:
             return {
@@ -2625,6 +2643,7 @@ def get_curation_summary(backup_id: str, base_path: str) -> Dict[str, int]:
                 "link_suggestions": len(suggestions),
             }
         except Exception as e:
+            session.rollback()
             t.log("debug", f"Failed to compute curation summary for {backup_id}: {e}")
             return {
                 "unresolved_issues": 0,
