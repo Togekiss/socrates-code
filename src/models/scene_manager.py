@@ -37,9 +37,13 @@ class SceneManager:
             cls._instances.clear()
 
     @property
+    def has_db(self) -> bool:
+        from db.session import has_db
+        return has_db(self.base_path, backup_id=self.backup_id)
+
+    @property
     def has_sqlite(self) -> bool:
-        from db.session import has_sqlite_db
-        return has_sqlite_db(self.base_path)
+        return self.has_db
 
     def save_scenes(
         self,

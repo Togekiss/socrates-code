@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
-from db.session import db_session, init_db, require_sqlite_db, has_sqlite_db
+from db.session import db_session, init_db, require_db, has_db, has_sqlite_db
 from db.models import BackupModel, ExportModel, BackupStepModel, ChannelModel, Step, Status, Scope
 from db.snapshots import export_backup_info_snapshot
 import utils.tricks as t
@@ -98,7 +98,7 @@ def load_backup_state(
     """
     Reconstructs the backup state directly from SQLite without reading any JSON files.
     """
-    require_sqlite_db(backup_path)
+    require_db(backup_path, backup_id=backup_id)
     with db_session(backup_id=backup_id, backup_path=backup_path) as session:
         return export_backup_info_snapshot(
             session=session,
@@ -236,7 +236,7 @@ def save_backup_state(
     syncs timestamps (updated_at, exported_from, exported_at), step statuses, and
     the channel/category/thread hierarchy. Optionally writes backup_info snapshot.
     """
-    require_sqlite_db(backup_path)
+    require_db(backup_path, backup_id=backup_id)
 
     with db_session(backup_id=backup_id, backup_path=backup_path) as session:
         export = session.query(ExportModel).filter(
@@ -309,7 +309,7 @@ def save_backup_state(
 
 def cleanup_update_export(backup_id: str, backup_path: str) -> None:
     """Deletes the temporary scope='update' ExportModel after an update is merged and finished."""
-    require_sqlite_db(backup_path)
+    require_db(backup_path, backup_id=backup_id)
     with db_session(backup_id=backup_id, backup_path=backup_path) as session:
         export = session.query(ExportModel).filter(
             ExportModel.backup_id == str(backup_id),
@@ -328,7 +328,7 @@ def get_step_statuses(
     """
     Returns a dictionary of step_name -> status directly from SQLite backup_steps.
     """
-    require_sqlite_db(backup_path)
+    require_db(backup_path, backup_id=backup_id)
     try:
         with db_session(backup_id=backup_id, backup_path=backup_path) as session:
             export = session.query(ExportModel).filter(
@@ -361,7 +361,7 @@ def update_step_status(
     Synchronously updates the execution status of a pipeline step in SQLite.
     Optionally refreshes the backup_info.json snapshot on completion.
     """
-    require_sqlite_db(backup_path)
+    require_db(backup_path, backup_id=backup_id)
     step_val = step.value if hasattr(step, "value") else str(step)
     status_val = status.value if hasattr(status, "value") else str(status)
 
@@ -438,7 +438,7 @@ def fail_running_steps(
     snapshot_target_path: Optional[str] = None
 ) -> None:
     """Marks any currently running steps as failed in SQLite."""
-    require_sqlite_db(backup_path)
+    require_db(backup_path, backup_id=backup_id)
     try:
         with db_session(backup_id=backup_id, backup_path=backup_path) as session:
             export = session.query(ExportModel).filter(
@@ -496,7 +496,7 @@ def sync_channels_to_db(
     Upserts existing records by (export_pk, discord_id) to maintain referential integrity with scenes.
     Marks removed channels as is_deleted = True.
     """
-    require_sqlite_db(backup_path)
+    require_db(backup_path, backup_id=backup_id)
     try:
         with db_session(backup_id=backup_id, backup_path=backup_path) as session:
             export = session.query(ExportModel).filter(

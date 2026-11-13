@@ -35,7 +35,8 @@ def get_engine(backup_id: Optional[str] = None, backup_path: Optional[str] = Non
 
     if database_url:
         if _central_engine is None:
-            _central_engine = create_engine(database_url, pool_pre_ping=True)
+            connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
+            _central_engine = create_engine(database_url, pool_pre_ping=True, connect_args=connect_args)
         return _central_engine
 
     # SQLite per-backup mode
@@ -158,19 +159,41 @@ def get_sqlite_path(backup_path: str) -> str:
     return os.path.join(backup_path, "backup.sqlite")
 
 
-def has_sqlite_db(backup_path: str) -> bool:
-    """Returns True if backup.sqlite exists in the backup folder."""
+def has_db(backup_path: Optional[str] = None, backup_id: Optional[str] = None) -> bool:
+    """
+    Returns True if a database is configured/available for the specified backup.
+    - When DATABASE_URL is set, returns True (central/external database via SQLAlchemy).
+    - Otherwise, checks whether the local SQLite database file exists for the backup.
+    """
+    if os.environ.get("DATABASE_URL"):
+        return True
+    if not backup_path and backup_id:
+        from utils.tricks import get_backup_path
+        try:
+            backup_path = get_backup_path(backup_id)
+        except Exception:
+            return False
     if not backup_path:
         return False
     return os.path.exists(get_sqlite_path(backup_path))
 
 
-def require_sqlite_db(backup_path: str) -> None:
-    """Raises DatabaseConnectionError if backup.sqlite does not exist in backup_path."""
-    if not has_sqlite_db(backup_path):
+def require_db(backup_path: Optional[str] = None, backup_id: Optional[str] = None) -> None:
+    """Raises DatabaseConnectionError if no database is available for the specified backup."""
+    if not has_db(backup_path=backup_path, backup_id=backup_id):
         raise exc.DatabaseConnectionError(
-            f"SQLite database 'backup.sqlite' not found in '{backup_path}'. Please run migration or initialize the backup first."
+            f"Database not found in '{backup_path}'. Please run migration or initialize the backup first."
         )
+
+
+def has_sqlite_db(backup_path: str) -> bool:
+    """Returns True if the database is available (compatibility alias for has_db)."""
+    return has_db(backup_path=backup_path)
+
+
+def require_sqlite_db(backup_path: str) -> None:
+    """Raises DatabaseConnectionError if the database is not available (compatibility alias for require_db)."""
+    require_db(backup_path=backup_path)
 
 
 def close_all_engines() -> None:

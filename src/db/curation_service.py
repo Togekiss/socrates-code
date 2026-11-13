@@ -31,7 +31,7 @@ from db.models import (
     get_default_resolution,
     is_action_performed,
 )
-from db.session import db_session, require_sqlite_db, init_db
+from db.session import db_session, require_db, init_db
 from db.snapshots import export_character_list_snapshot, export_curation_snapshots
 from db.event_service import update_event_metadata, merge_events, split_event
 from db.character_service import get_character_activity_stats
@@ -48,7 +48,7 @@ _parse_dt = t.parse_datetime
 
 def get_writers_detailed(backup_id: str, base_path: str) -> List[Dict[str, Any]]:
     """Retrieves all writers with their aliases, discord_user_id, and written characters."""
-    require_sqlite_db(base_path)
+    require_db(base_path, backup_id=backup_id)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path)
 
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
@@ -247,7 +247,7 @@ def get_writer_link_suggestions(backup_id: str, base_path: str) -> List[Dict[str
 
 def get_unassigned_characters(backup_id: str, base_path: str) -> List[Dict[str, Any]]:
     """Retrieves characters that currently have no writer assigned (writer_pk IS NULL)."""
-    require_sqlite_db(base_path)
+    require_db(base_path, backup_id=backup_id)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path)
 
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
@@ -379,7 +379,7 @@ def get_scene_issues(
     if not isinstance(per_page, int):
         per_page = 50
 
-    require_sqlite_db(base_path)
+    require_db(base_path, backup_id=backup_id)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path)
 
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
@@ -1138,7 +1138,7 @@ def get_resolved_boundary_decisions(backup_id: str, base_path: str) -> Dict[str,
     for all resolved scene issues in SQLite for this backup.
     If two decisions share a candidate id, the latest resolved_at wins.
     """
-    require_sqlite_db(base_path)
+    require_db(base_path, backup_id=backup_id)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path)
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
         issues = (
@@ -1175,7 +1175,7 @@ def resolve_scene_issue(
             f"Invalid resolution '{resolution}'. Must be 'split' or 'merged'."
         )
 
-    require_sqlite_db(base_path)
+    require_db(base_path, backup_id=backup_id)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path)
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
         issue = (
@@ -1294,7 +1294,7 @@ def reopen_scene_issue(backup_id: str, base_path: str, issue_id: int) -> Dict[st
       - soft_boundary + split: merges scene_pk and next_scene_pk and clears next_scene_pk
     If no action was performed: only clears resolution fields.
     """
-    require_sqlite_db(base_path)
+    require_db(base_path, backup_id=backup_id)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path)
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
         issue = (
@@ -1482,7 +1482,7 @@ def get_resolved_flags_map(backup_id: str, base_path: str) -> Dict[str, Dict[str
     Returns a dictionary mapping message_id -> {"resolution": ..., "override_content": ..., "override_author": ...}
     for all resolved flagged messages in SQLite for this backup.
     """
-    require_sqlite_db(base_path)
+    require_db(base_path, backup_id=backup_id)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path)
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
         flags = session.query(FlaggedMessageModel).filter(
@@ -1504,7 +1504,7 @@ def get_preserved_flagged_message_ids(backup_id: str, base_path: str) -> Set[str
     Returns the set of message_ids that must NOT be overwritten or deleted during re-indexing.
     Includes all resolved messages (resolved_at IS NOT NULL) and all manually added messages (kind == 'manual').
     """
-    require_sqlite_db(base_path)
+    require_db(base_path, backup_id=backup_id)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path)
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
         flags = session.query(FlaggedMessageModel.message_id).filter(
@@ -1771,7 +1771,7 @@ def get_flagged_messages(
     if not isinstance(per_page, int) or per_page < 1:
         per_page = 50
 
-    require_sqlite_db(base_path)
+    require_db(base_path, backup_id=backup_id)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path)
 
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
@@ -2005,7 +2005,7 @@ def resolve_flagged_message(
             f"Invalid resolution '{resolution}'. Must be one of: {', '.join(valid_resolutions)}."
         )
 
-    require_sqlite_db(base_path)
+    require_db(base_path, backup_id=backup_id)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path)
 
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
@@ -2069,7 +2069,7 @@ def reopen_flagged_message(
     message_id: str,
 ) -> Dict[str, Any]:
     """Reopens a previously resolved flagged message, restoring its original state in SQLite."""
-    require_sqlite_db(base_path)
+    require_db(base_path, backup_id=backup_id)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path)
 
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
@@ -2222,7 +2222,7 @@ def add_manual_flagged_message(
     channel_id = match.group("channel_id")
     message_id = match.group("message_id")
 
-    require_sqlite_db(base_path)
+    require_db(base_path, backup_id=backup_id)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path)
 
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
@@ -2317,7 +2317,7 @@ def create_manual_scene_split(
     channel_id = match.group("channel_id")
     message_id = match.group("message_id")
 
-    require_sqlite_db(base_path)
+    require_db(base_path, backup_id=backup_id)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path)
 
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
@@ -2484,7 +2484,7 @@ def delete_message_override(backup_id: str, base_path: str, message_id: str) -> 
 
 def get_overrides_map(backup_id: str, base_path: str) -> Dict[str, Dict[str, Any]]:
     """Returns a dictionary mapping message_id -> {"content": ..., "author": ...} for all active overrides."""
-    require_sqlite_db(base_path)
+    require_db(base_path, backup_id=backup_id)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path)
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
         overrides = session.query(FlaggedMessageModel).filter(
@@ -2510,7 +2510,7 @@ def save_flagged_messages(
     Saves newly discovered flagged messages to SQLite while strictly preserving
     all resolved messages (resolved_at IS NOT NULL) and all manual items (kind == 'manual').
     """
-    require_sqlite_db(base_path)
+    require_db(base_path, backup_id=backup_id)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path)
     now_utc = datetime.now(timezone.utc)
 
@@ -2568,7 +2568,7 @@ def get_my_writer(
     """Resolves the writer associated with the current user's Discord snowflake."""
     if not discord_user_id:
         return None
-    require_sqlite_db(base_path)
+    require_db(base_path, backup_id=backup_id)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path, check_version=False)
 
     try:
@@ -2600,7 +2600,7 @@ def get_my_writer(
 
 def get_curation_summary(backup_id: str, base_path: str) -> Dict[str, int]:
     """Returns real-time badge counts for curation review queues and unassigned data."""
-    require_sqlite_db(base_path)
+    require_db(base_path, backup_id=backup_id)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path, check_version=False)
     suggestions = get_writer_link_suggestions(backup_id, base_path)
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
@@ -2642,7 +2642,7 @@ def update_scene_metadata(
     custom_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Updates custom_name on a SceneModel record (supports scenes, sessions, or event channels)."""
-    require_sqlite_db(base_path)
+    require_db(base_path, backup_id=backup_id)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path)
 
     clean_name = custom_name.strip() if isinstance(custom_name, str) and custom_name.strip() else None
@@ -2795,7 +2795,7 @@ def get_scene_merge_neighbors(
     Returns immediate previous and next scenes in the same channel,
     along with merge eligibility and curator split status.
     """
-    require_sqlite_db(base_path)
+    require_db(base_path, backup_id=backup_id)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path)
 
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
@@ -2883,7 +2883,7 @@ def merge_adjacent_scene(
     if direction not in ("prev", "next"):
         raise exc.ValidationError(f"Invalid direction '{direction}'. Must be 'prev' or 'next'.")
 
-    require_sqlite_db(base_path)
+    require_db(base_path, backup_id=backup_id)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path)
 
     with db_session(backup_id=backup_id, backup_path=base_path) as session:

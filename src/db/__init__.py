@@ -37,6 +37,8 @@ from .session import (
     init_db,
     db_session,
     stamp_schema_version,
+    has_db,
+    require_db,
 )
 from .snapshots import (
     export_backup_info_snapshot,
@@ -88,6 +90,9 @@ __all__ = [
     "init_db",
     "db_session",
     "stamp_schema_version",
+    "has_db",
+    "require_db",
+    "has_sqlite_db",
     "export_backup_info_snapshot",
     "export_character_list_snapshot",
     "sync_channels_to_db",

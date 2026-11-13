@@ -18,7 +18,7 @@ from find_character_scenes import (
 from fix_bad_messages import prepare_channel_messages
 from models import ServerBackup, Category, Channel, Step
 from db.models import SceneStatus, SceneKind
-from db.session import has_sqlite_db
+from db.session import has_db
 from models.scene_manager import SceneManager
 
 t.set_path()
@@ -449,7 +449,7 @@ def index_sessions(backup_id: Optional[str] = None, backup_path: Optional[str] =
         resolved_decisions: Dict[str, str] = {}
         resolved_flags_map: Dict[str, Any] = {}
 
-        if has_sqlite_db(b_path):
+        if has_db(b_path, backup_id=b_id):
             from db.curation_service import (
                 get_resolved_boundary_decisions,
                 get_resolved_flags_map,

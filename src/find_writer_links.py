@@ -14,7 +14,7 @@ for p in (SRC_DIR.as_posix(), PROJECT_ROOT.as_posix()):
 
 import utils.tricks as t
 from db.models import FlaggedMessageModel, WriterModel
-from db.session import db_session, has_sqlite_db
+from db.session import db_session, has_db
 
 t.set_path()
 
@@ -37,7 +37,7 @@ def find_writer_link_suggestions(
     if base_path is None:
         base_path = t.get_backup_path(backup_id)
 
-    if not has_sqlite_db(base_path):
+    if not has_db(base_path, backup_id=backup_id):
         return []
 
     suggestions: List[Dict[str, Any]] = []

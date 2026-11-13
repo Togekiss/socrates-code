@@ -490,14 +490,14 @@ def get_all_backup_paths(user = Depends(get_current_user)):
 def get_backup_info(backup_id: str):
     base_path = get_backup_path(backup_id)
 
-    from db.session import get_engine, get_db_schema_version, has_sqlite_db
+    from db.session import get_engine, get_db_schema_version, has_db
     from db.models import CURRENT_SCHEMA_VERSION
 
     current_schema_version = CURRENT_SCHEMA_VERSION
     schema_version = None
     is_schema_outdated = False
 
-    if has_sqlite_db(base_path):
+    if has_db(base_path, backup_id=backup_id):
         try:
             engine = get_engine(backup_id=backup_id, backup_path=base_path)
             schema_version = get_db_schema_version(engine)

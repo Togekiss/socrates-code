@@ -1,10 +1,11 @@
+import os
 from datetime import datetime, timezone
 import math
 from typing import Any, Dict, List, Optional, Set, Tuple
 from sqlalchemy import func, or_
 from sqlalchemy.orm import selectinload, joinedload
 
-from db.session import db_session, require_sqlite_db, init_db
+from db.session import db_session, require_db, init_db
 from db.models import (
     BackupModel,
     ChannelModel,
@@ -611,7 +612,7 @@ def save_indexed_events(
 
     b_id = str(backup_id or session_or_backup_id)
     b_path = str(base_path or backup_id_or_base_path)
-    require_sqlite_db(b_path)
+    require_db(b_path, backup_id=b_id)
     init_db(engine_or_backup_id=b_id, backup_path=b_path)
 
     with db_session(backup_id=b_id, backup_path=b_path) as session:
@@ -1159,7 +1160,7 @@ def query_events(
 
     b_id = str(backup_id or session_or_backup_id)
     b_path = str(base_path or backup_id_or_base_path)
-    require_sqlite_db(b_path)
+    require_db(b_path, backup_id=b_id)
 
     with db_session(backup_id=b_id, backup_path=b_path) as session:
         return _query_events_in_session(session, b_id, **kwargs)
@@ -1253,7 +1254,7 @@ def update_event_metadata(
 
     b_id = str(session_or_backup_id)
     b_path = str(backup_id_or_base_path)
-    require_sqlite_db(b_path)
+    require_db(b_path, backup_id=b_id)
     init_db(engine_or_backup_id=b_id, backup_path=b_path)
     with db_session(backup_id=b_id, backup_path=b_path) as session:
         return _update_event_metadata_in_session(
@@ -1298,12 +1299,24 @@ def _merge_events_in_session(
 
     if not base_path:
         db_file = None
-        if hasattr(session, "bind") and session.bind and hasattr(session.bind, "url") and session.bind.url and session.bind.url.database:
+        if (
+            hasattr(session, "bind")
+            and session.bind
+            and getattr(session.bind.dialect, "name", None) == "sqlite"
+            and hasattr(session.bind, "url")
+            and session.bind.url
+            and session.bind.url.database
+            and session.bind.url.database != ":memory:"
+            and os.path.exists(session.bind.url.database)
+        ):
             db_file = session.bind.url.database
         if db_file:
             base_path = Path(db_file).parent.as_posix()
         else:
-            base_path = t.get_backup_path(backup_id)
+            try:
+                base_path = t.get_backup_path(backup_id)
+            except Exception:
+                base_path = ""
 
     if not event_pks or len(set(event_pks)) < 2:
         raise exc.ValidationError("At least 2 distinct event IDs are required to merge.")
@@ -1621,7 +1634,7 @@ def merge_events(
     elif isinstance(event_pks_or_req, list):
         pks = event_pks_or_req
 
-    require_sqlite_db(b_path)
+    require_db(b_path, backup_id=b_id)
     init_db(engine_or_backup_id=b_id, backup_path=b_path)
     with db_session(backup_id=b_id, backup_path=b_path) as session:
         return _merge_events_in_session(
@@ -1809,7 +1822,7 @@ def split_event(
 
     b_id = str(session_or_backup_id)
     b_path = str(backup_id_or_base_path)
-    require_sqlite_db(b_path)
+    require_db(b_path, backup_id=b_id)
     init_db(engine_or_backup_id=b_id, backup_path=b_path)
     with db_session(backup_id=b_id, backup_path=b_path) as session:
         return _split_event_in_session(

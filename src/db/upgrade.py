@@ -62,7 +62,7 @@ from db.models import (
     SchemaVersionModel,
     CURRENT_SCHEMA_VERSION,
 )
-from db.session import get_engine, close_all_engines, get_sqlite_path, has_sqlite_db, get_db_schema_version, stamp_schema_version
+from db.session import get_engine, close_all_engines, get_sqlite_path, has_db, get_db_schema_version, stamp_schema_version
 from db.snapshots import export_backup_info_snapshot, export_character_list_snapshot
 
 
@@ -547,13 +547,14 @@ def upgrade_single_backup(
     t.log("info", f"Dry Run: {dry_run}")
     t.log("info", f"=======================================================\n")
 
-    if not os.path.exists(sqlite_path):
+    if not has_db(backup_path, backup_id=backup_id):
         raise exc.DatabaseConnectionError(f"Database not found at '{sqlite_path}'. Run migration first.")
 
     # 1. Inspect source database and version
     source_engine = get_engine(backup_id=backup_id, backup_path=backup_path)
-    if source_engine.dialect.name != "sqlite":
-        raise exc.DatabaseUpgradeError("Schema upgrades are only supported for SQLite databases.")
+    is_sqlite = source_engine.dialect.name == "sqlite"
+    if is_sqlite and not os.path.exists(sqlite_path) and not os.environ.get("DATABASE_URL"):
+        raise exc.DatabaseConnectionError(f"Database not found at '{sqlite_path}'. Run migration first.")
     old_version = get_db_schema_version(source_engine)
     t.log("base", f"Current database schema version: {old_version} (Target: {CURRENT_SCHEMA_VERSION})")
 
@@ -590,28 +591,20 @@ def upgrade_single_backup(
             "metrics": metrics,
         }
 
-    # 3. Create safety backup copy of the SQLite database
+    # 3. Create safety backup copy of the SQLite database (when using local SQLite file)
     bak_path = f"{sqlite_path}.bak"
-    t.log("info", f"Creating safety database backup at: {bak_path}")
-    try:
-        with source_engine.connect() as conn:
-            conn.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)")
-    except Exception:
-        pass
     close_all_engines()
-    shutil.copy2(sqlite_path, bak_path)
+    if is_sqlite and os.path.exists(sqlite_path):
+        t.log("info", f"Creating safety database backup at: {bak_path}")
+        shutil.copy2(sqlite_path, bak_path)
 
     try:
-        # 4. Rebuild schema cleanly using Base.metadata
+        # 4. Rebuild schema cleanly using SQLAlchemy reflection and Base.metadata
         t.log("info", "Rebuilding database schema...")
         engine = get_engine(backup_id=backup_id, backup_path=backup_path)
-        with engine.connect() as conn:
-            conn.exec_driver_sql("PRAGMA foreign_keys = OFF")
-            existing_tables = [r[0] for r in conn.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]
-            for t_name in existing_tables:
-                conn.exec_driver_sql(f'DROP TABLE IF EXISTS "{t_name}"')
-            conn.exec_driver_sql("PRAGMA foreign_keys = ON")
-            conn.commit()
+        existing_meta = MetaData()
+        existing_meta.reflect(bind=engine)
+        existing_meta.drop_all(bind=engine)
         Base.metadata.create_all(bind=engine)
 
         # 5. Populate new schema with preserved data
@@ -657,15 +650,16 @@ def upgrade_single_backup(
         t.log("error", f"Upgrade failed for '{backup_name}': {exc.unwrap(e)}")
         # Restore from safety copy
         close_all_engines()
-        for p in (f"{sqlite_path}-wal", f"{sqlite_path}-shm"):
-            if os.path.exists(p):
-                try:
-                    os.remove(p)
-                except OSError:
-                    pass
-        if os.path.exists(bak_path):
-            t.log("info", f"Restoring safety backup from {bak_path}...")
-            shutil.copy2(bak_path, sqlite_path)
+        if is_sqlite:
+            for p in (f"{sqlite_path}-wal", f"{sqlite_path}-shm"):
+                if os.path.exists(p):
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+            if os.path.exists(bak_path):
+                t.log("info", f"Restoring safety backup from {bak_path}...")
+                shutil.copy2(bak_path, sqlite_path)
         raise exc.DatabaseUpgradeError(f"Upgrade failed and was rolled back from backup: {e}") from e
 
 
@@ -680,8 +674,8 @@ def run_all_upgrades(dry_run: bool = False, reindex_scenes: bool = False):
     results = []
     for b in index:
         backup_path = (Path(c.DATA_ROOT) / b["path"]).as_posix()
-        if not has_sqlite_db(backup_path):
-            t.log("info", f"Skipping '{b['backup_name']}': no backup.sqlite present.")
+        if not has_db(backup_path, backup_id=str(b["backup_id"])):
+            t.log("info", f"Skipping '{b['backup_name']}': no database present.")
             continue
         try:
             res = upgrade_single_backup(b, dry_run=dry_run, reindex_scenes=reindex_scenes)

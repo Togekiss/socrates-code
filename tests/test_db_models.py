@@ -49,7 +49,9 @@ from db.models import (
 )
 
 # pyrefly: ignore [missing-import]
-from db.session import init_db, get_db_schema_version
+from db.session import init_db, get_db_schema_version, has_db, require_db, close_all_engines
+# pyrefly: ignore [missing-import]
+from db import status_service, character_service
 # pyrefly: ignore [missing-import]
 from db.upgrade import extract_database_data, populate_schema
 # pyrefly: ignore [missing-import]
@@ -380,6 +382,46 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
         with self.assertRaises(exc.DatabaseSchemaMismatchError) as ctx:
             init_db(self.engine, check_version=True)
         self.assertIn("older than required version", str(ctx.exception))
+
+    def test_central_database_url_without_local_sqlite_file(self):
+        """Verifies services and db checks work via DATABASE_URL without a local backup.sqlite file."""
+        from unittest.mock import patch
+
+        close_all_engines()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            backup_folder = Path(tmpdir) / "empty_backup_dir"
+            backup_folder.mkdir()
+            central_db_path = Path(tmpdir) / "central_service.db"
+            central_url = f"sqlite:///{central_db_path.as_posix()}"
+
+            with patch.dict(os.environ, {"DATABASE_URL": central_url}):
+                close_all_engines()
+                try:
+                    self.assertTrue(has_db(backup_folder.as_posix()))
+                    require_db(backup_folder.as_posix())
+
+                    status_service.init_backup_export(
+                        backup_id="central_backup_1",
+                        backup_path=backup_folder.as_posix(),
+                        backup_name="Central DB Test Backup",
+                        server_id="123456",
+                        server_name="Central Test Server",
+                    )
+                    character_service.save_new_characters(
+                        backup_id="central_backup_1",
+                        base_path=backup_folder.as_posix(),
+                        new_characters=[(101, "CentralHero")],
+                        write_snapshot=False,
+                    )
+                    chars = character_service.get_characters(
+                        backup_id="central_backup_1",
+                        base_path=backup_folder.as_posix(),
+                    )
+                    self.assertEqual(len(chars), 1)
+                    self.assertEqual(chars[0]["names"][0], "CentralHero")
+                    self.assertFalse((backup_folder / "backup.sqlite").exists())
+                finally:
+                    close_all_engines()
 
 
 class TestAtomicUtilities(unittest.TestCase):

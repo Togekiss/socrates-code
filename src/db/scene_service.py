@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import func, or_
 from sqlalchemy.orm import selectinload, joinedload
 
-from db.session import db_session, require_sqlite_db, init_db
+from db.session import db_session, require_db, init_db
 from db.models import (
     SceneModel,
     SceneParticipantModel,
@@ -38,7 +38,7 @@ def save_indexed_scenes(
     Preserves existing resolved issue notes (resolved_at, resolved_note) across re-indexing runs.
     Optionally exports debug JSON snapshots (_scenes.json) if debug_files is True.
     """
-    require_sqlite_db(base_path)
+    require_db(base_path, backup_id=backup_id)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path)
 
     target_kinds = {s.get("kind", SceneKind.SCENE.value) for s in scenes} or {SceneKind.SCENE.value}
@@ -365,7 +365,7 @@ def query_scenes(
     Queries scenes or sessions from SQLite.
     Supports both unpaginated filtering (when page is None) and paginated responses (when page is int).
     """
-    require_sqlite_db(base_path)
+    require_db(base_path, backup_id=backup_id)
 
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
         backup = session.query(BackupModel).filter_by(backup_id=str(backup_id)).first()

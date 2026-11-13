@@ -18,7 +18,7 @@ from find_character_scenes import (
 )
 from models import ServerBackup, Category, Channel, Thread, SceneManager, Step
 from db.models import SceneStatus, IssueKind, SceneKind
-from db.session import has_sqlite_db
+from db.session import has_db
 t.set_path()
 from res import constants as c
 
@@ -687,12 +687,11 @@ def index_scenes(backup_id: Optional[str] = None, backup_path: Optional[str] = N
         resolved_flags_map = {}
         preserved_flagged_mids = set()
 
-        if has_sqlite_db(b_path):
+        if has_db(b_path, backup_id=b_id):
             from db.curation_service import (
                 get_resolved_boundary_decisions,
                 get_resolved_flags_map,
                 get_preserved_flagged_message_ids,
-                save_flagged_messages,
             )
             resolved_decisions = get_resolved_boundary_decisions(b_id, b_path)
             if resolved_decisions:
@@ -765,7 +764,8 @@ def index_scenes(backup_id: Optional[str] = None, backup_path: Optional[str] = N
             debug_files=c.DEBUG_FILES,
         )
 
-        if has_sqlite_db(b_path):
+        if has_db(b_path, backup_id=b_id):
+            from db.curation_service import save_flagged_messages
             from db.event_service import save_indexed_events
             save_indexed_events(
                 b_id,
