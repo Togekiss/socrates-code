@@ -8,6 +8,7 @@ on:
       - 'src/**'
       - 'DCE/**'
       - 'res/**'
+      - 'tests/**'
       - 'Dockerfile'
       - 'requirements.txt'
   workflow_dispatch: # Allows manual trigger from GitHub UI
