@@ -1944,6 +1944,17 @@ def get_raw_log(backup_id: str):
     return FileResponse(log_file, media_type="text/plain")
 
 
+@app.delete("/api/backups/{backup_id}/logs")
+def clear_backup_logs(backup_id: str):
+    base_path = get_backup_path(backup_id)
+    log_file = (Path(base_path) / "log.txt").as_posix()
+    t.close_log_handlers(log_file)
+    if Path(log_file).exists():
+        with open(log_file, "w", encoding="utf-8"):
+            pass
+    return {"status": "cleared"}
+
+
 @app.get("/api/backups/{backup_id}/logs/stream")
 def stream_logs(backup_id: str):
     base_path = get_backup_path(backup_id)

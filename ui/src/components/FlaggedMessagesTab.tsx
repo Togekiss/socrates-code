@@ -5,15 +5,28 @@ import { PromoteMessageModal } from './curation/PromoteMessageModal';
 import { AddFlaggedMessageModal } from './curation/AddFlaggedMessageModal';
 import { FlaggedMessageCard } from './curation/FlaggedMessageCard';
 import { FlaggedMessagesFilters } from './curation/FlaggedMessagesFilters';
+import { BackupStatusGuard } from './layout/BackupStatusGuard';
+import { useBackupStatusGuard } from '../hooks/useBackupStatusGuard';
 import { Pagination } from './ui';
-import type { FlaggedMessage, FlaggedMessagesResponse, FlaggedResolution } from '../types';
+import type { BackupInfo, FlaggedMessage, FlaggedMessagesResponse, FlaggedResolution } from '../types';
 
 interface FlaggedMessagesTabProps {
   backupId: string;
+  backupStatus?: string;
+  backupInfo?: BackupInfo | null;
+  backupError?: string | null;
+  backupLoading?: boolean;
   onRefreshSummary?: () => void;
 }
 
-export const FlaggedMessagesTab = ({ backupId, onRefreshSummary }: FlaggedMessagesTabProps) => {
+export const FlaggedMessagesTab = ({
+  backupId,
+  backupStatus,
+  backupInfo,
+  backupError,
+  backupLoading,
+  onRefreshSummary,
+}: FlaggedMessagesTabProps) => {
   const [data, setData] = useState<FlaggedMessagesResponse>({
     total_items: 0,
     messages: [],
@@ -40,6 +53,14 @@ export const FlaggedMessagesTab = ({ backupId, onRefreshSummary }: FlaggedMessag
   const [resolvingId, setResolvingId] = useState<string | null>(null);
   const [reopeningId, setReopeningId] = useState<string | null>(null);
 
+  const statusGuard = useBackupStatusGuard({
+    backupId,
+    backupStatus,
+    backupInfo,
+    backupError,
+    backupLoading,
+  });
+
   useEffect(() => {
     setPage(1);
     setData({
@@ -54,7 +75,7 @@ export const FlaggedMessagesTab = ({ backupId, onRefreshSummary }: FlaggedMessag
   }, [backupId]);
 
   const fetchMessages = useCallback(() => {
-    if (!backupId) return;
+    if (!backupId || !statusGuard.isReady) return;
     setLoading(true);
     setError(null);
 
@@ -88,11 +109,13 @@ export const FlaggedMessagesTab = ({ backupId, onRefreshSummary }: FlaggedMessag
       .finally(() => {
         setLoading(false);
       });
-  }, [backupId, statusFilter, sceneTypeFilter, kindFilter, resolutionFilter, page]);
+  }, [backupId, statusGuard.isReady, statusFilter, sceneTypeFilter, kindFilter, resolutionFilter, page]);
 
   useEffect(() => {
-    fetchMessages();
-  }, [fetchMessages]);
+    if (statusGuard.isReady) {
+      fetchMessages();
+    }
+  }, [statusGuard.isReady, fetchMessages]);
 
   const handleResolve = async (msg: FlaggedMessage, resolution: FlaggedResolution) => {
     setResolvingId(msg.message_id);
@@ -121,6 +144,10 @@ export const FlaggedMessagesTab = ({ backupId, onRefreshSummary }: FlaggedMessag
       setReopeningId(null);
     }
   };
+
+  if (!statusGuard.isReady) {
+    return <BackupStatusGuard title="Flagged Messages" guard={statusGuard} />;
+  }
 
   return (
     <div className="flex-col gap-md">

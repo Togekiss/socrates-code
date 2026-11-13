@@ -155,6 +155,12 @@ export const api = {
   getBackupLogs: (backupId: string, lines: number = 10): Promise<{ lines: string[] }> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/logs?lines=${lines}`).then(res => res.json()),
 
+  getBackupRawLogs: (backupId: string): Promise<string> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/logs/raw`).then(res => res.text()),
+
+  clearBackupLogs: (backupId: string): Promise<{ status: string }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/logs`, { method: 'DELETE' }).then(res => res.json()),
+
   getBackupConfig: (backupId: string): Promise<BackupConfig> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/config`).then(res => res.json()),
 

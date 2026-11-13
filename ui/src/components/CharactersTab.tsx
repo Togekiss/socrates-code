@@ -8,17 +8,27 @@ import { CharacterEditModal } from './characters/CharacterEditModal';
 import { GroupEditModal } from './characters/GroupEditModal';
 import { AssignWriterModal } from './curation/AssignWriterModal';
 import { UnlinkedWriterBanner } from './layout/UnlinkedWriterBanner';
+import { BackupStatusGuard } from './layout/BackupStatusGuard';
+import { useBackupStatusGuard } from '../hooks/useBackupStatusGuard';
 import { Button, PanelSurface, ResponsiveText } from './ui';
-import type { Character, CharacterGroup, MyWriter, WriterDetailed } from '../types';
+import type { BackupInfo, Character, CharacterGroup, MyWriter, WriterDetailed } from '../types';
 
 interface CharactersTabProps {
   backupId: string;
+  backupStatus?: string;
+  backupInfo?: BackupInfo | null;
+  backupError?: string | null;
+  backupLoading?: boolean;
   onNavigateToWriters?: () => void;
   myWriter?: MyWriter | null;
 }
 
 export const CharactersTab = ({
   backupId,
+  backupStatus,
+  backupInfo,
+  backupError,
+  backupLoading,
   onNavigateToWriters,
   myWriter: initialMyWriter,
 }: CharactersTabProps) => {
@@ -64,7 +74,16 @@ export const CharactersTab = ({
   const [isCreatingGroup, setIsCreatingGroup] = useState(false);
   const [assigningChar, setAssigningChar] = useState<Character | null>(null);
 
+  const statusGuard = useBackupStatusGuard({
+    backupId,
+    backupStatus,
+    backupInfo,
+    backupError,
+    backupLoading,
+  });
+
   const fetchCharacters = useCallback(() => {
+    if (!backupId || !statusGuard.isReady) return;
     setLoading(true);
     setError(null);
     setCharacters(null);
@@ -83,11 +102,13 @@ export const CharactersTab = ({
       })
       .catch(err => setError(getErrorMessage(err, 'Failed to load characters.')))
       .finally(() => setLoading(false));
-  }, [backupId, byMe]);
+  }, [backupId, byMe, statusGuard.isReady]);
 
   useEffect(() => {
-    fetchCharacters();
-  }, [fetchCharacters]);
+    if (statusGuard.isReady) {
+      fetchCharacters();
+    }
+  }, [statusGuard.isReady, fetchCharacters]);
 
   // Extract all unique tags
   const availableTags = useMemo(() => {
@@ -229,6 +250,10 @@ export const CharactersTab = ({
 
     return { displayItems: items, filtersActive: true };
   }, [characters, groups, nameFilter, writerFilter, tagsFilter, byMe, unassignedOnly]);
+
+  if (!statusGuard.isReady) {
+    return <BackupStatusGuard title="Characters & Groups" guard={statusGuard} />;
+  }
 
   return (
     <div className="flex-col gap-md">
