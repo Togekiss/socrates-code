@@ -499,5 +499,434 @@ class TestSqliteWalCheckpointing(unittest.TestCase):
                 close_all_engines()
 
 
+class TestSqliteTmpCacheAndSync(unittest.TestCase):
+    """Tests Option B: local /tmp SQLite caching, dirty tracking, debounced GCS sync, and stale-cache refresh."""
+
+    def test_activation_guard(self):
+        from unittest.mock import patch
+        from db.session import is_sqlite_tmp_cache_enabled
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SOCRATES_SQLITE_TMP_CACHE", None)
+            os.environ.pop("SOCRATES_DATA_DIR", None)
+            os.environ.pop("DATABASE_URL", None)
+            self.assertFalse(is_sqlite_tmp_cache_enabled())
+
+        with patch.dict(os.environ, {"SOCRATES_DATA_DIR": "/mnt/socrates-data"}, clear=False):
+            os.environ.pop("SOCRATES_SQLITE_TMP_CACHE", None)
+            os.environ.pop("DATABASE_URL", None)
+            self.assertTrue(is_sqlite_tmp_cache_enabled())
+
+        with patch.dict(os.environ, {"SOCRATES_DATA_DIR": "/mnt/socrates-data", "SOCRATES_SQLITE_TMP_CACHE": "0"}, clear=False):
+            os.environ.pop("DATABASE_URL", None)
+            self.assertFalse(is_sqlite_tmp_cache_enabled())
+
+        with patch.dict(os.environ, {"SOCRATES_SQLITE_TMP_CACHE": "1", "DATABASE_URL": "postgresql://localhost/db"}, clear=False):
+            self.assertFalse(is_sqlite_tmp_cache_enabled())
+
+    def test_copy_on_load_debounced_sync_and_stale_refresh(self):
+        from unittest.mock import patch
+        from db import status_service
+        from db.session import (
+            close_all_engines,
+            get_engine,
+            get_tmp_sqlite_path,
+            invalidate_sqlite_tmp_cache,
+            sync_dirty_sqlite_dbs,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            backup_dir = Path(tmpdir) / "backup_gcs"
+            tmp_cache_root = Path(tmpdir) / "tmp_cache"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            tmp_cache_root.mkdir(parents=True, exist_ok=True)
+
+            backup_id = "tmp_sync_test_1"
+            base_path = backup_dir.as_posix()
+            source_sqlite = os.path.abspath((backup_dir / "backup.sqlite").as_posix()).replace("\\", "/")
+
+            # 1. Local dev mode (disabled): opens source_sqlite directly, no /tmp copy created
+            env_disabled = {
+                "SOCRATES_SQLITE_TMP_CACHE": "0",
+                "SOCRATES_SQLITE_TMP_DIR": tmp_cache_root.as_posix(),
+            }
+            with patch.dict(os.environ, env_disabled, clear=False):
+                close_all_engines()
+                status_service.init_backup_export(
+                    backup_id=backup_id,
+                    backup_path=base_path,
+                    backup_name="Tmp Cache Test",
+                )
+                eng_local = get_engine(backup_id=backup_id, backup_path=base_path)
+                self.assertEqual(
+                    os.path.abspath(eng_local.url.database).replace("\\", "/"),
+                    os.path.abspath(source_sqlite).replace("\\", "/"),
+                )
+                self.assertFalse(os.path.exists(get_tmp_sqlite_path(source_sqlite)))
+                close_all_engines()
+
+            # 2. Cloud/FUSE mode (enabled): copies source_sqlite to /tmp on load
+            env_enabled = {
+                "SOCRATES_SQLITE_TMP_CACHE": "1",
+                "SOCRATES_SQLITE_TMP_DIR": tmp_cache_root.as_posix(),
+                "SOCRATES_SQLITE_SYNC_TIMER": "0",
+            }
+            with patch.dict(os.environ, env_enabled, clear=False):
+                try:
+                    invalidate_sqlite_tmp_cache(backup_id=backup_id, backup_path=base_path)
+                    eng_tmp = get_engine(backup_id=backup_id, backup_path=base_path)
+                    expected_tmp = get_tmp_sqlite_path(source_sqlite)
+                    self.assertEqual(
+                        os.path.abspath(eng_tmp.url.database).replace("\\", "/"),
+                        os.path.abspath(expected_tmp).replace("\\", "/"),
+                    )
+                    self.assertTrue(os.path.exists(expected_tmp))
+
+                    # 3. Committed write marks dirty; first sync materializes standalone backup.sqlite
+                    status_service.update_step_status(
+                        backup_id, base_path, "index_scenes", "running", write_snapshot=False
+                    )
+                    synced = sync_dirty_sqlite_dbs(force=False, min_interval=10.0)
+                    self.assertEqual(synced, [source_sqlite])
+
+                    # Verify standalone source_sqlite has "running"
+                    conn = sqlite3.connect(source_sqlite)
+                    try:
+                        rows = conn.execute(
+                            "SELECT step, status FROM backup_steps WHERE step = 'index_scenes'"
+                        ).fetchall()
+                    finally:
+                        conn.close()
+                    self.assertEqual(rows, [("index_scenes", "running")])
+
+                    # 4. Rapid second write within min_interval is debounced (skipped)
+                    status_service.update_step_status(
+                        backup_id, base_path, "index_scenes", "success", write_snapshot=False
+                    )
+                    skipped = sync_dirty_sqlite_dbs(force=False, min_interval=10.0)
+                    self.assertEqual(skipped, [])
+
+                    # Target source_sqlite still has "running" until forced or interval elapses
+                    conn = sqlite3.connect(source_sqlite)
+                    try:
+                        rows = conn.execute(
+                            "SELECT step, status FROM backup_steps WHERE step = 'index_scenes'"
+                        ).fetchall()
+                    finally:
+                        conn.close()
+                    self.assertEqual(rows, [("index_scenes", "running")])
+
+                    # 5. close_all_engines() forces sync before disposing
+                    close_all_engines()
+                    conn = sqlite3.connect(source_sqlite)
+                    try:
+                        rows = conn.execute(
+                            "SELECT step, status FROM backup_steps WHERE step = 'index_scenes'"
+                        ).fetchall()
+                    finally:
+                        conn.close()
+                    self.assertEqual(rows, [("index_scenes", "success")])
+
+                    # 6. External replacement of source_sqlite is picked up on next open
+                    ext_copy = Path(tmpdir) / "external_modified.sqlite"
+                    shutil.copy2(source_sqlite, ext_copy)
+                    ext_conn = sqlite3.connect(ext_copy.as_posix())
+                    try:
+                        ext_conn.execute(
+                            "UPDATE backup_steps SET status = 'failed' WHERE step = 'index_scenes'"
+                        )
+                        ext_conn.commit()
+                    finally:
+                        ext_conn.close()
+                    shutil.copy2(ext_copy, source_sqlite)
+
+                    reloaded = status_service.load_backup_state(backup_id, base_path)
+                    self.assertEqual(reloaded["steps"]["index_scenes"], "failed")
+                finally:
+                    close_all_engines()
+                    invalidate_sqlite_tmp_cache(backup_id=backup_id, backup_path=base_path)
+
+    def test_brand_new_backup_initialization_and_sync(self):
+        from unittest.mock import patch
+        from db import status_service
+        from db.session import (
+            close_all_engines,
+            get_tmp_sqlite_path,
+            has_db,
+            require_db,
+            sync_dirty_sqlite_dbs,
+            invalidate_sqlite_tmp_cache,
+            _stat_file,
+            _read_source_meta,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            backup_dir = Path(tmpdir) / "new_backup_gcs"
+            tmp_cache_root = Path(tmpdir) / "tmp_cache"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            tmp_cache_root.mkdir(parents=True, exist_ok=True)
+
+            backup_id = "brand_new_backup_1"
+            base_path = backup_dir.as_posix()
+            source_sqlite = os.path.abspath((backup_dir / "backup.sqlite").as_posix()).replace("\\", "/")
+
+            env = {
+                "SOCRATES_SQLITE_TMP_CACHE": "1",
+                "SOCRATES_SQLITE_TMP_DIR": tmp_cache_root.as_posix(),
+                "SOCRATES_SQLITE_SYNC_TIMER": "0",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                try:
+                    close_all_engines()
+                    self.assertFalse(has_db(backup_path=base_path))
+                    with self.assertRaises(exc.DatabaseConnectionError):
+                        require_db(backup_path=base_path)
+
+                    # Initialize brand new backup in /tmp
+                    status_service.init_backup_export(
+                        backup_id=backup_id,
+                        backup_path=base_path,
+                        backup_name="Brand New Backup",
+                    )
+                    expected_tmp = get_tmp_sqlite_path(source_sqlite)
+                    self.assertTrue(os.path.exists(expected_tmp))
+                    # Source on GCS should not exist yet before sync
+                    self.assertFalse(os.path.exists(source_sqlite))
+
+                    # has_db() and require_db() recognize the /tmp cached DB
+                    self.assertTrue(has_db(backup_path=base_path))
+                    require_db(backup_path=base_path)
+
+                    # Flush to GCS
+                    synced = sync_dirty_sqlite_dbs(force=True)
+                    self.assertEqual(synced, [source_sqlite])
+                    self.assertTrue(os.path.exists(source_sqlite))
+
+                    # Verify source_sqlite has valid tables and schema
+                    conn = sqlite3.connect(source_sqlite)
+                    try:
+                        step_rows = conn.execute("SELECT step FROM backup_steps").fetchall()
+                    finally:
+                        conn.close()
+                    self.assertGreater(len(step_rows), 0)
+
+                    # Verify .source_meta.json matches source stat
+                    source_stat = _stat_file(source_sqlite)
+                    meta_stat = _read_source_meta(expected_tmp)
+                    self.assertIsNotNone(source_stat)
+                    self.assertEqual(source_stat, meta_stat)
+                finally:
+                    close_all_engines()
+                    invalidate_sqlite_tmp_cache(backup_id=backup_id, backup_path=base_path)
+
+    def test_cross_device_link_exdev_fallback(self):
+        from unittest.mock import patch
+        from db.session import (
+            close_all_engines,
+            get_tmp_sqlite_path,
+            sync_dirty_sqlite_dbs,
+            invalidate_sqlite_tmp_cache,
+        )
+        from db import status_service
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            backup_dir = Path(tmpdir) / "exdev_backup"
+            tmp_cache_root = Path(tmpdir) / "tmp_cache"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            tmp_cache_root.mkdir(parents=True, exist_ok=True)
+
+            backup_id = "exdev_test_1"
+            base_path = backup_dir.as_posix()
+            source_sqlite = os.path.abspath((backup_dir / "backup.sqlite").as_posix()).replace("\\", "/")
+
+            env = {
+                "SOCRATES_SQLITE_TMP_CACHE": "1",
+                "SOCRATES_SQLITE_TMP_DIR": tmp_cache_root.as_posix(),
+                "SOCRATES_SQLITE_SYNC_TIMER": "0",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                try:
+                    close_all_engines()
+                    status_service.init_backup_export(
+                        backup_id=backup_id,
+                        backup_path=base_path,
+                        backup_name="EXDEV Test",
+                    )
+                    expected_tmp = get_tmp_sqlite_path(source_sqlite)
+
+                    real_replace = os.replace
+
+                    # Simulate EXDEV on initial cross-device os.replace(staging_path, source_sqlite_path)
+                    def mock_replace(src, dst):
+                        if ".sync." in str(src) and str(dst) == source_sqlite and not str(src).startswith(str(backup_dir)):
+                            raise OSError(18, "Invalid cross-device link")
+                        return real_replace(src, dst)
+
+                    with patch("os.replace", side_effect=mock_replace):
+                        synced = sync_dirty_sqlite_dbs(force=True)
+                        self.assertEqual(synced, [source_sqlite])
+                        self.assertTrue(os.path.exists(source_sqlite))
+
+                    # Verify database was copied cleanly despite simulated EXDEV
+                    conn = sqlite3.connect(source_sqlite)
+                    try:
+                        step_rows = conn.execute("SELECT step FROM backup_steps").fetchall()
+                    finally:
+                        conn.close()
+                    self.assertGreater(len(step_rows), 0)
+                finally:
+                    close_all_engines()
+                    invalidate_sqlite_tmp_cache(backup_id=backup_id, backup_path=base_path)
+
+    def test_middleware_opportunistic_get_sync(self):
+        from unittest.mock import patch, MagicMock
+        from db import status_service
+        from db.session import (
+            close_all_engines,
+            sync_dirty_sqlite_dbs,
+            invalidate_sqlite_tmp_cache,
+            _last_sync_times,
+        )
+        from server import sqlite_tmp_sync_middleware
+
+        def run_coro_sync(coro):
+            try:
+                while True:
+                    coro.send(None)
+            except StopIteration as stop:
+                return stop.value
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            backup_dir = Path(tmpdir) / "middleware_backup"
+            tmp_cache_root = Path(tmpdir) / "tmp_cache"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            tmp_cache_root.mkdir(parents=True, exist_ok=True)
+
+            backup_id = "middleware_test_1"
+            base_path = backup_dir.as_posix()
+            source_sqlite = os.path.abspath((backup_dir / "backup.sqlite").as_posix()).replace("\\", "/")
+
+            env = {
+                "SOCRATES_SQLITE_TMP_CACHE": "1",
+                "SOCRATES_SQLITE_TMP_DIR": tmp_cache_root.as_posix(),
+                "SOCRATES_SQLITE_SYNC_TIMER": "0",
+                "SOCRATES_SQLITE_SYNC_INTERVAL": "5.0",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                try:
+                    close_all_engines()
+                    status_service.init_backup_export(
+                        backup_id=backup_id,
+                        backup_path=base_path,
+                        backup_name="Middleware Test",
+                    )
+                    # Initial sync
+                    sync_dirty_sqlite_dbs(force=True)
+
+                    # Mutate DB in /tmp to mark dirty
+                    status_service.update_step_status(
+                        backup_id, base_path, "index_scenes", "running", write_snapshot=False
+                    )
+
+                    # Simulate that last sync was 10s ago (> 5s min_interval)
+                    import time
+                    _last_sync_times[source_sqlite] = time.monotonic() - 10.0
+
+                    # Simulate incoming GET request through middleware
+                    mock_request = MagicMock()
+                    mock_request.method = "GET"
+
+                    async def dummy_call_next(req):
+                        return "ok_response"
+
+                    res = run_coro_sync(sqlite_tmp_sync_middleware(mock_request, dummy_call_next))
+                    self.assertEqual(res, "ok_response")
+
+                    # Verify that source_sqlite on GCS was updated by the opportunistic GET sync
+                    conn = sqlite3.connect(source_sqlite)
+                    try:
+                        rows = conn.execute(
+                            "SELECT step, status FROM backup_steps WHERE step = 'index_scenes'"
+                        ).fetchall()
+                    finally:
+                        conn.close()
+                    self.assertEqual(rows, [("index_scenes", "running")])
+                finally:
+                    close_all_engines()
+                    invalidate_sqlite_tmp_cache(backup_id=backup_id, backup_path=base_path)
+
+    def test_upgrade_rollback_invalidates_cache_without_sync(self):
+        from unittest.mock import patch
+        from db import status_service
+        from db.session import (
+            close_all_engines,
+            get_tmp_sqlite_path,
+            sync_dirty_sqlite_dbs,
+            invalidate_sqlite_tmp_cache,
+        )
+        from db.upgrade import upgrade_single_backup
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            backup_dir = Path(tmpdir) / "upgrade_backup"
+            tmp_cache_root = Path(tmpdir) / "tmp_cache"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            tmp_cache_root.mkdir(parents=True, exist_ok=True)
+
+            backup_id = "upgrade_test_1"
+            base_path = backup_dir.as_posix()
+            source_sqlite = os.path.abspath((backup_dir / "backup.sqlite").as_posix()).replace("\\", "/")
+
+            env = {
+                "SOCRATES_SQLITE_TMP_CACHE": "1",
+                "SOCRATES_SQLITE_TMP_DIR": tmp_cache_root.as_posix(),
+                "SOCRATES_SQLITE_SYNC_TIMER": "0",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                try:
+                    close_all_engines()
+                    status_service.init_backup_export(
+                        backup_id=backup_id,
+                        backup_path=base_path,
+                        backup_name="Upgrade Test",
+                    )
+                    status_service.update_step_status(
+                        backup_id, base_path, "index_scenes", "success", write_snapshot=False
+                    )
+                    sync_dirty_sqlite_dbs(force=True)
+
+                    backup_dict = {
+                        "backup_id": backup_id,
+                        "backup_name": "Upgrade Test",
+                        "path": base_path,
+                    }
+
+                    # 1. Successful upgrade cleans up .bak and syncs
+                    res = upgrade_single_backup(backup_dict, dry_run=False, reindex_scenes=False)
+                    self.assertFalse(res["dry_run"])
+                    self.assertFalse(os.path.exists(f"{source_sqlite}.bak"))
+
+                    # 2. Failed upgrade rolls back safely, restores safety copy, and removes .bak
+                    def fail_populate(*args, **kwargs):
+                        raise RuntimeError("Simulated failure during table population")
+
+                    with patch("db.upgrade.populate_schema", side_effect=fail_populate):
+                        with self.assertRaises(exc.DatabaseUpgradeError):
+                            upgrade_single_backup(backup_dict, dry_run=False, reindex_scenes=False)
+
+                    # Verify safety backup file was cleaned up and source_sqlite is still readable
+                    self.assertFalse(os.path.exists(f"{source_sqlite}.bak"))
+                    conn = sqlite3.connect(source_sqlite)
+                    try:
+                        rows = conn.execute(
+                            "SELECT step, status FROM backup_steps WHERE step = 'index_scenes'"
+                        ).fetchall()
+                    finally:
+                        conn.close()
+                    self.assertEqual(rows, [("index_scenes", "success")])
+                finally:
+                    close_all_engines()
+                    invalidate_sqlite_tmp_cache(backup_id=backup_id, backup_path=base_path)
+
+
 if __name__ == "__main__":
     unittest.main()

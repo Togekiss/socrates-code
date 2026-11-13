@@ -182,6 +182,21 @@ app.add_middleware(
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
+@app.middleware("http")
+async def sqlite_tmp_sync_middleware(request: Request, call_next):
+    """Triggers debounced /tmp SQLite -> GCS sync on mutating requests or opportunistically on GET (safe under --cpu-throttling)."""
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        try:
+            from db.session import is_sqlite_tmp_cache_enabled, sync_dirty_sqlite_dbs
+            if is_sqlite_tmp_cache_enabled():
+                sync_dirty_sqlite_dbs(force=False)
+        except Exception:
+            pass
+
+
 @app.exception_handler(exc.DatabaseConnectionError)
 async def db_connection_exception_handler(request: Request, e: exc.DatabaseConnectionError):
     return JSONResponse(
@@ -643,6 +658,9 @@ def run_script_in_background(script_name: str, backup_id: str, step_name: Option
 
     stderr_lines: List[str] = []
     try:
+        from db.session import is_sqlite_tmp_cache_enabled, sync_dirty_sqlite_dbs
+        if is_sqlite_tmp_cache_enabled():
+            sync_dirty_sqlite_dbs(force=True)
         process = subprocess.Popen(
             [python_exec, script_path, '--backup-id', str(backup_id)],
             cwd=project_root,
@@ -673,6 +691,13 @@ def run_script_in_background(script_name: str, backup_id: str, step_name: Option
     finally:
         if backup_id in active_processes:
             del active_processes[backup_id]
+        try:
+            from db.session import is_sqlite_tmp_cache_enabled, sync_dirty_sqlite_dbs
+            if is_sqlite_tmp_cache_enabled():
+                sync_dirty_sqlite_dbs(force=True)
+            t.flush_logs()
+        except Exception:
+            pass
 
     if process.returncode != 0:
         err_msg = "\n".join(stderr_lines[-5:]) if stderr_lines else f"Process exited with code {process.returncode}"

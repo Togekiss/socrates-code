@@ -62,7 +62,17 @@ from db.models import (
     SchemaVersionModel,
     CURRENT_SCHEMA_VERSION,
 )
-from db.session import get_engine, close_all_engines, get_sqlite_path, has_db, get_db_schema_version, stamp_schema_version
+from db.session import (
+    get_engine,
+    close_engine,
+    close_all_engines,
+    get_sqlite_path,
+    has_db,
+    get_db_schema_version,
+    stamp_schema_version,
+    sync_sqlite_db,
+    invalidate_sqlite_tmp_cache,
+)
 from db.snapshots import export_backup_info_snapshot, export_character_list_snapshot
 
 
@@ -631,6 +641,15 @@ def upgrade_single_backup(
         except Exception as e:
             t.log("debug", f"Post-upgrade snapshot note: {e}")
 
+        # 8. Force sync upgraded DB to GCS when /tmp cache is enabled, and clean up safety backup
+        if is_sqlite:
+            sync_sqlite_db(backup_id=backup_id, backup_path=backup_path, force=True)
+            if os.path.exists(bak_path):
+                try:
+                    os.remove(bak_path)
+                except OSError:
+                    pass
+
         t.log(
             "base",
             f"Upgrade complete for '{backup_name}': {metrics['characters']} characters, "
@@ -648,7 +667,8 @@ def upgrade_single_backup(
 
     except Exception as e:
         t.log("error", f"Upgrade failed for '{backup_name}': {exc.unwrap(e)}")
-        # Restore from safety copy
+        # Invalidate /tmp cache without syncing broken state, dispose engine, then restore from safety copy
+        close_engine(backup_id=backup_id, backup_path=backup_path, sync=False, invalidate_cache=True)
         close_all_engines()
         if is_sqlite:
             for p in (f"{sqlite_path}-wal", f"{sqlite_path}-shm"):
@@ -660,6 +680,10 @@ def upgrade_single_backup(
             if os.path.exists(bak_path):
                 t.log("info", f"Restoring safety backup from {bak_path}...")
                 shutil.copy2(bak_path, sqlite_path)
+                try:
+                    os.remove(bak_path)
+                except OSError:
+                    pass
         raise exc.DatabaseUpgradeError(f"Upgrade failed and was rolled back from backup: {e}") from e
 
 
