@@ -935,6 +935,12 @@ def _query_events_in_session(
     per_page: int = 50,
     **kwargs,
 ) -> Any:
+    from utils.path_safety import escape_like, validate_search_query_safety
+
+    if page is not None:
+        page = max(1, int(page)) if isinstance(page, int) else 1
+    per_page = max(1, min(int(per_page) if isinstance(per_page, int) else 50, 200))
+
     backup = session.query(BackupModel).filter_by(backup_id=str(backup_id)).first()
     server_id = backup.server_id if backup and backup.server_id else ""
 
@@ -965,15 +971,17 @@ def _query_events_in_session(
 
     # Filter by search query
     if search and isinstance(search, str) and search.strip():
-        s_term = search.strip().lower()
+        validate_search_query_safety(search)
+        s_term = escape_like(search.strip().lower())
+        like_pattern = f"%{s_term}%"
         matching_chan_pks = session.query(ChannelModel.pk).filter(
-            func.lower(ChannelModel.name).contains(s_term)
+            func.lower(ChannelModel.name).like(like_pattern, escape="\\")
         )
         query = query.filter(
             or_(
-                func.lower(EventModel.name).contains(s_term),
-                func.lower(EventModel.event_key).contains(s_term),
-                EventModel.scenes.any(func.lower(SceneModel.custom_name).contains(s_term)),
+                func.lower(EventModel.name).like(like_pattern, escape="\\"),
+                func.lower(EventModel.event_key).like(like_pattern, escape="\\"),
+                EventModel.scenes.any(func.lower(SceneModel.custom_name).like(like_pattern, escape="\\")),
                 EventModel.scenes.any(SceneModel.channel_pk.in_(matching_chan_pks)),
             )
         )

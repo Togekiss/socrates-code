@@ -9,6 +9,7 @@ import { UnlinkedWriterBanner } from './layout/UnlinkedWriterBanner';
 import { BackupStatusGuard } from './layout/BackupStatusGuard';
 import { useBackupStatusGuard } from '../hooks/useBackupStatusGuard';
 import type { BackupInfo, Character, MyWriter, Scene } from '../types';
+import { getRoleLevel, ROLE_LEVELS } from '../utils/rbac';
 
 interface ScenesTabProps {
   backupId: string;
@@ -16,6 +17,7 @@ interface ScenesTabProps {
   backupInfo?: BackupInfo | null;
   backupError?: string | null;
   backupLoading?: boolean;
+  roleLevel?: number;
   onNavigateToWriters?: () => void;
   myWriter?: MyWriter | null;
 }
@@ -26,6 +28,7 @@ export const ScenesTab = ({
   backupInfo,
   backupError,
   backupLoading,
+  roleLevel: propRoleLevel,
   onNavigateToWriters,
   myWriter: initialMyWriter,
 }: ScenesTabProps) => {
@@ -204,6 +207,9 @@ export const ScenesTab = ({
     fetchScenes(nextPage);
   };
 
+  const effectiveRoleLevel = propRoleLevel ?? backupInfo?.role_level ?? getRoleLevel(backupInfo?.effective_role);
+  const canCurate = effectiveRoleLevel >= ROLE_LEVELS.curator;
+
   if (!isReady) {
     return <BackupStatusGuard title="Scenes" guard={statusGuard} />;
   }
@@ -283,10 +289,10 @@ export const ScenesTab = ({
         hasMore={hasMore}
         loading={loading}
         error={error}
-        onEdit={item => setEditingScene(item as Scene)}
+        onEdit={canCurate ? item => setEditingScene(item as Scene) : undefined}
       />
 
-      {editingScene && (
+      {canCurate && editingScene && (
         <SceneEditModal
           backupId={backupId}
           scene={editingScene}

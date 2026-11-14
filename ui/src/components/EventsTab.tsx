@@ -9,6 +9,7 @@ import { UnlinkedWriterBanner } from './layout/UnlinkedWriterBanner';
 import { BackupStatusGuard } from './layout/BackupStatusGuard';
 import { useBackupStatusGuard } from '../hooks/useBackupStatusGuard';
 import type { BackupInfo, Character, EventRecord, MyWriter } from '../types';
+import { getRoleLevel, ROLE_LEVELS } from '../utils/rbac';
 
 interface EventsTabProps {
   backupId: string;
@@ -16,6 +17,7 @@ interface EventsTabProps {
   backupInfo?: BackupInfo | null;
   backupError?: string | null;
   backupLoading?: boolean;
+  roleLevel?: number;
   onNavigateToWriters?: () => void;
   myWriter?: MyWriter | null;
   onRefreshSummary?: () => void;
@@ -27,6 +29,7 @@ export const EventsTab = ({
   backupInfo,
   backupError,
   backupLoading,
+  roleLevel: propRoleLevel,
   onNavigateToWriters,
   myWriter: initialMyWriter,
   onRefreshSummary,
@@ -200,6 +203,9 @@ export const EventsTab = ({
     loadEvents,
   ]);
 
+  const effectiveRoleLevel = propRoleLevel ?? backupInfo?.role_level ?? getRoleLevel(backupInfo?.effective_role);
+  const canCurate = effectiveRoleLevel >= ROLE_LEVELS.curator;
+
   if (!isReady) {
     return <BackupStatusGuard title="Events" guard={statusGuard} />;
   }
@@ -282,7 +288,7 @@ export const EventsTab = ({
               key={ev.pk || ev.id}
               event={ev}
               allCharacters={allCharacters}
-              onEdit={target => setEditingEvent(target)}
+              onEdit={canCurate ? target => setEditingEvent(target) : undefined}
             />
           ))
         )}
@@ -305,7 +311,7 @@ export const EventsTab = ({
         </div>
       )}
 
-      {editingEvent && (
+      {canCurate && editingEvent && (
         <EventEditModal
           backupId={backupId}
           event={editingEvent}

@@ -185,12 +185,18 @@ def get_backup_path(backup_id: str) -> str:
     """
     set_path()
     from res import constants as c
+    from utils.path_safety import ensure_safe_backup_path, validate_backup_id
 
+    safe_id = validate_backup_id(backup_id)
     index = get_backups_index()
     for b in index:
-        if str(b.get("backup_id")) == str(backup_id):
-            return (Path(c.DATA_ROOT) / b["path"]).as_posix()
-    raise exc.BackupError(f"Backup ID '{backup_id}' not found in index")
+        if str(b.get("backup_id")) == safe_id:
+            try:
+                safe_path = ensure_safe_backup_path(b["path"], c.DATA_ROOT)
+            except ValueError as e:
+                raise exc.BackupError(f"Unsafe backup path for '{safe_id}': {e}") from e
+            return safe_path.as_posix()
+    raise exc.BackupError(f"Backup ID '{safe_id}' not found in index")
 
 def add_backup_to_index(backup_name, server_id, server_name, path):
     set_path()
@@ -248,7 +254,10 @@ def sanitize_filename(name: str) -> str:
     """Replaces filesystem-reserved characters (matching DCE export naming) with underscores."""
     if not name:
         return ""
-    return re.sub(r'[:/\\*?"<>|]', '_', str(name))
+    clean = re.sub(r'[:/\\*?"<>|]', '_', str(name))
+    if clean in {".", ".."}:
+        return "unnamed"
+    return clean
 
 """
 log(level, message)
@@ -392,23 +401,33 @@ run_command(command: str, show_lines: int = 0)
     Returns:
         tuple[int, str]: A tuple containing the return code and the full output.
 """
-def run_command(command: str, show_lines: int = None):
+def run_command(command, show_lines: int = None):
     set_path()
+    import shlex
     from res import constants as c
     from dotenv import load_dotenv
+    from utils.path_safety import scrub_sensitive_env
 
     try:
         load_dotenv('.env')
     except FileNotFoundError:
         raise FileNotFoundError("# NO ENVIRONMENT VARIABLES FOUND. RUNNING WITHOUT THEM #\n")
 
+    if not isinstance(command, (list, tuple)) or not command:
+        raise exc.ConsoleCommandError("Command must be a non-empty argument list (shell=True is disabled)")
+
+    argv = [str(arg) for arg in command]
+    cmd_display = shlex.join(argv)
+    child_env = scrub_sensitive_env(keep_discord_token=True)
+
     try:
         log("console", f"# RUNNING CONSOLE COMMAND #\n")
-        log("console", f"> {MAGENTA}{command}{GRAY}\n")
+        log("console", f"> {MAGENTA}{cmd_display}{GRAY}\n")
 
         process = subprocess.Popen(
-            command,
-            shell=True,
+            argv,
+            shell=False,
+            env=child_env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,

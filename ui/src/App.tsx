@@ -28,9 +28,36 @@ import { EventsTab } from './components/EventsTab';
 import { SceneIssuesTab } from './components/SceneIssuesTab';
 import { FlaggedMessagesTab } from './components/FlaggedMessagesTab';
 import { AdminTab } from './components/AdminTab';
+import { UsersTab } from './components/UsersTab';
 import { BackupForm } from './components/BackupForm';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import type { BackupInfo, CurationSummary, GlobalConfig, MyWriter, User } from './types';
+import { getEffectiveRole, getEffectiveRoleLevel, ROLE_LEVELS } from './utils/rbac';
+
+function AccessDeniedState({
+  title,
+  message,
+  onBack,
+}: {
+  title: string;
+  message: string;
+  onBack: () => void;
+}) {
+  return (
+    <div className="empty-state" role="alert">
+      <AlertTriangle
+        size={48}
+        className="empty-state-icon"
+        style={{ color: 'var(--warning)' }}
+      />
+      <h3 className="empty-state-title">{title}</h3>
+      <p className="empty-state-desc">{message}</p>
+      <button type="button" className="btn btn-secondary" onClick={onBack}>
+        Return to Status
+      </button>
+    </div>
+  );
+}
 
 function AuthCallback() {
   const [searchParams] = useSearchParams();
@@ -40,15 +67,20 @@ function AuthCallback() {
 
   useEffect(() => {
     const code = searchParams.get('code');
+    const state = searchParams.get('state');
     if (!code) {
       setError('No authorization code provided by Discord.');
+      return;
+    }
+    if (!state) {
+      setError('Missing OAuth state parameter.');
       return;
     }
     if (hasRequested.current) return;
     hasRequested.current = true;
 
     api
-      .authDiscord(code)
+      .authDiscord(code, state)
       .then(res => {
         if (res.status === 'success') navigate('/', { replace: true });
         else setError('Authentication failed. Please try again.');
@@ -208,11 +240,13 @@ function NewBackupTab({
 function RequireBackup({
   backupId,
   backups,
+  isInstanceAdmin = false,
   onSelectBackup,
   children,
 }: {
   backupId: string | null;
   backups: BackupInfo[];
+  isInstanceAdmin?: boolean;
   onSelectBackup: (id: string | null) => void;
   children: React.ReactNode;
 }) {
@@ -246,7 +280,7 @@ function RequireBackup({
               })}
             </select>
           </div>
-        ) : (
+        ) : isInstanceAdmin ? (
           <button
             type="button"
             className="btn btn-primary"
@@ -254,7 +288,7 @@ function RequireBackup({
           >
             <PlusCircle size={16} /> Create New Backup
           </button>
-        )}
+        ) : null}
       </div>
     );
   }
@@ -480,6 +514,9 @@ function AppContent() {
   };
 
   const handleDevLogin = () => {
+    if (!(import.meta.env.DEV && import.meta.env.VITE_ENABLE_DEV_LOGIN === 'true')) {
+      return;
+    }
     setIsLoadingAuth(true);
     api
       .devLogin()
@@ -521,6 +558,7 @@ function AppContent() {
       scene_issues: '/curation/issues',
       flagged_messages: '/curation/flagged',
       admin: '/system/admin',
+      users: '/system/users',
       new_backup: '/backups/new',
     };
     navigate(pathToTab[tab] || '/');
@@ -564,7 +602,7 @@ function AppContent() {
             >
               <LogIn size={20} /> Log in with Discord
             </button>
-            {import.meta.env.DEV && (
+            {import.meta.env.DEV && import.meta.env.VITE_ENABLE_DEV_LOGIN === 'true' && (
               <button
                 type="button"
                 onClick={handleDevLogin}
@@ -580,6 +618,15 @@ function AppContent() {
   }
 
   // 4. Authenticated application shell with full URL routing
+  const selectedBackup =
+    backups.find(b => (b.id || b.backup_id) === selectedBackupId) || null;
+  const effectiveRole = getEffectiveRole(user, backupInfo, selectedBackup);
+  const roleLevel = getEffectiveRoleLevel(user, backupInfo, selectedBackup);
+  const isInstanceAdmin = user.is_instance_admin === true;
+  const canCurate = isInstanceAdmin || roleLevel >= ROLE_LEVELS.curator;
+  const canManageBackup = isInstanceAdmin || roleLevel >= ROLE_LEVELS.server_admin;
+  const botInGuild = backupInfo?.bot_in_guild ?? selectedBackup?.bot_in_guild ?? true;
+
   return (
     <AppShell
       user={user}
@@ -588,9 +635,22 @@ function AppContent() {
       onSelectBackup={handleSelectBackup}
       curationSummary={curationSummary}
       backupInfo={backupInfo}
+      effectiveRole={effectiveRole}
+      roleLevel={roleLevel}
       onLogout={handleLogout}
-      onNewBackup={() => navigate('/backups/new')}
+      onNewBackup={isInstanceAdmin ? () => navigate('/backups/new') : undefined}
     >
+      {selectedBackupId && botInGuild === false && (
+        <div className="banner-warning" role="status">
+          <div className="banner-content">
+            <AlertTriangle size={20} className="flex-shrink-0" />
+            <div>
+              <strong>Archived Backup</strong> — The bot is no longer in this Discord server (Instance Admin access only).
+            </div>
+          </div>
+        </div>
+      )}
+
       {backupInfo?.is_schema_outdated && (
         <div className="banner-danger">
           <div className="banner-content">
@@ -601,15 +661,17 @@ function AppContent() {
               {backupInfo.current_schema_version ?? 5}. Please upgrade the database.
             </div>
           </div>
-          <button
-            type="button"
-            className="btn btn-danger btn-sm"
-            onClick={handleUpgradeDatabase}
-            disabled={isUpgrading}
-          >
-            {isUpgrading && <Loader2 size={16} className="animate-spin" />}
-            {isUpgrading ? 'Upgrading Database...' : 'Upgrade Database Now'}
-          </button>
+          {canManageBackup && (
+            <button
+              type="button"
+              className="btn btn-danger btn-sm"
+              onClick={handleUpgradeDatabase}
+              disabled={isUpgrading}
+            >
+              {isUpgrading && <Loader2 size={16} className="animate-spin" />}
+              {isUpgrading ? 'Upgrading Database...' : 'Upgrade Database Now'}
+            </button>
+          )}
         </div>
       )}
 
@@ -621,6 +683,7 @@ function AppContent() {
               <RequireBackup
                 backupId={selectedBackupId}
                 backups={backups}
+                isInstanceAdmin={isInstanceAdmin}
                 onSelectBackup={handleSelectBackup}
               >
                 <StatusTab
@@ -630,7 +693,8 @@ function AppContent() {
                   backupInfo={backupInfo}
                   backupError={backupError}
                   isLoading={isLoadingBackup}
-                  onUpgrade={handleUpgradeDatabase}
+                  roleLevel={roleLevel}
+                  onUpgrade={canManageBackup ? handleUpgradeDatabase : undefined}
                   isUpgrading={isUpgrading}
                 />
               </RequireBackup>
@@ -643,6 +707,7 @@ function AppContent() {
               <RequireBackup
                 backupId={selectedBackupId}
                 backups={backups}
+                isInstanceAdmin={isInstanceAdmin}
                 onSelectBackup={handleSelectBackup}
               >
                 <CharactersTab
@@ -650,6 +715,8 @@ function AppContent() {
                   backupInfo={backupInfo}
                   backupError={backupError}
                   backupLoading={isLoadingBackup}
+                  currentUser={user}
+                  roleLevel={roleLevel}
                   myWriter={myWriter}
                   onNavigateToWriters={() => navigate('/writers')}
                 />
@@ -662,6 +729,7 @@ function AppContent() {
               <RequireBackup
                 backupId={selectedBackupId}
                 backups={backups}
+                isInstanceAdmin={isInstanceAdmin}
                 onSelectBackup={handleSelectBackup}
               >
                 <WritersTab
@@ -669,6 +737,8 @@ function AppContent() {
                   backupInfo={backupInfo}
                   backupError={backupError}
                   backupLoading={isLoadingBackup}
+                  currentUser={user}
+                  roleLevel={roleLevel}
                   onRefreshSummary={refreshSummary}
                 />
               </RequireBackup>
@@ -680,6 +750,7 @@ function AppContent() {
               <RequireBackup
                 backupId={selectedBackupId}
                 backups={backups}
+                isInstanceAdmin={isInstanceAdmin}
                 onSelectBackup={handleSelectBackup}
               >
                 <ScenesTab
@@ -687,6 +758,7 @@ function AppContent() {
                   backupInfo={backupInfo}
                   backupError={backupError}
                   backupLoading={isLoadingBackup}
+                  roleLevel={roleLevel}
                   myWriter={myWriter}
                   onNavigateToWriters={() => navigate('/writers')}
                 />
@@ -699,6 +771,7 @@ function AppContent() {
               <RequireBackup
                 backupId={selectedBackupId}
                 backups={backups}
+                isInstanceAdmin={isInstanceAdmin}
                 onSelectBackup={handleSelectBackup}
               >
                 <ChatSessionsTab
@@ -706,6 +779,7 @@ function AppContent() {
                   backupInfo={backupInfo}
                   backupError={backupError}
                   backupLoading={isLoadingBackup}
+                  roleLevel={roleLevel}
                   myWriter={myWriter}
                   onNavigateToWriters={() => navigate('/writers')}
                 />
@@ -718,6 +792,7 @@ function AppContent() {
               <RequireBackup
                 backupId={selectedBackupId}
                 backups={backups}
+                isInstanceAdmin={isInstanceAdmin}
                 onSelectBackup={handleSelectBackup}
               >
                 <EventsTab
@@ -725,6 +800,7 @@ function AppContent() {
                   backupInfo={backupInfo}
                   backupError={backupError}
                   backupLoading={isLoadingBackup}
+                  roleLevel={roleLevel}
                   myWriter={myWriter}
                   onNavigateToWriters={() => navigate('/writers')}
                   onRefreshSummary={refreshSummary}
@@ -738,15 +814,25 @@ function AppContent() {
               <RequireBackup
                 backupId={selectedBackupId}
                 backups={backups}
+                isInstanceAdmin={isInstanceAdmin}
                 onSelectBackup={handleSelectBackup}
               >
-                <SceneIssuesTab
-                  backupId={selectedBackupId!}
-                  backupInfo={backupInfo}
-                  backupError={backupError}
-                  backupLoading={isLoadingBackup}
-                  onRefreshSummary={refreshSummary}
-                />
+                {canCurate ? (
+                  <SceneIssuesTab
+                    backupId={selectedBackupId!}
+                    backupInfo={backupInfo}
+                    backupError={backupError}
+                    backupLoading={isLoadingBackup}
+                    roleLevel={roleLevel}
+                    onRefreshSummary={refreshSummary}
+                  />
+                ) : (
+                  <AccessDeniedState
+                    title="Access Denied"
+                    message="Access Denied: Curation tools require Curator or Administrator permissions."
+                    onBack={() => navigate('/')}
+                  />
+                )}
               </RequireBackup>
             }
           />
@@ -756,15 +842,25 @@ function AppContent() {
               <RequireBackup
                 backupId={selectedBackupId}
                 backups={backups}
+                isInstanceAdmin={isInstanceAdmin}
                 onSelectBackup={handleSelectBackup}
               >
-                <FlaggedMessagesTab
-                  backupId={selectedBackupId!}
-                  backupInfo={backupInfo}
-                  backupError={backupError}
-                  backupLoading={isLoadingBackup}
-                  onRefreshSummary={refreshSummary}
-                />
+                {canCurate ? (
+                  <FlaggedMessagesTab
+                    backupId={selectedBackupId!}
+                    backupInfo={backupInfo}
+                    backupError={backupError}
+                    backupLoading={isLoadingBackup}
+                    roleLevel={roleLevel}
+                    onRefreshSummary={refreshSummary}
+                  />
+                ) : (
+                  <AccessDeniedState
+                    title="Access Denied"
+                    message="Access Denied: Curation tools require Curator or Administrator permissions."
+                    onBack={() => navigate('/')}
+                  />
+                )}
               </RequireBackup>
             }
           />
@@ -774,66 +870,92 @@ function AppContent() {
               <RequireBackup
                 backupId={selectedBackupId}
                 backups={backups}
+                isInstanceAdmin={isInstanceAdmin}
                 onSelectBackup={handleSelectBackup}
               >
-                <RunTab
-                  backupId={selectedBackupId!}
-                  backupInfo={backupInfo}
-                  statusPollTick={statusPollTick}
-                  onPollStatus={pollBackupStatus}
-                  onRefreshSummary={refreshSummary}
-                  onBackupInfoChange={handleBackupInfoChange}
-                />
+                {canManageBackup ? (
+                  <RunTab
+                    backupId={selectedBackupId!}
+                    backupInfo={backupInfo}
+                    roleLevel={roleLevel}
+                    statusPollTick={statusPollTick}
+                    onPollStatus={pollBackupStatus}
+                    onRefreshSummary={refreshSummary}
+                    onBackupInfoChange={handleBackupInfoChange}
+                  />
+                ) : (
+                  <AccessDeniedState
+                    title="Server Admin Access Required"
+                    message="You must be a Server Admin or Instance Admin to access pipeline execution and configuration."
+                    onBack={() => navigate('/')}
+                  />
+                )}
+              </RequireBackup>
+            }
+          />
+          <Route
+            path="/system/users"
+            element={
+              <RequireBackup
+                backupId={selectedBackupId}
+                backups={backups}
+                isInstanceAdmin={isInstanceAdmin}
+                onSelectBackup={handleSelectBackup}
+              >
+                {canManageBackup ? (
+                  <UsersTab backupId={selectedBackupId!} onRefreshSummary={refreshSummary} />
+                ) : (
+                  <AccessDeniedState
+                    title="Server Admin Access Required"
+                    message="You must be a Server Admin or Instance Admin to manage Discord role mappings and user restrictions."
+                    onBack={() => navigate('/')}
+                  />
+                )}
               </RequireBackup>
             }
           />
           <Route
             path="/system/admin"
             element={
-              user.admin !== false ? (
+              isInstanceAdmin ? (
                 <AdminTab onRefreshSummary={refreshSummary} />
               ) : (
-                <div className="empty-state">
-                  <AlertTriangle
-                    size={48}
-                    className="empty-state-icon"
-                    style={{ color: 'var(--warning)' }}
-                  />
-                  <h3 className="empty-state-title">Administrator Access Required</h3>
-                  <p className="empty-state-desc">
-                    You must be an administrator to access system admin operations and global logs.
-                  </p>
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    onClick={() => navigate('/')}
-                  >
-                    Return to Status
-                  </button>
-                </div>
+                <AccessDeniedState
+                  title="Administrator Access Required"
+                  message="You must be an administrator to access system admin operations and global logs."
+                  onBack={() => navigate('/')}
+                />
               )
             }
           />
           <Route
             path="/backups/new"
             element={
-              <NewBackupTab
-                user={user}
-                onStart={() => {
-                  setTimeout(() => {
-                    api
-                      .getBackups()
-                      .then(data => {
-                        if (Array.isArray(data)) {
-                          setBackups(data);
-                        }
-                      })
-                      .catch(console.error);
-                  }, 1000);
-                  navigate('/');
-                }}
-                onCancel={() => navigate('/')}
-              />
+              isInstanceAdmin ? (
+                <NewBackupTab
+                  user={user}
+                  onStart={() => {
+                    setTimeout(() => {
+                      api
+                        .getBackups()
+                        .then(data => {
+                          if (Array.isArray(data)) {
+                            setBackups(data);
+                          }
+                        })
+                        .catch(console.error);
+                    }, 1000);
+                    navigate('/');
+                  }}
+                  onCancel={() => navigate('/')}
+                />
+              ) : (
+                <AccessDeniedState
+                  title="Administrator Access Required"
+                  message="Only Instance Administrators can create new backups."
+                  onBack={() => navigate('/')}
+                />
+              )
             }
           />
           <Route path="*" element={<Navigate to="/" replace />} />

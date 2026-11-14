@@ -7,6 +7,7 @@ import { Modal, ChipInput, Button } from '../ui';
 interface WriterEditModalProps {
   backupId: string;
   writer?: WriterDetailed | null;
+  isParticipantSelfEdit?: boolean;
   onClose: () => void;
   onSaved: () => void;
 }
@@ -14,6 +15,7 @@ interface WriterEditModalProps {
 export const WriterEditModal: React.FC<WriterEditModalProps> = ({
   backupId,
   writer,
+  isParticipantSelfEdit = false,
   onClose,
   onSaved,
 }) => {
@@ -40,6 +42,11 @@ export const WriterEditModal: React.FC<WriterEditModalProps> = ({
           display_name: displayName.trim(),
           aliases: aliasesArray,
           discord_user_id: discordUserId.trim() || undefined,
+        });
+      } else if (isParticipantSelfEdit) {
+        await api.updateWriter(backupId, writer.id, {
+          display_name: displayName.trim(),
+          aliases: aliasesArray,
         });
       } else {
         await api.updateWriter(backupId, writer.id, {
@@ -81,7 +88,7 @@ export const WriterEditModal: React.FC<WriterEditModalProps> = ({
   const modalFooter = (
     <div className="flex-row items-center justify-between w-full" style={{ width: '100%' }}>
       <div>
-        {!isNew && (
+        {!isNew && !isParticipantSelfEdit && (
           <Button
             variant="danger"
             size="sm"
@@ -145,22 +152,24 @@ export const WriterEditModal: React.FC<WriterEditModalProps> = ({
         />
 
         {/* Discord User Snowflake */}
-        <div className="form-group">
-          <label htmlFor="writer-discord-id" className="form-label">
-            Discord User ID (Snowflake)
-          </label>
-          <input
-            id="writer-discord-id"
-            type="text"
-            className="input"
-            value={discordUserId}
-            onChange={e => setDiscordUserId(e.target.value)}
-            placeholder="e.g. 123456789012345678"
-          />
-          <span className="form-hint">
-            Links this profile to a Discord user ID for &quot;★ By Me&quot; character filtering.
-          </span>
-        </div>
+        {!isParticipantSelfEdit && (
+          <div className="form-group">
+            <label htmlFor="writer-discord-id" className="form-label">
+              Discord User ID (Snowflake)
+            </label>
+            <input
+              id="writer-discord-id"
+              type="text"
+              className="input"
+              value={discordUserId}
+              onChange={e => setDiscordUserId(e.target.value)}
+              placeholder="e.g. 123456789012345678"
+            />
+            <span className="form-hint">
+              Links this profile to a Discord user ID for &quot;★ By Me&quot; character filtering.
+            </span>
+          </div>
+        )}
       </div>
     </Modal>
   );

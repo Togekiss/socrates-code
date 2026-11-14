@@ -13,6 +13,7 @@ import {
 import { DataCard, Badge, Button, FilterChip } from '../ui';
 import { resolveCharacterName } from '../../utils/characters';
 import { formatTimestamp, getDurationInfo } from '../../utils/formatters';
+import { safeDiscordUrl } from '../../utils/rbac';
 import type {
   Character,
   EventChannelEntry,
@@ -104,9 +105,9 @@ export const EventCard: React.FC<EventCardProps> = ({ event, allCharacters, onEd
               {pFirst && (
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
                   First: {pFirst}
-                  {p.first_link && (
+                  {safeDiscordUrl(p.first_link) && (
                     <a
-                      href={p.first_link}
+                      href={safeDiscordUrl(p.first_link)!}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="btn btn-secondary btn-xs"
@@ -120,9 +121,9 @@ export const EventCard: React.FC<EventCardProps> = ({ event, allCharacters, onEd
               {pLast && (
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
                   Last: {pLast}
-                  {p.last_link && (
+                  {safeDiscordUrl(p.last_link) && (
                     <a
-                      href={p.last_link}
+                      href={safeDiscordUrl(p.last_link)!}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="btn btn-secondary btn-xs"
@@ -179,9 +180,9 @@ export const EventCard: React.FC<EventCardProps> = ({ event, allCharacters, onEd
           </div>
 
           <div className="flex-row items-center gap-xs flex-wrap">
-            {entry.start?.link && (
+            {safeDiscordUrl(entry.start?.link) && (
               <a
-                href={entry.start.link}
+                href={safeDiscordUrl(entry.start?.link)!}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="btn btn-secondary btn-xs"
@@ -190,9 +191,9 @@ export const EventCard: React.FC<EventCardProps> = ({ event, allCharacters, onEd
                 <ExternalLink size={10} /> First msg
               </a>
             )}
-            {entry.end?.link && (
+            {safeDiscordUrl(entry.end?.link) && (
               <a
-                href={entry.end.link}
+                href={safeDiscordUrl(entry.end?.link)!}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="btn btn-secondary btn-xs"
@@ -331,28 +332,44 @@ export const EventCard: React.FC<EventCardProps> = ({ event, allCharacters, onEd
                   const hopLabel = hop.custom_name
                     ? `${hop.custom_name} (${hop.channel_name})`
                     : hop.channel_name;
+                  const hopHref = safeDiscordUrl(hop.first_link);
                   return (
                     <React.Fragment key={`${hop.channel_id}-${hop.first_message_id}-${idx}`}>
                       {idx > 0 && <ArrowRight size={13} className="text-muted" />}
-                      <a
-                        href={hop.first_link}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        title={
-                          hop.first_timestamp || hop.first_at
-                            ? `First message at ${formatTimestamp(hop.first_timestamp || hop.first_at)}`
-                            : 'Open in Discord'
-                        }
-                        className="btn btn-secondary btn-xs"
-                        style={{
-                          fontSize: '0.75rem',
-                          background: 'rgba(0,0,0,0.35)',
-                          border: '1px solid #8b5cf6',
-                          color: '#e9d5ff',
-                        }}
-                      >
-                        [{hopLabel}] <ExternalLink size={10} />
-                      </a>
+                      {hopHref ? (
+                        <a
+                          href={hopHref}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title={
+                            hop.first_timestamp || hop.first_at
+                              ? `First message at ${formatTimestamp(hop.first_timestamp || hop.first_at)}`
+                              : 'Open in Discord'
+                          }
+                          className="btn btn-secondary btn-xs"
+                          style={{
+                            fontSize: '0.75rem',
+                            background: 'rgba(0,0,0,0.35)',
+                            border: '1px solid #8b5cf6',
+                            color: '#e9d5ff',
+                          }}
+                        >
+                          [{hopLabel}] <ExternalLink size={10} />
+                        </a>
+                      ) : (
+                        <span
+                          className="btn btn-secondary btn-xs"
+                          style={{
+                            fontSize: '0.75rem',
+                            background: 'rgba(0,0,0,0.35)',
+                            border: '1px solid #8b5cf6',
+                            color: '#e9d5ff',
+                            opacity: 0.7,
+                          }}
+                        >
+                          [{hopLabel}]
+                        </span>
+                      )}
                     </React.Fragment>
                   );
                 })

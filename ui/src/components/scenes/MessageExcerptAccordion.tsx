@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { ExternalLink, ChevronDown, ChevronRight, Users } from 'lucide-react';
 import { formatTimestamp, getDurationInfo } from '../../utils/formatters';
 import { resolveCharacterName } from '../../utils/characters';
+import { safeDiscordUrl } from '../../utils/rbac';
 import type { Character, SceneParticipantDetail } from '../../types';
 
 export interface MessageExcerptMessage {
@@ -51,9 +52,9 @@ export const MessageExcerptAccordion: React.FC<MessageExcerptAccordionProps> = (
     <div className={`flex-col gap-xs ${className}`.trim()}>
       {/* Discord Jump Links */}
       <div className="flex-row items-center gap-sm flex-wrap mt-xs">
-        {start?.link ? (
+        {safeDiscordUrl(start?.link) ? (
           <a
-            href={start.link}
+            href={safeDiscordUrl(start?.link)!}
             target="_blank"
             rel="noopener noreferrer"
             className="btn btn-secondary btn-xs"
@@ -70,9 +71,9 @@ export const MessageExcerptAccordion: React.FC<MessageExcerptAccordionProps> = (
           </span>
         )}
 
-        {end?.link ? (
+        {safeDiscordUrl(end?.link) ? (
           <a
-            href={end.link}
+            href={safeDiscordUrl(end?.link)!}
             target="_blank"
             rel="noopener noreferrer"
             className="btn btn-secondary btn-xs"
@@ -321,9 +322,9 @@ export const MessageExcerptAccordion: React.FC<MessageExcerptAccordionProps> = (
                               }}
                             >
                               <span>First: {pFirst}</span>
-                              {p.first_link && (
+                              {safeDiscordUrl(p.first_link) && (
                                 <a
-                                  href={p.first_link}
+                                  href={safeDiscordUrl(p.first_link)!}
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   className="btn btn-secondary btn-xs"
@@ -344,9 +345,9 @@ export const MessageExcerptAccordion: React.FC<MessageExcerptAccordionProps> = (
                               }}
                             >
                               <span>Last: {pLast}</span>
-                              {p.last_link && (
+                              {safeDiscordUrl(p.last_link) && (
                                 <a
-                                  href={p.last_link}
+                                  href={safeDiscordUrl(p.last_link)!}
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   className="btn btn-secondary btn-xs"

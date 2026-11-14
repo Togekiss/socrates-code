@@ -7,6 +7,7 @@
 
 import type {
   AdminTestActionResponse,
+  AuditLogsResponse,
   AuthResponse,
   BackupConfig,
   BackupInfo,
@@ -14,6 +15,7 @@ import type {
   CharacterGroup,
   CurationSummary,
   DiscordAuthor,
+  DiscordRolesResponse,
   EventRecord,
   EventsResponse,
   FlaggedMessage,
@@ -25,6 +27,7 @@ import type {
   MeResponse,
   MessageOverridesResponse,
   MyWriter,
+  RbacConfig,
   SceneIssuesResponse,
   ScenesResponse,
   SessionsResponse,
@@ -36,9 +39,11 @@ import type {
   WriterLinkSuggestion,
 } from './types';
 
-// In production, uses '/api' for same-origin proxy via Firebase Hosting rewrite.
-// In development, uses local backend at 'http://localhost:8000/api'.
-export const API_BASE = import.meta.env.DEV ? 'http://localhost:8000/api' : '/api';
+// Uses same-origin '/api' proxy (Vite dev server in development, Firebase Hosting rewrite in production).
+export const API_BASE = '/api';
+
+let csrfToken: string | null = null;
+export const getCsrfToken = (): string | null => csrfToken;
 
 export interface ApiError extends Error {
   status?: number;
@@ -70,7 +75,14 @@ const fetchWithAuth = async (url: string, options: RequestInit = {}): Promise<Re
   }
 
   const requestPromise = (async () => {
-    const res = await fetch(url, { ...options, credentials: 'include' });
+    const headers = new Headers(options.headers);
+    if (!isGet && method !== 'HEAD' && method !== 'OPTIONS') {
+      headers.set('X-Requested-With', 'Socrates-UI');
+      if (csrfToken && !headers.has('X-CSRF-Token')) {
+        headers.set('X-CSRF-Token', csrfToken);
+      }
+    }
+    const res = await fetch(url, { ...options, headers, credentials: 'include' });
     if (!res.ok) {
       const errorBody = await res.json().catch(() => ({ detail: res.statusText }));
       const error = new Error(errorBody.detail || `Request failed with status ${res.status}`) as ApiError;
@@ -95,24 +107,56 @@ const fetchWithAuth = async (url: string, options: RequestInit = {}): Promise<Re
 
 export const api = {
   // --- Auth Endpoints ---
-  getLoginUrl: (): Promise<{ url: string }> =>
+  getLoginUrl: (): Promise<{ url: string; state?: string }> =>
     fetchWithAuth(`${API_BASE}/auth/login-url`).then(res => res.json()),
 
-  authDiscord: (code: string): Promise<AuthResponse> =>
+  authDiscord: (code: string, state?: string | null): Promise<AuthResponse> =>
     fetchWithAuth(`${API_BASE}/auth/discord`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code }),
-    }).then(res => res.json()),
+      body: JSON.stringify(state ? { code, state } : { code }),
+    })
+      .then(res => res.json())
+      .then((data: AuthResponse) => {
+        if (data.csrf_token) {
+          csrfToken = data.csrf_token;
+        }
+        return data;
+      }),
 
   getMe: (): Promise<MeResponse> =>
-    fetchWithAuth(`${API_BASE}/auth/me`).then(res => res.json()),
+    fetchWithAuth(`${API_BASE}/auth/me`)
+      .then(res => res.json())
+      .then((data: MeResponse) => {
+        if (!data.user) {
+          csrfToken = null;
+        } else if (data.csrf_token) {
+          csrfToken = data.csrf_token;
+        }
+        return data;
+      }),
 
-  devLogin: (): Promise<AuthResponse> =>
-    fetchWithAuth(`${API_BASE}/auth/dev-login`, { method: 'POST' }).then(res => res.json()),
+  devLogin: (): Promise<AuthResponse> => {
+    if (!(import.meta.env.DEV && import.meta.env.VITE_ENABLE_DEV_LOGIN === 'true')) {
+      return Promise.reject(new Error('Dev login is disabled'));
+    }
+    return fetchWithAuth(`${API_BASE}/auth/dev-login`, { method: 'POST' })
+      .then(res => res.json())
+      .then((data: AuthResponse) => {
+        if (data.csrf_token) {
+          csrfToken = data.csrf_token;
+        }
+        return data;
+      });
+  },
 
   logout: (): Promise<{ status: string }> =>
-    fetchWithAuth(`${API_BASE}/auth/logout`, { method: 'POST' }).then(res => res.json()),
+    fetchWithAuth(`${API_BASE}/auth/logout`, { method: 'POST' })
+      .then(res => res.json())
+      .then(data => {
+        csrfToken = null;
+        return data;
+      }),
 
   // --- Configuration Endpoints ---
   getGlobalConfig: (): Promise<GlobalConfig> =>
@@ -462,4 +506,30 @@ export const api = {
 
   runPythonTests: (): Promise<AdminTestActionResponse> =>
     fetchWithAuth(`${API_BASE}/admin/tests/run`, { method: 'POST' }).then(res => res.json()),
+
+  // --- Backup RBAC & Users Endpoints ---
+  getBackupDiscordRoles: (backupId: string): Promise<DiscordRolesResponse> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/discord-roles`).then(res => res.json()),
+
+  getBackupRbac: (backupId: string): Promise<RbacConfig> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/rbac`).then(res => res.json()),
+
+  updateBackupRbac: (backupId: string, rbac: RbacConfig): Promise<RbacConfig> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/rbac`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rbac),
+    })
+      .then(res => res.json())
+      .then((data: RbacConfig & { rbac?: RbacConfig }) => data?.rbac ?? data),
+
+  getBackupAuditLogs: (backupId: string, params: URLSearchParams = new URLSearchParams()): Promise<AuditLogsResponse> => {
+    const query = params.toString();
+    return fetchWithAuth(`${API_BASE}/backups/${backupId}/audit-logs${query ? `?${query}` : ''}`).then(res => res.json());
+  },
+
+  getGlobalAuditLogs: (params: URLSearchParams = new URLSearchParams()): Promise<AuditLogsResponse> => {
+    const query = params.toString();
+    return fetchWithAuth(`${API_BASE}/admin/audit-logs${query ? `?${query}` : ''}`).then(res => res.json());
+  },
 };

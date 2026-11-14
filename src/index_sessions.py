@@ -68,16 +68,13 @@ SESSION_TEMPO_WINDOW = 10
 # Regex patterns for status tags and conversational apologies/continuations
 ONLINE_TAG_PAT = re.compile(r"`{1,3}[^`]*?\b(?:online|joined)\b[^`]*?`{1,3}", re.IGNORECASE | re.DOTALL)
 OFFLINE_TAG_PAT = re.compile(r"`{1,3}[^`]*?\b(?:offline|idle|left|leaving)\b[^`]*?`{1,3}", re.IGNORECASE | re.DOTALL)
-# Matches conversational apologies, return announcements, and absence explanations
-# (e.g., 'sorry'/'apolog*' and 'back' anywhere in the message, 'I'm back', 'fell asleep', 'sorry for the wait')
-APOLOGY_CONTINUATION_PAT = re.compile(
-    r"(?:"
-    r"(?=.*\b(?:sorry|apolog\w*)\b)(?=.*\bback\b)"
-    r"|\b(?:i(?:['’]| m)?\s*back|,\s*back|finally\s+back|got\s+back)\b"
-    r"|\b(?:passed\s+out|asleep|dozed\s+off)\b"
-    r"|\b(?:sorry|apolog\w*)\b.*?\b(?:delay|wait|late|busy|distracted)\b"
-    r")",
-    re.IGNORECASE | re.DOTALL,
+# Matches conversational apologies, return announcements, and absence explanations (linear checks, no ReDoS)
+_APOLOGY_WORD_PAT = re.compile(r"\b(?:sorry|apolog\w*)\b", re.IGNORECASE)
+_BACK_WORD_PAT = re.compile(r"\bback\b", re.IGNORECASE)
+_DELAY_WORD_PAT = re.compile(r"\b(?:delay|wait|late|busy|distracted)\b", re.IGNORECASE)
+_RETURN_PHRASE_PAT = re.compile(
+    r"\b(?:i(?:['’]| m)?\s*back|,\s*back|finally\s+back|got\s+back|passed\s+out|asleep|dozed\s+off)\b",
+    re.IGNORECASE,
 )
 
 
@@ -93,7 +90,15 @@ def has_offline_tag(msg: Dict[str, Any]) -> bool:
 
 def has_apology_continuation(msg: Dict[str, Any]) -> bool:
     """Returns True if the message indicates an apology or direct return to an ongoing scene."""
-    return bool(APOLOGY_CONTINUATION_PAT.search(msg.get("content") or ""))
+    content = msg.get("content") or ""
+    if _RETURN_PHRASE_PAT.search(content):
+        return True
+    m_apology = _APOLOGY_WORD_PAT.search(content)
+    if not m_apology:
+        return False
+    if _BACK_WORD_PAT.search(content):
+        return True
+    return bool(_DELAY_WORD_PAT.search(content, m_apology.end()))
 
 
 def parse_msg_datetime(msg: Dict[str, Any]) -> Optional[datetime]:

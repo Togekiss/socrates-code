@@ -2,6 +2,7 @@ import React from 'react';
 import { ExternalLink, Check, RotateCcw, ArrowRight, GitMerge, Split } from 'lucide-react';
 import { DataCard, Badge, Button } from '../ui';
 import type { SceneIssue } from '../../types';
+import { safeDiscordUrl } from '../../utils/rbac';
 
 interface SceneIssueCardProps {
   issue: SceneIssue;
@@ -93,9 +94,9 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
               </Badge>
             )}
 
-            {issue.discord_link && (
+            {safeDiscordUrl(issue.discord_link) && (
               <a
-                href={issue.discord_link}
+                href={safeDiscordUrl(issue.discord_link)!}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="btn btn-secondary btn-xs"

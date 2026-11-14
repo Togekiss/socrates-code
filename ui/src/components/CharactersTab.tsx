@@ -11,7 +11,8 @@ import { UnlinkedWriterBanner } from './layout/UnlinkedWriterBanner';
 import { BackupStatusGuard } from './layout/BackupStatusGuard';
 import { useBackupStatusGuard } from '../hooks/useBackupStatusGuard';
 import { Button, PanelSurface, ResponsiveText } from './ui';
-import type { BackupInfo, Character, CharacterGroup, MyWriter, WriterDetailed } from '../types';
+import type { BackupInfo, Character, CharacterGroup, MyWriter, User, WriterDetailed } from '../types';
+import { getRoleLevel, ROLE_LEVELS } from '../utils/rbac';
 
 interface CharactersTabProps {
   backupId: string;
@@ -19,6 +20,8 @@ interface CharactersTabProps {
   backupInfo?: BackupInfo | null;
   backupError?: string | null;
   backupLoading?: boolean;
+  currentUser?: User | null;
+  roleLevel?: number;
   onNavigateToWriters?: () => void;
   myWriter?: MyWriter | null;
 }
@@ -29,6 +32,8 @@ export const CharactersTab = ({
   backupInfo,
   backupError,
   backupLoading,
+  currentUser,
+  roleLevel: propRoleLevel,
   onNavigateToWriters,
   myWriter: initialMyWriter,
 }: CharactersTabProps) => {
@@ -251,6 +256,60 @@ export const CharactersTab = ({
     return { displayItems: items, filtersActive: true };
   }, [characters, groups, nameFilter, writerFilter, tagsFilter, byMe, unassignedOnly]);
 
+  const effectiveRoleLevel = propRoleLevel ?? backupInfo?.role_level ?? getRoleLevel(backupInfo?.effective_role);
+  const canCurate = effectiveRoleLevel >= ROLE_LEVELS.curator;
+  const isParticipant = effectiveRoleLevel === ROLE_LEVELS.participant;
+  const selfWriterId = useMemo(() => {
+    if (myWriter?.id != null) return myWriter.id;
+    const matched = writers.find(
+      w => w.is_self || (currentUser?.id && w.discord_user_id && w.discord_user_id === currentUser.id)
+    );
+    return matched?.id ?? null;
+  }, [myWriter, writers, currentUser]);
+
+  const selfCharacterIds = useMemo(
+    () => new Set(myWriter?.character_ids ?? []),
+    [myWriter]
+  );
+
+  const selfWriterNames = useMemo(() => {
+    const names = new Set<string>();
+    const pushName = (n?: string | null) => {
+      const trimmed = n?.trim().toLowerCase();
+      if (trimmed) names.add(trimmed);
+    };
+    pushName(myWriter?.display_name);
+    myWriter?.aliases?.forEach(pushName);
+    const matched = writers.find(
+      w => w.is_self || (currentUser?.id && w.discord_user_id && w.discord_user_id === currentUser.id)
+    );
+    pushName(matched?.display_name);
+    matched?.aliases?.forEach(pushName);
+    return names;
+  }, [myWriter, writers, currentUser]);
+
+  const canEditCharacter = useCallback(
+    (char: Character, parent?: Character): boolean => {
+      if (canCurate) return true;
+      if (!isParticipant || selfWriterId == null) return false;
+      if (selfCharacterIds.has(char.id)) return true;
+      if (char.writer_id != null) return char.writer_id === selfWriterId;
+      if (
+        char.writer_id === undefined &&
+        selfWriterNames.size > 0 &&
+        char.writer?.some(w => selfWriterNames.has(w.trim().toLowerCase()))
+      ) {
+        return true;
+      }
+      if (parent) {
+        if (selfCharacterIds.has(parent.id)) return true;
+        if (parent.writer_id != null) return parent.writer_id === selfWriterId;
+      }
+      return false;
+    },
+    [canCurate, isParticipant, selfWriterId, selfCharacterIds, selfWriterNames]
+  );
+
   if (!statusGuard.isReady) {
     return <BackupStatusGuard title="Characters & Groups" guard={statusGuard} />;
   }
@@ -284,14 +343,16 @@ export const CharactersTab = ({
           Showing <strong>{displayItems.length}</strong> characters and groups
           {filtersActive && ' (filtered)'}
         </div>
-        <Button
-          variant="secondary"
-          size="md"
-          onClick={() => setIsCreatingGroup(true)}
-          icon={<Plus size={14} />}
-        >
-          <ResponsiveText textKey='newCharacterGroup' />
-        </Button>
+        {canCurate && (
+          <Button
+            variant="secondary"
+            size="md"
+            onClick={() => setIsCreatingGroup(true)}
+            icon={<Plus size={14} />}
+          >
+            <ResponsiveText textKey='newCharacterGroup' />
+          </Button>
+        )}
       </div>
 
       {/* Characters Virtual List (1-character-per-row stack) */}
@@ -308,9 +369,10 @@ export const CharactersTab = ({
         <div className="character-list-stack">
           <VirtualScrollList
             items={displayItems}
-            onEdit={(char, parent) => setEditingChar({ char, parent })}
-            onEditGroup={g => setEditingGroup(g)}
-            onAssignWriter={setAssigningChar}
+            onEdit={canCurate || isParticipant ? (char, parent) => setEditingChar({ char, parent }) : undefined}
+            canEdit={canEditCharacter}
+            onEditGroup={canCurate ? g => setEditingGroup(g) : undefined}
+            onAssignWriter={canCurate ? setAssigningChar : undefined}
             onAddTagFilter={tag => {
               if (!tagsFilter.includes(tag)) setTagsFilter([...tagsFilter, tag]);
             }}
@@ -319,19 +381,22 @@ export const CharactersTab = ({
       )}
 
       {/* Edit Character Modal */}
-      {editingChar && (
+      {editingChar && canEditCharacter(editingChar.char, editingChar.parent) && (
         <CharacterEditModal
           backupId={backupId}
           character={editingChar.char}
           parentCharacter={editingChar.parent}
           allCharacters={characters || []}
+          isParticipantMode={!canCurate && isParticipant}
+          selfWriterId={selfWriterId}
+          selfCharacterIds={myWriter?.character_ids || []}
           onClose={() => setEditingChar(null)}
           onSaved={fetchCharacters}
         />
       )}
 
       {/* Create / Edit Group Modal */}
-      {(isCreatingGroup || editingGroup) && (
+      {canCurate && (isCreatingGroup || editingGroup) && (
         <GroupEditModal
           backupId={backupId}
           group={editingGroup}
@@ -345,7 +410,7 @@ export const CharactersTab = ({
       )}
 
       {/* Assign Writer Modal */}
-      {assigningChar && (
+      {canCurate && assigningChar && (
         <AssignWriterModal
           backupId={backupId}
           character={assigningChar}

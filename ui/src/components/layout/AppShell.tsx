@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Menu } from 'lucide-react';
 import { Sidebar } from './Sidebar';
-import type { BackupInfo, CurationSummary, User } from '../../types';
+import type { BackupInfo, BackupRole, CurationSummary, User } from '../../types';
 
 export interface AppShellProps {
   user: User | null;
@@ -10,6 +10,8 @@ export interface AppShellProps {
   onSelectBackup: (id: string | null) => void;
   curationSummary: CurationSummary | null;
   backupInfo: BackupInfo | null;
+  effectiveRole?: BackupRole;
+  roleLevel?: number;
   onLogout: () => void;
   onNewBackup?: () => void;
   children: React.ReactNode;
@@ -22,6 +24,8 @@ export const AppShell: React.FC<AppShellProps> = ({
   onSelectBackup,
   curationSummary,
   backupInfo,
+  effectiveRole,
+  roleLevel,
   onLogout,
   onNewBackup,
   children,
@@ -87,6 +91,8 @@ export const AppShell: React.FC<AppShellProps> = ({
         onSelectBackup={onSelectBackup}
         curationSummary={curationSummary}
         backupInfo={backupInfo}
+        effectiveRole={effectiveRole}
+        roleLevel={roleLevel}
         onLogout={onLogout}
         onNewBackup={onNewBackup}
         mobileOpen={mobileOpen}

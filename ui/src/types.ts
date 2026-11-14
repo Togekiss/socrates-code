@@ -1,3 +1,10 @@
+export type BackupRole =
+  | 'instance_admin'
+  | 'server_admin'
+  | 'curator'
+  | 'participant'
+  | 'viewer';
+
 export interface User {
   id?: string;
   sub?: string;
@@ -6,16 +13,21 @@ export interface User {
   discriminator?: string;
   global_name?: string | null;
   admin?: boolean;
+  is_instance_admin?: boolean;
+  auth_method?: string;
+  dev_role?: string;
   authorized_guilds?: Array<{ id: string; name: string }>;
 }
 
 export interface AuthResponse {
   status: string;
   user?: User;
+  csrf_token?: string;
 }
 
 export interface MeResponse {
   user: User | null;
+  csrf_token?: string;
 }
 
 export type StepStatus = 'pending' | 'running' | 'success' | 'failed';
@@ -66,6 +78,9 @@ export interface BackupInfo {
   schema_version?: number;
   current_schema_version?: number;
   is_schema_outdated?: boolean;
+  bot_in_guild?: boolean;
+  effective_role?: BackupRole;
+  role_level?: number;
 }
 
 export interface AdminConfig {
@@ -119,6 +134,8 @@ export interface CharacterVersion {
   id: number;
   name: string;
   names?: string[];
+  writer?: string[];
+  writer_id?: number | null;
   version_type?: string;
   origin?: string | null;
   activity?: string | null;
@@ -154,6 +171,7 @@ export interface WriterDetailed {
   id: number;
   display_name: string;
   discord_user_id: string | null;
+  is_self?: boolean;
   aliases: string[];
   characters: Array<{ id: number; name: string; names: string[]; origin?: string | null; activity?: string | null }>;
 }
@@ -411,4 +429,55 @@ export interface MergeSceneResponse {
   };
   deleted_scene_key?: string;
 }
+
+export interface DiscordRole {
+  id: string;
+  name: string;
+  color?: number;
+  position?: number;
+  permissions?: string;
+}
+
+export interface DiscordRolesResponse {
+  roles: DiscordRole[];
+  bot_available: boolean;
+}
+
+export interface RbacConfig {
+  adminRoleIds: string[];
+  curatorRoleIds: string[];
+  participantRoleIds: string[];
+  restrictedUserIds: string[];
+  blockedUserIds: string[];
+}
+
+export interface AuditLogEntry {
+  id: number | string;
+  actor_user_id?: string | null;
+  actor_username?: string | null;
+  actor_role?: string | null;
+  auth_method?: string | null;
+  backup_id?: string | null;
+  action: string;
+  target_type?: string | null;
+  target_id?: string | null;
+  before?: unknown;
+  after?: unknown;
+  metadata?: Record<string, unknown> | null;
+  request_ip?: string | null;
+  user_agent?: string | null;
+  status: string;
+  created_at: string;
+}
+
+export interface AuditLogsResponse {
+  items: AuditLogEntry[];
+  total: number;
+  page: number;
+  per_page: number;
+  total_pages: number;
+}
+
+export type BackupAuditLogEntry = AuditLogEntry;
+export type BackupAuditLogsResponse = AuditLogsResponse;
 

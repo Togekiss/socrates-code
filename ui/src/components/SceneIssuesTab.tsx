@@ -15,6 +15,7 @@ import { BackupStatusGuard } from './layout/BackupStatusGuard';
 import { useBackupStatusGuard } from '../hooks/useBackupStatusGuard';
 import { Pagination } from './ui';
 import type { BackupInfo, SceneIssue, SceneIssuesResponse } from '../types';
+import { getRoleLevel, ROLE_LEVELS } from '../utils/rbac';
 
 interface SceneIssuesTabProps {
   backupId: string;
@@ -22,6 +23,7 @@ interface SceneIssuesTabProps {
   backupInfo?: BackupInfo | null;
   backupError?: string | null;
   backupLoading?: boolean;
+  roleLevel?: number;
   onRefreshSummary?: () => void;
 }
 
@@ -31,6 +33,7 @@ export const SceneIssuesTab = ({
   backupInfo,
   backupError,
   backupLoading,
+  roleLevel: propRoleLevel,
   onRefreshSummary,
 }: SceneIssuesTabProps) => {
   const [data, setData] = useState<SceneIssuesResponse>({
@@ -89,8 +92,11 @@ export const SceneIssuesTab = ({
     setError(null);
   }, [backupId]);
 
+  const effectiveRoleLevel = propRoleLevel ?? backupInfo?.role_level ?? getRoleLevel(backupInfo?.effective_role);
+  const canCurate = effectiveRoleLevel >= ROLE_LEVELS.curator;
+
   const fetchIssues = useCallback(() => {
-    if (!backupId || !statusGuard.isReady) return;
+    if (!backupId || !statusGuard.isReady || !canCurate) return;
     setLoading(true);
     setError(null);
 
@@ -124,13 +130,13 @@ export const SceneIssuesTab = ({
       .finally(() => {
         setLoading(false);
       });
-  }, [backupId, statusGuard.isReady, statusFilter, kindFilter, sceneTypeFilter, reasonFilter, page]);
+  }, [backupId, statusGuard.isReady, canCurate, statusFilter, kindFilter, sceneTypeFilter, reasonFilter, page]);
 
   useEffect(() => {
-    if (statusGuard.isReady) {
+    if (statusGuard.isReady && canCurate) {
       fetchIssues();
     }
-  }, [statusGuard.isReady, fetchIssues]);
+  }, [statusGuard.isReady, canCurate, fetchIssues]);
 
   const handleReopen = async (issueId: number) => {
     const targetIssue = data.issues.find(i => i.id === issueId);
@@ -163,6 +169,14 @@ export const SceneIssuesTab = ({
   const handleCloseOppositeAction = () => {
     setOppositeAction(null);
   };
+
+  if (!canCurate) {
+    return (
+      <div className="banner-danger" role="alert">
+        Access Denied: Curation tools require Curator or Administrator permissions.
+      </div>
+    );
+  }
 
   if (!statusGuard.isReady) {
     return <BackupStatusGuard title="Scene Issues" guard={statusGuard} />;

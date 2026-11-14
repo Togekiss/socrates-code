@@ -9,6 +9,7 @@ import { UnlinkedWriterBanner } from './layout/UnlinkedWriterBanner';
 import { BackupStatusGuard } from './layout/BackupStatusGuard';
 import { useBackupStatusGuard } from '../hooks/useBackupStatusGuard';
 import type { BackupInfo, Character, ChatSession, MyWriter } from '../types';
+import { getRoleLevel, ROLE_LEVELS } from '../utils/rbac';
 
 interface ChatSessionsTabProps {
   backupId: string;
@@ -16,6 +17,7 @@ interface ChatSessionsTabProps {
   backupInfo?: BackupInfo | null;
   backupError?: string | null;
   backupLoading?: boolean;
+  roleLevel?: number;
   onNavigateToWriters?: () => void;
   myWriter?: MyWriter | null;
 }
@@ -26,6 +28,7 @@ export const ChatSessionsTab = ({
   backupInfo,
   backupError,
   backupLoading,
+  roleLevel: propRoleLevel,
   onNavigateToWriters,
   myWriter: initialMyWriter,
 }: ChatSessionsTabProps) => {
@@ -204,6 +207,9 @@ export const ChatSessionsTab = ({
     fetchSessions(nextPage);
   };
 
+  const effectiveRoleLevel = propRoleLevel ?? backupInfo?.role_level ?? getRoleLevel(backupInfo?.effective_role);
+  const canCurate = effectiveRoleLevel >= ROLE_LEVELS.curator;
+
   if (!isReady) {
     return <BackupStatusGuard title="Chat Sessions" guard={statusGuard} />;
   }
@@ -285,10 +291,10 @@ export const ChatSessionsTab = ({
         hasMore={hasMore}
         loading={loading}
         error={error}
-        onEdit={item => setEditingSession(item as ChatSession)}
+        onEdit={canCurate ? item => setEditingSession(item as ChatSession) : undefined}
       />
 
-      {editingSession && (
+      {canCurate && editingSession && (
         <SceneEditModal
           backupId={backupId}
           scene={editingSession}

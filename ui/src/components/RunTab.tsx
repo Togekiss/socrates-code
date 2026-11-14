@@ -13,10 +13,12 @@ import {
 import { BackupForm } from './BackupForm';
 import { PanelSurface, DataCard, Button, Badge, LogConsole } from './ui';
 import type { BackupConfig, BackupInfo, GlobalConfig } from '../types';
+import { getRoleLevel, ROLE_LEVELS } from '../utils/rbac';
 
 interface RunTabProps {
   backupId: string;
   backupInfo?: BackupInfo | null;
+  roleLevel?: number;
   statusPollTick?: number;
   onPollStatus?: () => void;
   onRefreshSummary?: () => void;
@@ -26,6 +28,7 @@ interface RunTabProps {
 export const RunTab = ({
   backupId,
   backupInfo: propBackupInfo,
+  roleLevel: propRoleLevel,
   statusPollTick = 0,
   onPollStatus,
   onRefreshSummary,
@@ -43,6 +46,8 @@ export const RunTab = ({
   const logsInFlightRef = useRef(false);
 
   const backupInfo = propBackupInfo !== undefined ? propBackupInfo : localBackupInfo;
+  const effectiveRoleLevel = propRoleLevel ?? backupInfo?.role_level ?? getRoleLevel(backupInfo?.effective_role);
+  const canManageBackup = effectiveRoleLevel >= ROLE_LEVELS.server_admin;
 
   useEffect(() => {
     activeBackupIdRef.current = backupId;
@@ -130,8 +135,10 @@ export const RunTab = ({
   };
 
   useEffect(() => {
-    fetchConfig();
-  }, [fetchConfig]);
+    if (canManageBackup) {
+      fetchConfig();
+    }
+  }, [canManageBackup, fetchConfig]);
 
   useEffect(() => {
     fetchBackupConfig();
@@ -312,14 +319,16 @@ export const RunTab = ({
             </div>
           </div>
 
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => setIsFormOpen(true)}
-            icon={<Sliders size={15} />}
-          >
-            Edit Configuration
-          </Button>
+          {canManageBackup && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setIsFormOpen(true)}
+              icon={<Sliders size={15} />}
+            >
+              Edit Configuration
+            </Button>
+          )}
         </div>
 
         {/* Pipeline Step Indicators Grid */}
@@ -358,6 +367,7 @@ export const RunTab = ({
         )}
 
         {/* Action Buttons Toolbar */}
+        {canManageBackup && (
         <div className="flex-row items-center gap-sm flex-wrap" style={{ marginTop: '0.5rem' }}>
           {/* Cancel button */}
           <Button
@@ -441,6 +451,7 @@ export const RunTab = ({
             </Button>
           </div>
         </div>
+        )}
       </PanelSurface>
 
       {/* Execution Log Console */}
@@ -448,7 +459,7 @@ export const RunTab = ({
         logs={backupLogs}
         loading={loadingLogs}
         onRefresh={() => fetchLogs(true)}
-        onClear={clearLogs}
+        onClear={canManageBackup ? clearLogs : undefined}
         onDownload={downloadLogs}
         downloadFilename={`backup-${backupId}-execution.log`}
         title="Live Execution Console"
@@ -456,7 +467,7 @@ export const RunTab = ({
       />
 
       {/* Configuration Modal */}
-      {isFormOpen && (
+      {canManageBackup && isFormOpen && (
         <BackupForm
           backupId={backupId}
           initialConfig={backupConfig}

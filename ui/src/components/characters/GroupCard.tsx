@@ -7,8 +7,9 @@ import { Badge, Button } from '../ui';
 interface GroupCardProps {
   group: CharacterGroup;
   members: Character[];
-  onEditGroup: (group: CharacterGroup) => void;
-  onEditCharacter: (char: Character, parent?: Character) => void;
+  onEditGroup?: (group: CharacterGroup) => void;
+  onEditCharacter?: (char: Character, parent?: Character) => void;
+  canEditCharacter?: (char: Character, parent?: Character) => boolean;
   onAddTagFilter: (tag: string) => void;
   onAssignWriter?: (char: Character) => void;
   disableAccordion?: boolean;
@@ -19,6 +20,7 @@ export const GroupCard: React.FC<GroupCardProps> = ({
   members,
   onEditGroup,
   onEditCharacter,
+  canEditCharacter,
   onAddTagFilter,
   onAssignWriter,
   disableAccordion = false,
@@ -125,19 +127,21 @@ export const GroupCard: React.FC<GroupCardProps> = ({
         </div>
 
         {/* Action Controls */}
-        <div className="flex-row items-center gap-xs flex-shrink-0" style={{ marginLeft: '0.5rem' }}>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={e => {
-              e.stopPropagation();
-              onEditGroup(group);
-            }}
-            icon={<Edit2 size={12} />}
-          >
-            Edit Group
-          </Button>
-        </div>
+        {onEditGroup && (
+          <div className="flex-row items-center gap-xs flex-shrink-0" style={{ marginLeft: '0.5rem' }}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={e => {
+                e.stopPropagation();
+                onEditGroup(group);
+              }}
+              icon={<Edit2 size={12} />}
+            >
+              Edit Group
+            </Button>
+          </div>
+        )}
       </div>
 
       {/* Group Members Section: Strict 1-character-per-row full-width layout */}
@@ -168,6 +172,7 @@ export const GroupCard: React.FC<GroupCardProps> = ({
                   key={member.id}
                   character={member}
                   onEdit={onEditCharacter}
+                  canEdit={canEditCharacter}
                   onAddTagFilter={onAddTagFilter}
                   onAssignWriter={onAssignWriter}
                   disableAccordion={disableAccordion}

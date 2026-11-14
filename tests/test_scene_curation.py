@@ -7,13 +7,14 @@ from unittest.mock import patch
 
 # Ensure src and project root are in sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_ROOT = Path(os.environ.get("SOCRATES_DATA_DIR", PROJECT_ROOT.as_posix()))
 SRC_DIR = PROJECT_ROOT / "src"
 for p in (SRC_DIR.as_posix(), PROJECT_ROOT.as_posix()):
     if p not in sys.path:
         sys.path.insert(0, p)
 
 from fastapi import HTTPException
+from tests.test_env import skip_in_production_or_missing_fixture
+DATA_ROOT = Path(os.environ.get("SOCRATES_DATA_DIR") or PROJECT_ROOT.as_posix())
 from tests.reset_test_backup import reset_test_backup
 import utils.tricks as t
 import utils.exceptions as exc
@@ -43,6 +44,7 @@ from server import (
 from index_scenes import index_scenes
 
 
+@skip_in_production_or_missing_fixture()
 class TestSceneCurationOperations(unittest.TestCase):
     """
     Tests interactive scene curation mutations (merge and split),

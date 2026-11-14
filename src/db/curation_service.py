@@ -384,10 +384,11 @@ def get_scene_issues(
         channel_id = None
     if not isinstance(scene_type, str) or not scene_type.strip():
         scene_type = None
-    if not isinstance(page, int):
+    if not isinstance(page, int) or page < 1:
         page = 1
-    if not isinstance(per_page, int):
+    if not isinstance(per_page, int) or per_page < 1:
         per_page = 50
+    per_page = min(per_page, 200)
 
     require_db(base_path, backup_id=backup_id)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path)
@@ -1780,6 +1781,7 @@ def get_flagged_messages(
         page = 1
     if not isinstance(per_page, int) or per_page < 1:
         per_page = 50
+    per_page = min(per_page, 200)
 
     require_db(base_path, backup_id=backup_id)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path)
@@ -2222,7 +2224,8 @@ def add_manual_flagged_message(
     note: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Adds a message manually into the flagged review queue using a Discord message link."""
-    match = re.search(r"channels/(?P<guild_id>\d+)/(?P<channel_id>\d+)/(?P<message_id>\d+)", discord_link.strip())
+    from utils.path_safety import DISCORD_MSG_LINK_RE
+    match = DISCORD_MSG_LINK_RE.fullmatch(discord_link.strip()) if isinstance(discord_link, str) and len(discord_link) <= 500 else None
     if not match:
         raise exc.ValidationError(
             "Invalid Discord message link format. Expected: https://discord.com/channels/<guild_id>/<channel_id>/<message_id>"
@@ -2317,7 +2320,8 @@ def create_manual_scene_split(
     note: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Manually splits a scene at the message indicated by a Discord message link."""
-    match = re.search(r"channels/(?P<guild_id>\d+)/(?P<channel_id>\d+)/(?P<message_id>\d+)", discord_link.strip())
+    from utils.path_safety import DISCORD_MSG_LINK_RE
+    match = DISCORD_MSG_LINK_RE.fullmatch(discord_link.strip()) if isinstance(discord_link, str) and len(discord_link) <= 500 else None
     if not match:
         raise exc.ValidationError(
             "Invalid Discord message link format. Expected: https://discord.com/channels/<guild_id>/<channel_id>/<message_id>"

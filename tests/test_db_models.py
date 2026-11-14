@@ -15,6 +15,7 @@ for p in (SRC_DIR.as_posix(), PROJECT_ROOT.as_posix()):
 
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
+from tests.test_env import skip_in_production_or_missing_live_backups
 
 # pyrefly: ignore [missing-import]
 from db.models import (
@@ -444,6 +445,7 @@ class TestAtomicUtilities(unittest.TestCase):
             loaded = t.load_from_json(target_file)
             self.assertEqual(loaded, sample_data)
 
+    @skip_in_production_or_missing_live_backups()
     def test_get_backup_path_resolution(self):
         path_elysium = t.get_backup_path("1")
         self.assertIn("Elysium", path_elysium)

@@ -227,7 +227,20 @@ def get_server_info_from_discord(backup: ServerBackup):
         t.log("info", "\tGetting a list of channels from Discord...")
 
         # Call the CLI command and capture its output
-        cli_command = f"dotnet DCE/DiscordChatExporter.Cli.dll channels -g {c.SERVER_ID} --include-threads all --include-categories --relative-positions --show-positions"
+        from utils.path_safety import validate_snowflake
+        safe_server_id = validate_snowflake(c.SERVER_ID, "SERVER_ID")
+        cli_command = [
+            "dotnet",
+            "DCE/DiscordChatExporter.Cli.dll",
+            "channels",
+            "-g",
+            safe_server_id,
+            "--include-threads",
+            "all",
+            "--include-categories",
+            "--relative-positions",
+            "--show-positions",
+        ]
         code, output = t.run_command(cli_command)
 
         if code != 0:
@@ -288,7 +301,17 @@ def get_categories(server_id: str) -> dict[str, str]:
     try:
         t.log("info", "\tGetting the list of categories from the server...")
         
-        cli_command = f"dotnet DCE/DiscordChatExporter.Cli.dll channels -g {server_id} --include-categories --relative-positions"
+        from utils.path_safety import validate_snowflake
+        safe_server_id = validate_snowflake(server_id, "server_id")
+        cli_command = [
+            "dotnet",
+            "DCE/DiscordChatExporter.Cli.dll",
+            "channels",
+            "-g",
+            safe_server_id,
+            "--include-categories",
+            "--relative-positions",
+        ]
         code, output = t.run_command(cli_command)
         
         if code != 0:

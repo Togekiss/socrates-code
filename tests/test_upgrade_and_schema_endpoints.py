@@ -5,13 +5,14 @@ from pathlib import Path
 
 # Ensure src and project root are in sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_ROOT = Path(os.environ.get("SOCRATES_DATA_DIR", PROJECT_ROOT.as_posix()))
 SRC_DIR = PROJECT_ROOT / "src"
 for p in (SRC_DIR.as_posix(), PROJECT_ROOT.as_posix()):
     if p not in sys.path:
         sys.path.insert(0, p)
 
 from unittest.mock import patch
+from tests.test_env import skip_in_production_or_missing_fixture
+DATA_ROOT = Path(os.environ.get("SOCRATES_DATA_DIR") or PROJECT_ROOT.as_posix())
 from tests.reset_test_backup import reset_test_backup
 from db.migrate import migrate_for_tests
 from db.models import CURRENT_SCHEMA_VERSION, SceneIssueModel
@@ -24,6 +25,7 @@ from server import (
 )
 
 
+@skip_in_production_or_missing_fixture()
 class TestUpgradeAndSchemaEndpoints(unittest.TestCase):
     """Tests for reason filter in scene issues, schema outdated detection, and upgrade endpoints."""
 

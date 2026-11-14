@@ -123,13 +123,40 @@ download_full_category(cat_name, cat_id, date)
 def download_full_category(cat_name, cat_id, date):
 
     try:
+        from utils.path_safety import CHANNEL_ID_RE
+        safe_cat_id = str(cat_id).strip()
+        if not CHANNEL_ID_RE.fullmatch(safe_cat_id):
+            raise exc.ValidationError(f"Invalid category/channel ID: {cat_id}")
         folder = c.DATA_FOLDER if date is None else c.UPDATE_FOLDER
-        date = "" if date is None else "--after " + date
         group_size = 4 # tested to be the best number to not run into rate limits. previously was (3 if cat_name in c.DM_CATEGORIES else 5)
 
-        output_paths = f"-o \"{folder}/%P# %T/%p# %C.json\" --threads-output \"{folder}/%N# %M/Threads/%P-%p# %C.json\""
-        
-        cli_command = f'dotnet DCE/DiscordChatExporter.Cli.dll export --parallel {group_size} -c {cat_id} -f Json {output_paths} --locale "en-GB" --utc {date} --fuck-russia --include-threads all --relative-positions --skip-reaction-details'
+        cli_command = [
+            "dotnet",
+            "DCE/DiscordChatExporter.Cli.dll",
+            "export",
+            "--parallel",
+            str(group_size),
+            "-c",
+            safe_cat_id,
+            "-f",
+            "Json",
+            "-o",
+            f"{folder}/%P# %T/%p# %C.json",
+            "--threads-output",
+            f"{folder}/%N# %M/Threads/%P-%p# %C.json",
+            "--locale",
+            "en-GB",
+            "--utc",
+        ]
+        if date is not None:
+            cli_command.extend(["--after", str(date)])
+        cli_command.extend([
+            "--fuck-russia",
+            "--include-threads",
+            "all",
+            "--relative-positions",
+            "--skip-reaction-details",
+        ])
         t.run_command(cli_command, group_size)
                
     

@@ -9,6 +9,7 @@ import {
   FlaskConical,
 } from 'lucide-react';
 import { PanelSurface, Button, LogConsole } from './ui';
+import { AuditLogViewer } from './AuditLogViewer';
 import type { AdminTestActionResponse, GlobalConfig } from '../types';
 
 interface AdminTabProps {
@@ -237,6 +238,14 @@ export const AdminTab = ({ onRefreshSummary }: AdminTabProps) => {
           title="Global API & Init Logs"
         />
       </PanelSurface>
+
+      {/* Global Audit Log Section */}
+      <AuditLogViewer
+        title="Global Audit Log"
+        description="Authentication events, InstanceAdmin actions, and cross-backup security denials (UTC)."
+        fetchLogs={api.getGlobalAuditLogs}
+        showBackupColumn
+      />
     </div>
   );
 };

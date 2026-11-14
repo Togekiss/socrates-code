@@ -6,12 +6,13 @@ from unittest.mock import MagicMock
 
 # Ensure src and project root are in sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_ROOT = Path(os.environ.get("SOCRATES_DATA_DIR", PROJECT_ROOT.as_posix()))
 SRC_DIR = PROJECT_ROOT / "src"
 for p in (SRC_DIR.as_posix(), PROJECT_ROOT.as_posix()):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from tests.test_env import skip_in_production_or_missing_fixture
+DATA_ROOT = Path(os.environ.get("SOCRATES_DATA_DIR") or PROJECT_ROOT.as_posix())
 from tests.reset_test_backup import reset_test_backup
 
 # pyrefly: ignore [missing-import]
@@ -66,6 +67,7 @@ from server import (
 )
 
 
+@skip_in_production_or_missing_fixture()
 class TestWritersCuration(unittest.TestCase):
     """Tests writers management and link suggestions endpoints."""
 
@@ -178,6 +180,7 @@ class TestWritersCuration(unittest.TestCase):
                 session.commit()
 
 
+@skip_in_production_or_missing_fixture()
 class TestUnassignedCharactersQueue(unittest.TestCase):
     """Tests the queue and assignment of characters without a writer."""
 
@@ -239,6 +242,7 @@ class TestUnassignedCharactersQueue(unittest.TestCase):
                 session.commit()
 
 
+@skip_in_production_or_missing_fixture()
 class TestCharacterGroupsCuration(unittest.TestCase):
     """Tests character group creation and deletion."""
 
@@ -280,6 +284,7 @@ class TestCharacterGroupsCuration(unittest.TestCase):
             self.assertIsNone(c_check.group_pk)
 
 
+@skip_in_production_or_missing_fixture()
 class TestSceneIssuesReviewQueue(unittest.TestCase):
     """Tests querying, resolving, and reopening scene issues."""
 
@@ -427,6 +432,7 @@ class TestSceneIssuesReviewQueue(unittest.TestCase):
             self.assertIsNone(issue_check.resolved_note)
 
 
+@skip_in_production_or_missing_fixture()
 class TestFlaggedMessagesAndOverrides(unittest.TestCase):
     """Tests flagged messages querying, promotion to message overrides, and deletion."""
 
@@ -524,6 +530,7 @@ class TestFlaggedMessagesAndOverrides(unittest.TestCase):
             self.assertFalse(any(o["message_id"] == test_msg_id for o in overrides_after["overrides"]))
 
 
+@skip_in_production_or_missing_fixture()
 class TestByMeFiltering(unittest.TestCase):
     """Tests resolving user's writer profile and filtering scenes/characters 'by me'."""
 
@@ -558,7 +565,11 @@ class TestByMeFiltering(unittest.TestCase):
         # pyrefly: ignore [missing-import]
         from server import get_auth_config
         jwt_secret = get_auth_config()["jwt_secret"]
-        token = jwt.encode({"sub": "200668852713947137", "username": "Prim"}, jwt_secret, algorithm="HS256")
+        token = jwt.encode(
+            {"sub": "200668852713947137", "username": "Prim", "iss": "socrates", "typ": "session"},
+            jwt_secret,
+            algorithm="HS256",
+        )
         mock_req = MagicMock()
         mock_req.cookies = {"__session": token}
 
@@ -585,6 +596,7 @@ class TestByMeFiltering(unittest.TestCase):
         self.assertIsInstance(summary["link_suggestions"], int)
 
 
+@skip_in_production_or_missing_fixture()
 class TestNewSceneIndexingAndSuggestions(unittest.TestCase):
     """Tests new two-phase scene boundary detection, auto_split/split issues, and character suggestions."""
 
@@ -1151,6 +1163,7 @@ class TestNewSceneIndexingAndSuggestions(unittest.TestCase):
             migrate_for_tests("1791895360")
 
 
+@skip_in_production_or_missing_fixture()
 class TestEventsEngineAndCuration(unittest.TestCase):
     """Tests the 3-stage Event Detection & Movement Engine and Event Curation endpoints."""
 
@@ -1683,6 +1696,7 @@ class TestEventsEngineAndCuration(unittest.TestCase):
 
 
 
+@skip_in_production_or_missing_fixture()
 class TestSceneCustomNameCuration(unittest.TestCase):
     """Tests setting, updating, clearing, and re-indexing preservation of scene and session custom_name."""
 
@@ -1895,6 +1909,7 @@ class TestSceneCustomNameCuration(unittest.TestCase):
             self.assertEqual(restored.custom_name, "Preserved Scene Title")
 
 
+@skip_in_production_or_missing_fixture()
 class TestSceneMergeAdjacentCuration(unittest.TestCase):
     """Tests merging adjacent scenes/sessions, neighbor boundary checks, issue resolution, and curator warnings."""
 

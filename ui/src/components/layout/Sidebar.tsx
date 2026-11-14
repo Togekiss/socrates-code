@@ -11,6 +11,7 @@ import {
   MessageSquareCode,
   PlayCircle,
   Settings,
+  Shield,
   PlusCircle,
   Plus,
   LogOut,
@@ -21,7 +22,13 @@ import {
   Loader2,
   X,
 } from 'lucide-react';
-import type { BackupInfo, CurationSummary, User } from '../../types';
+import type { BackupInfo, BackupRole, CurationSummary, User } from '../../types';
+import {
+  formatRoleLabel,
+  getEffectiveRole,
+  getRoleLevel,
+  safeDiscordAvatarUrl,
+} from '../../utils/rbac';
 
 export interface SidebarProps {
   user: User | null;
@@ -30,6 +37,8 @@ export interface SidebarProps {
   onSelectBackup: (id: string | null) => void;
   curationSummary: CurationSummary | null;
   backupInfo: BackupInfo | null;
+  effectiveRole?: BackupRole;
+  roleLevel?: number;
   onNewBackup?: () => void;
   onLogout: () => void;
   mobileOpen?: boolean;
@@ -70,6 +79,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSelectBackup,
   curationSummary,
   backupInfo,
+  effectiveRole: propEffectiveRole,
+  roleLevel: propRoleLevel,
   onNewBackup,
   onLogout,
   mobileOpen = false,
@@ -111,7 +122,50 @@ export const Sidebar: React.FC<SidebarProps> = ({
     backupInfo?.status === 'running' ||
     Object.values(backupInfo?.steps || {}).some(s => s === 'running');
 
-  // 5 Confirmed Navigation Groups (Roster BEFORE Archive!)
+  const activeBackup = backups.find(b => (b.id || b.backup_id) === selectedBackupId) || null;
+  const resolvedRole: BackupRole = propEffectiveRole ?? getEffectiveRole(user, backupInfo, activeBackup);
+  const resolvedRoleLevel: number =
+    typeof propRoleLevel === 'number'
+      ? propRoleLevel
+      : backupInfo?.role_level ?? activeBackup?.role_level ?? getRoleLevel(resolvedRole);
+  const isInstanceAdmin = user?.is_instance_admin === true;
+  const canCurate = isInstanceAdmin || resolvedRoleLevel >= 3;
+  const canManageBackup = isInstanceAdmin || resolvedRoleLevel >= 4;
+  const avatarUrl = safeDiscordAvatarUrl(user);
+
+  const systemItems: NavItem[] = [
+    ...(canManageBackup
+      ? [
+          {
+            id: 'pipeline',
+            label: 'Pipeline & Run',
+            path: '/system/pipeline',
+            icon: PlayCircle,
+            badge: isAnyRunning ? 'Running' : null,
+            badgeVariant: 'success' as const,
+            isPulsing: isAnyRunning,
+          },
+          {
+            id: 'users',
+            label: 'Users',
+            path: '/system/users',
+            icon: Shield,
+          },
+        ]
+      : []),
+    ...(isInstanceAdmin
+      ? [
+          {
+            id: 'admin',
+            label: 'Admin & Logs',
+            path: '/system/admin',
+            icon: Settings,
+          },
+        ]
+      : []),
+  ];
+
+  // Navigation Groups (Roster BEFORE Archive; Curation & System gated by RBAC)
   const navGroups: NavGroup[] = [
     {
       title: 'Overview',
@@ -132,7 +186,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
           label: 'Characters',
           path: '/characters',
           icon: Users,
-          badge: (curationSummary?.unassigned_characters ?? 0) > 0 ? curationSummary?.unassigned_characters : null,
+          badge:
+            canCurate && (curationSummary?.unassigned_characters ?? 0) > 0
+              ? curationSummary?.unassigned_characters
+              : null,
           badgeVariant: 'warning',
         },
         {
@@ -140,7 +197,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
           label: 'Writers',
           path: '/writers',
           icon: UserCheck,
-          badge: (curationSummary?.link_suggestions ?? 0) > 0 ? curationSummary?.link_suggestions : null,
+          badge:
+            canCurate && (curationSummary?.link_suggestions ?? 0) > 0
+              ? curationSummary?.link_suggestions
+              : null,
           badgeVariant: 'accent',
         },
       ],
@@ -168,50 +228,47 @@ export const Sidebar: React.FC<SidebarProps> = ({
         },
       ],
     },
-    {
-      title: 'Curation',
-      items: [
-        {
-          id: 'scene_issues',
-          label: 'Scene Issues',
-          path: '/curation/issues',
-          icon: AlertTriangle,
-          badge: (curationSummary?.unresolved_issues ?? 0) > 0 ? curationSummary?.unresolved_issues : null,
-          badgeVariant: 'danger',
-        },
-        {
-          id: 'flagged_messages',
-          label: 'Flagged Messages',
-          path: '/curation/flagged',
-          icon: MessageSquareCode,
-          badge: (curationSummary?.flagged_messages ?? 0) > 0 ? curationSummary?.flagged_messages : null,
-          badgeVariant: 'warning',
-        },
-      ],
-    },
-    {
-      title: 'System',
-      items: [
-        {
-          id: 'pipeline',
-          label: 'Pipeline & Run',
-          path: '/system/pipeline',
-          icon: PlayCircle,
-          badge: isAnyRunning ? 'Running' : null,
-          badgeVariant: 'success',
-          isPulsing: isAnyRunning,
-        },
-        {
-          id: 'admin',
-          label: 'Admin & Logs',
-          path: '/system/admin',
-          icon: Settings,
-        },
-      ],
-    },
+    ...(canCurate
+      ? [
+          {
+            title: 'Curation',
+            items: [
+              {
+                id: 'scene_issues',
+                label: 'Scene Issues',
+                path: '/curation/issues',
+                icon: AlertTriangle,
+                badge:
+                  (curationSummary?.unresolved_issues ?? 0) > 0
+                    ? curationSummary?.unresolved_issues
+                    : null,
+                badgeVariant: 'danger' as const,
+              },
+              {
+                id: 'flagged_messages',
+                label: 'Flagged Messages',
+                path: '/curation/flagged',
+                icon: MessageSquareCode,
+                badge:
+                  (curationSummary?.flagged_messages ?? 0) > 0
+                    ? curationSummary?.flagged_messages
+                    : null,
+                badgeVariant: 'warning' as const,
+              },
+            ],
+          },
+        ]
+      : []),
+    ...(systemItems.length > 0
+      ? [
+          {
+            title: 'System',
+            items: systemItems,
+          },
+        ]
+      : []),
   ];
 
-  const activeBackup = backups.find(b => (b.id || b.backup_id) === selectedBackupId);
   const activeBackupName = activeBackup
     ? activeBackup.name || activeBackup.backup_name || activeBackup.server_name || activeBackup.id
     : '';
@@ -282,7 +339,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             >
               {activeBackupInitials}
             </div>
-            {user && (
+            {isInstanceAdmin && (
               <button
                 type="button"
                 className="btn btn-ghost btn-icon btn-sm"
@@ -323,7 +380,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 );
               })}
             </select>
-            {user && (
+            {isInstanceAdmin && (
               <button
                 type="button"
                 className="btn btn-secondary btn-sm"
@@ -405,15 +462,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </button>
             {user && (
               <>
-                {user.avatar ? (
+                {avatarUrl ? (
                   <img
-                    src={`https://cdn.discordapp.com/avatars/${user.sub || user.id}/${user.avatar}.png`}
+                    src={avatarUrl}
                     alt={user.username}
                     className="sidebar-avatar"
-                    title={user.username}
+                    title={`${user.username} (${formatRoleLabel(resolvedRole)})`}
                   />
                 ) : (
-                  <div className="sidebar-avatar-fallback" title={user.username}>
+                  <div className="sidebar-avatar-fallback" title={`${user.username} (${formatRoleLabel(resolvedRole)})`}>
                     {user.username.charAt(0).toUpperCase()}
                   </div>
                 )}
@@ -434,9 +491,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {user ? (
               <div className="sidebar-footer-row">
                 <div className="sidebar-user">
-                  {user.avatar ? (
+                  {avatarUrl ? (
                     <img
-                      src={`https://cdn.discordapp.com/avatars/${user.sub || user.id}/${user.avatar}.png`}
+                      src={avatarUrl}
                       alt={user.username}
                       className="sidebar-avatar"
                     />
@@ -445,7 +502,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       {user.username.charAt(0).toUpperCase()}
                     </div>
                   )}
-                  <span className="sidebar-username">{user.username}</span>
+                  <div className="flex-col" style={{ minWidth: 0 }}>
+                    <span className="sidebar-username">{user.username}</span>
+                    <span
+                      className="badge badge-neutral"
+                      style={{
+                        fontSize: '0.65rem',
+                        padding: '0.05rem 0.35rem',
+                        alignSelf: 'flex-start',
+                        marginTop: '0.15rem',
+                      }}
+                    >
+                      {formatRoleLabel(resolvedRole)}
+                    </span>
+                  </div>
                 </div>
                 <div className="flex-row items-center gap-xs">
                   <button

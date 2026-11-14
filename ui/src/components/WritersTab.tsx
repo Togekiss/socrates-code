@@ -14,7 +14,8 @@ import { WriterCard } from './curation/WriterCard';
 import { BackupStatusGuard } from './layout/BackupStatusGuard';
 import { useBackupStatusGuard } from '../hooks/useBackupStatusGuard';
 import { PanelSurface, Button, Badge } from './ui';
-import type { BackupInfo, WriterDetailed, WriterLinkSuggestion } from '../types';
+import type { BackupInfo, User, WriterDetailed, WriterLinkSuggestion } from '../types';
+import { getRoleLevel, ROLE_LEVELS } from '../utils/rbac';
 
 interface WritersTabProps {
   backupId: string;
@@ -22,6 +23,8 @@ interface WritersTabProps {
   backupInfo?: BackupInfo | null;
   backupError?: string | null;
   backupLoading?: boolean;
+  currentUser?: User | null;
+  roleLevel?: number;
   onRefreshSummary?: () => void;
 }
 
@@ -31,6 +34,8 @@ export const WritersTab = ({
   backupInfo,
   backupError,
   backupLoading,
+  currentUser,
+  roleLevel: propRoleLevel,
   onRefreshSummary,
 }: WritersTabProps) => {
   const [writers, setWriters] = useState<WriterDetailed[]>([]);
@@ -43,6 +48,10 @@ export const WritersTab = ({
   const [editingWriter, setEditingWriter] = useState<WriterDetailed | null>(null);
   const [isCreatingWriter, setIsCreatingWriter] = useState(false);
   const [linkingSuggestionId, setLinkingSuggestionId] = useState<number | null>(null);
+
+  const effectiveRoleLevel = propRoleLevel ?? backupInfo?.role_level ?? getRoleLevel(backupInfo?.effective_role);
+  const canCurate = effectiveRoleLevel >= ROLE_LEVELS.curator;
+  const isParticipant = effectiveRoleLevel === ROLE_LEVELS.participant;
 
   const statusGuard = useBackupStatusGuard({
     backupId,
@@ -64,11 +73,11 @@ export const WritersTab = ({
     setError(null);
     Promise.all([
       api.getWritersDetailed(backupId),
-      api.getWriterLinkSuggestions(backupId).catch(() => []),
+      canCurate ? api.getWriterLinkSuggestions(backupId).catch(() => []) : Promise.resolve([]),
     ])
       .then(([wData, sData]) => {
         setWriters(Array.isArray(wData) ? wData : []);
-        setSuggestions(Array.isArray(sData) ? sData : []);
+        setSuggestions(canCurate && Array.isArray(sData) ? sData : []);
       })
       .catch(err => {
         console.error(err);
@@ -79,7 +88,7 @@ export const WritersTab = ({
       .finally(() => {
         setLoading(false);
       });
-  }, [backupId, statusGuard.isReady]);
+  }, [backupId, statusGuard.isReady, canCurate]);
 
   useEffect(() => {
     if (statusGuard.isReady) {
@@ -161,19 +170,21 @@ export const WritersTab = ({
             />
           </div>
 
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={() => setIsCreatingWriter(true)}
-            icon={<Plus size={15} />}
-          >
-            New Writer
-          </Button>
+          {canCurate && (
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => setIsCreatingWriter(true)}
+              icon={<Plus size={15} />}
+            >
+              New Writer
+            </Button>
+          )}
         </div>
       </PanelSurface>
 
       {/* Discord Link Suggestions Banner */}
-      {suggestions.length > 0 && (
+      {canCurate && suggestions.length > 0 && (
         <PanelSurface
           className="flex-col gap-sm"
           style={{
@@ -277,32 +288,44 @@ export const WritersTab = ({
           <p className="empty-state-desc">
             {search ? `No writers match your search "${search}".` : 'No writer profiles exist yet.'}
           </p>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => setIsCreatingWriter(true)}
-            icon={<Plus size={14} />}
-          >
-            Create Writer
-          </Button>
+          {canCurate && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setIsCreatingWriter(true)}
+              icon={<Plus size={14} />}
+            >
+              Create Writer
+            </Button>
+          )}
         </div>
       ) : (
         <div className="writers-grid">
-          {filteredWriters.map(writer => (
-            <WriterCard
-              key={writer.id}
-              writer={writer}
-              onEdit={setEditingWriter}
-            />
-          ))}
+          {filteredWriters.map(writer => {
+            const isSelfWriter = Boolean(
+              writer.is_self ||
+                (currentUser?.id && writer.discord_user_id && writer.discord_user_id === currentUser.id)
+            );
+            const canEditWriter = canCurate || (isParticipant && isSelfWriter);
+            const showDiscordId = canCurate || isSelfWriter;
+            return (
+              <WriterCard
+                key={writer.id}
+                writer={writer}
+                showDiscordId={showDiscordId}
+                onEdit={canEditWriter ? setEditingWriter : undefined}
+              />
+            );
+          })}
         </div>
       )}
 
       {/* Writer Edit / Create Modal */}
-      {(isCreatingWriter || editingWriter) && (
+      {((canCurate && isCreatingWriter) || (editingWriter && (canCurate || isParticipant))) && (
         <WriterEditModal
           backupId={backupId}
           writer={editingWriter}
+          isParticipantSelfEdit={!canCurate && isParticipant}
           onClose={() => {
             setIsCreatingWriter(false);
             setEditingWriter(null);

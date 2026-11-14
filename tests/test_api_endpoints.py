@@ -10,12 +10,13 @@ from sqlalchemy.exc import OperationalError
 
 # Ensure src and project root are in sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_ROOT = Path(os.environ.get("SOCRATES_DATA_DIR", PROJECT_ROOT.as_posix()))
 SRC_DIR = PROJECT_ROOT / "src"
 for p in (SRC_DIR.as_posix(), PROJECT_ROOT.as_posix()):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from tests.test_env import skip_in_production_or_missing_fixture
+DATA_ROOT = Path(os.environ.get("SOCRATES_DATA_DIR") or PROJECT_ROOT.as_posix())
 from tests.reset_test_backup import reset_test_backup
 # pyrefly: ignore [missing-import]
 import utils.tricks as t
@@ -72,6 +73,7 @@ from server import (
 )
 
 
+@skip_in_production_or_missing_fixture()
 class TestBackupInfoEndpoint(unittest.TestCase):
     """Tests the backup metadata endpoint backed by SQLite / snapshot."""
     
@@ -174,6 +176,7 @@ class TestBackupInfoEndpoint(unittest.TestCase):
             session.commit()
 
 
+@skip_in_production_or_missing_fixture()
 class TestCharactersEndpoints(unittest.TestCase):
     """Tests the character retrieval, legacy formatting, and normalization endpoints."""
 
@@ -217,13 +220,24 @@ class TestCharactersEndpoints(unittest.TestCase):
 
     def test_dev_login_deduplicates_authorized_guilds(self):
         from server import dev_login
-        from unittest.mock import MagicMock
+        from unittest.mock import MagicMock, patch
         from fastapi import Response, Request
 
         mock_resp = Response()
         mock_req = MagicMock(spec=Request)
         mock_req.headers = {}
-        res = dev_login(mock_resp, mock_req)
+        mock_req.client = MagicMock(host="127.0.0.1")
+        with patch.dict(
+            os.environ,
+            {
+                "SOCRATES_ENV": "development",
+                "SOCRATES_ENABLE_DEV_LOGIN": "true",
+                "SOCRATES_DEV_ROLE": "instance_admin",
+                "K_SERVICE": "",
+            },
+            clear=False,
+        ):
+            res = dev_login(mock_resp, mock_req)
         self.assertEqual(res["status"], "success")
         guilds = res["user"]["authorized_guilds"]
         guild_ids = [g["id"] for g in guilds]
@@ -240,6 +254,7 @@ class TestCharactersEndpoints(unittest.TestCase):
         self.assertGreater(len(groups), 0)
 
 
+@skip_in_production_or_missing_fixture()
 class TestScenesEndpoint(unittest.TestCase):
     """Tests scene querying, filtering, and pagination from SQLite."""
 
@@ -277,6 +292,7 @@ class TestScenesEndpoint(unittest.TestCase):
         self.assertLessEqual(filtered["total_items"], 12)
 
 
+@skip_in_production_or_missing_fixture()
 class TestSessionsEndpoint(unittest.TestCase):
     """Tests chat session and event querying, filtering, and pagination from SQLite."""
 
@@ -426,6 +442,7 @@ class TestSessionsEndpoint(unittest.TestCase):
         )
 
 
+@skip_in_production_or_missing_fixture()
 class TestCharacterAndGroupMutations(unittest.TestCase):
     """Tests mutating character and group state on backup_id='1791895360' (Elysium-sql-tests)."""
 
@@ -566,6 +583,7 @@ class TestCharacterAndGroupMutations(unittest.TestCase):
             update_character("1791895360", cid, UpdateCharacterRequest(tags=orig_tags))
 
 
+@skip_in_production_or_missing_fixture()
 class TestBackupConfigEndpoints(unittest.TestCase):
     """Tests the backup config saving, loading, and run triggering endpoints."""
 
@@ -587,7 +605,7 @@ class TestBackupConfigEndpoints(unittest.TestCase):
         
         orig_config = get_backup_config("1791895360")
         modified_config = dict(orig_config)
-        modified_config["test_field"] = "socrates_test_val"
+        modified_config["timezone"] = "Europe/Paris"
 
         try:
             # 1. Test updating backup config succeeds without TypeError
@@ -596,7 +614,7 @@ class TestBackupConfigEndpoints(unittest.TestCase):
 
             # 2. Test reading back modified config
             saved = get_backup_config("1791895360")
-            self.assertEqual(saved.get("test_field"), "socrates_test_val")
+            self.assertEqual(saved.get("timezone"), "Europe/Paris")
 
             # 3. Test run_backup without config passed (uses existing saved config)
             bg = MagicMock()
@@ -638,11 +656,22 @@ class TestBackupConfigEndpoints(unittest.TestCase):
         # pyrefly: ignore [missing-import]
         from server import dev_login
         from fastapi import Response
-        from unittest.mock import MagicMock
+        from unittest.mock import MagicMock, patch
         mock_req = MagicMock()
         mock_req.headers = {}
+        mock_req.client = MagicMock(host="127.0.0.1")
         resp = Response()
-        res = dev_login(resp, mock_req)
+        with patch.dict(
+            os.environ,
+            {
+                "SOCRATES_ENV": "development",
+                "SOCRATES_ENABLE_DEV_LOGIN": "true",
+                "SOCRATES_DEV_ROLE": "instance_admin",
+                "K_SERVICE": "",
+            },
+            clear=False,
+        ):
+            res = dev_login(resp, mock_req)
         self.assertEqual(res["status"], "success")
         self.assertIn("user", res)
         self.assertIn("authorized_guilds", res["user"])
@@ -677,6 +706,7 @@ class TestBackupConfigEndpoints(unittest.TestCase):
             self.assertNotIn("\033[92m", res["output"])
 
 
+@skip_in_production_or_missing_fixture()
 class TestOutdatedSchemaEndpoint(unittest.TestCase):
     """Tests loading backup info and curation summary on a database with an outdated schema."""
 
@@ -718,6 +748,7 @@ class TestOutdatedSchemaEndpoint(unittest.TestCase):
         self.assertIsNone(writer)
 
 
+@skip_in_production_or_missing_fixture()
 class TestErrorHandlingHTTP(unittest.TestCase):
     """Tests graceful server error handling and exception handler payloads for nonexistent, missing-DB, and outdated-schema backups."""
 

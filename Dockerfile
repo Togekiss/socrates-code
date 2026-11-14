@@ -28,6 +28,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Note: Ensure .dockerignore excludes node_modules, .venv, Backups, etc.
 COPY . .
 
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    SOCRATES_ENV=production
+
+# Run as a dedicated unprivileged user
+RUN groupadd --gid 10001 socrates \
+    && useradd --uid 10001 --gid socrates --shell /usr/sbin/nologin --create-home socrates \
+    && chown -R socrates:socrates /app
+
+USER socrates
+
 # Expose Cloud Run default port
 EXPOSE 8080
 

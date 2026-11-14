@@ -4,11 +4,13 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_ROOT = Path(os.environ.get("SOCRATES_DATA_DIR", PROJECT_ROOT.as_posix()))
 SRC_DIR = PROJECT_ROOT / "src"
 for p in (SRC_DIR.as_posix(), PROJECT_ROOT.as_posix()):
     if p not in sys.path:
         sys.path.insert(0, p)
+
+import tests.test_env  # noqa: E402, F401
+DATA_ROOT = Path(os.environ.get("SOCRATES_DATA_DIR") or PROJECT_ROOT.as_posix())
 
 # pyrefly: ignore [missing-import]
 import utils.tricks as t

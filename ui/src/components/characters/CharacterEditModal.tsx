@@ -9,6 +9,9 @@ interface CharacterEditModalProps {
   character: Character;
   parentCharacter?: Character;
   allCharacters?: Character[];
+  isParticipantMode?: boolean;
+  selfWriterId?: number | null;
+  selfCharacterIds?: number[];
   onClose: () => void;
   onSaved: () => void;
 }
@@ -18,6 +21,9 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
   character,
   parentCharacter,
   allCharacters = [],
+  isParticipantMode = false,
+  selfWriterId = null,
+  selfCharacterIds = [],
   onClose,
   onSaved,
 }) => {
@@ -39,6 +45,7 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
   const [updatingGroup, setUpdatingGroup] = useState(false);
 
   useEffect(() => {
+    if (isParticipantMode) return;
     api
       .getGroups(backupId)
       .then(gList => {
@@ -51,7 +58,7 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
         }
       })
       .catch(console.error);
-  }, [backupId, character.id]);
+  }, [backupId, character.id, isParticipantMode]);
 
   const currentAssignedGroup = groups.find(g =>
     (g.members || []).some(m => (typeof m === 'object' ? m.id === character.id : m === character.id))
@@ -100,6 +107,9 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
           .filter(
             c =>
               c.id !== character.id &&
+              (!isParticipantMode ||
+                (selfWriterId != null &&
+                  (c.writer_id === selfWriterId || selfCharacterIds.includes(c.id)))) &&
               c.names?.some(n => n.toLowerCase().includes(targetSearch.toLowerCase()))
           )
           .slice(0, 5)
@@ -149,7 +159,11 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
     setSaving(true);
     setError(null);
     try {
-      await api.updateCharacter(backupId, character.id, { tags, names, writer });
+      await api.updateCharacter(
+        backupId,
+        character.id,
+        isParticipantMode ? { tags, names } : { tags, names, writer }
+      );
       onSaved();
       onClose();
     } catch (e: unknown) {
@@ -208,12 +222,14 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
           placeholder="Type alias and press Enter..."
         />
 
-        <ChipInput
-          label="Writer"
-          values={writer}
-          onChange={setWriter}
-          placeholder="Type writer username and press Enter..."
-        />
+        {!isParticipantMode && (
+          <ChipInput
+            label="Writer"
+            values={writer}
+            onChange={setWriter}
+            placeholder="Type writer username and press Enter..."
+          />
+        )}
 
         {/* Tags */}
         <div className="form-group">
@@ -270,6 +286,7 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
         </div>
 
         {/* Group Membership */}
+        {!isParticipantMode && (
         <div className="form-group" style={{ borderTop: '1px solid var(--border-color)', paddingTop: '0.75rem' }}>
           <label className="form-label">
             <span className="flex-row items-center gap-xs">
@@ -323,6 +340,7 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
             </div>
           )}
         </div>
+        )}
 
         {/* Advanced Actions (Merge / Nest) */}
         <div className="form-group" style={{ borderTop: '1px solid var(--border-color)', paddingTop: '0.75rem' }}>
@@ -349,14 +367,16 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
 
               {!hasNested && !isNested && (
                 <div className="flex-row items-center gap-sm">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    className="flex-1"
-                    onClick={() => setActionState('merge')}
-                  >
-                    Merge with existing...
-                  </Button>
+                  {!isParticipantMode && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => setActionState('merge')}
+                    >
+                      Merge with existing...
+                    </Button>
+                  )}
                   <Button
                     variant="secondary"
                     size="sm"

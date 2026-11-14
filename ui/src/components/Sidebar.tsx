@@ -11,6 +11,7 @@ export type TabType =
   | 'scene_issues'
   | 'flagged_messages'
   | 'admin'
+  | 'users'
   | 'new_backup';
 
 export { Sidebar, type SidebarProps } from './layout/Sidebar';

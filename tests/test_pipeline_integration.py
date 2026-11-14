@@ -7,7 +7,6 @@ from pathlib import Path
 
 # Ensure src and project root are in sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_ROOT = Path(os.environ.get("SOCRATES_DATA_DIR", PROJECT_ROOT.as_posix()))
 SRC_DIR = PROJECT_ROOT / "src"
 for p in (SRC_DIR.as_posix(), PROJECT_ROOT.as_posix()):
     if p not in sys.path:
@@ -15,6 +14,8 @@ for p in (SRC_DIR.as_posix(), PROJECT_ROOT.as_posix()):
 
 from unittest.mock import patch
 from sqlalchemy import inspect
+from tests.test_env import skip_in_production_or_missing_fixture
+DATA_ROOT = Path(os.environ.get("SOCRATES_DATA_DIR") or PROJECT_ROOT.as_posix())
 # pyrefly: ignore [missing-import]
 from db.session import get_sqlite_path, db_session, close_all_engines
 # pyrefly: ignore [missing-import]
@@ -55,6 +56,7 @@ from tests.reset_test_backup import reset_test_backup
 import utils.tricks as t
 
 
+@skip_in_production_or_missing_fixture()
 class TestPipelineIntegration(unittest.TestCase):
     """
     End-to-end integration test verifying the complete SQLite migration and pipeline execution.

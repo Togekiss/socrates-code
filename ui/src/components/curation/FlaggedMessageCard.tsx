@@ -2,6 +2,7 @@ import React from 'react';
 import { ExternalLink, Check, RotateCcw, Sparkles, EyeOff, CheckCheck, ArrowRight } from 'lucide-react';
 import { DataCard, Badge, Button } from '../ui';
 import type { FlaggedMessage, FlaggedResolution } from '../../types';
+import { safeDiscordUrl } from '../../utils/rbac';
 
 interface FlaggedMessageCardProps {
   message: FlaggedMessage;
@@ -108,9 +109,9 @@ export const FlaggedMessageCard: React.FC<FlaggedMessageCardProps> = ({
 
         {/* Action Buttons */}
         <div className="flex-row items-center gap-xs flex-wrap">
-          {message.discord_link && (
+          {safeDiscordUrl(message.discord_link) && (
             <a
-              href={message.discord_link}
+              href={safeDiscordUrl(message.discord_link)!}
               target="_blank"
               rel="noopener noreferrer"
               className="btn btn-secondary btn-xs"

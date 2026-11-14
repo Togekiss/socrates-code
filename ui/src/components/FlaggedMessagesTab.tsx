@@ -9,6 +9,7 @@ import { BackupStatusGuard } from './layout/BackupStatusGuard';
 import { useBackupStatusGuard } from '../hooks/useBackupStatusGuard';
 import { Pagination } from './ui';
 import type { BackupInfo, FlaggedMessage, FlaggedMessagesResponse, FlaggedResolution } from '../types';
+import { getRoleLevel, ROLE_LEVELS } from '../utils/rbac';
 
 interface FlaggedMessagesTabProps {
   backupId: string;
@@ -16,6 +17,7 @@ interface FlaggedMessagesTabProps {
   backupInfo?: BackupInfo | null;
   backupError?: string | null;
   backupLoading?: boolean;
+  roleLevel?: number;
   onRefreshSummary?: () => void;
 }
 
@@ -25,6 +27,7 @@ export const FlaggedMessagesTab = ({
   backupInfo,
   backupError,
   backupLoading,
+  roleLevel: propRoleLevel,
   onRefreshSummary,
 }: FlaggedMessagesTabProps) => {
   const [data, setData] = useState<FlaggedMessagesResponse>({
@@ -74,8 +77,11 @@ export const FlaggedMessagesTab = ({
     setError(null);
   }, [backupId]);
 
+  const effectiveRoleLevel = propRoleLevel ?? backupInfo?.role_level ?? getRoleLevel(backupInfo?.effective_role);
+  const canCurate = effectiveRoleLevel >= ROLE_LEVELS.curator;
+
   const fetchMessages = useCallback(() => {
-    if (!backupId || !statusGuard.isReady) return;
+    if (!backupId || !statusGuard.isReady || !canCurate) return;
     setLoading(true);
     setError(null);
 
@@ -109,13 +115,13 @@ export const FlaggedMessagesTab = ({
       .finally(() => {
         setLoading(false);
       });
-  }, [backupId, statusGuard.isReady, statusFilter, sceneTypeFilter, kindFilter, resolutionFilter, page]);
+  }, [backupId, statusGuard.isReady, canCurate, statusFilter, sceneTypeFilter, kindFilter, resolutionFilter, page]);
 
   useEffect(() => {
-    if (statusGuard.isReady) {
+    if (statusGuard.isReady && canCurate) {
       fetchMessages();
     }
-  }, [statusGuard.isReady, fetchMessages]);
+  }, [statusGuard.isReady, canCurate, fetchMessages]);
 
   const handleResolve = async (msg: FlaggedMessage, resolution: FlaggedResolution) => {
     setResolvingId(msg.message_id);
@@ -144,6 +150,14 @@ export const FlaggedMessagesTab = ({
       setReopeningId(null);
     }
   };
+
+  if (!canCurate) {
+    return (
+      <div className="banner-danger" role="alert">
+        Access Denied: Curation tools require Curator or Administrator permissions.
+      </div>
+    );
+  }
 
   if (!statusGuard.isReady) {
     return <BackupStatusGuard title="Flagged Messages" guard={statusGuard} />;

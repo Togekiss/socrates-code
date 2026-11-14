@@ -365,6 +365,12 @@ def query_scenes(
     Queries scenes or sessions from SQLite.
     Supports both unpaginated filtering (when page is None) and paginated responses (when page is int).
     """
+    from utils.path_safety import escape_like, validate_search_query_safety
+
+    if page is not None:
+        page = max(1, int(page)) if isinstance(page, int) else 1
+    per_page = max(1, min(int(per_page) if isinstance(per_page, int) else 50, 200))
+
     require_db(base_path, backup_id=backup_id)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path)
 
@@ -412,9 +418,10 @@ def query_scenes(
 
         # Filter by search_folder
         if search_folder:
-            clean_sf = search_folder.strip("/\\").lower()
+            validate_search_query_safety(search_folder)
+            clean_sf = escape_like(search_folder.strip("/\\").lower())
             query = query.join(ChannelModel, SceneModel.channel_pk == ChannelModel.pk)
-            query = query.filter(func.lower(ChannelModel.path).contains(clean_sf))
+            query = query.filter(func.lower(ChannelModel.path).like(f"%{clean_sf}%", escape="\\"))
 
         # Filter by before/after dates
         if before:
@@ -525,14 +532,16 @@ def query_scenes(
 
         # Filter by search query (custom_name, scene_key, or channel name)
         if search and isinstance(search, str) and search.strip():
-            s_term = search.strip().lower()
+            validate_search_query_safety(search)
+            s_term = escape_like(search.strip().lower())
+            like_pattern = f"%{s_term}%"
             matching_chan_pks = session.query(ChannelModel.pk).filter(
-                func.lower(ChannelModel.name).contains(s_term)
+                func.lower(ChannelModel.name).like(like_pattern, escape="\\")
             )
             query = query.filter(
                 or_(
-                    func.lower(SceneModel.custom_name).contains(s_term),
-                    func.lower(SceneModel.scene_key).contains(s_term),
+                    func.lower(SceneModel.custom_name).like(like_pattern, escape="\\"),
+                    func.lower(SceneModel.scene_key).like(like_pattern, escape="\\"),
                     SceneModel.channel_pk.in_(matching_chan_pks),
                 )
             )

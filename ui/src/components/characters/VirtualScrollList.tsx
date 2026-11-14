@@ -10,7 +10,8 @@ export type VirtualListItem =
 
 interface VirtualScrollListProps {
   items: VirtualListItem[];
-  onEdit: (char: Character, parent?: Character) => void;
+  onEdit?: (char: Character, parent?: Character) => void;
+  canEdit?: (char: Character, parent?: Character) => boolean;
   onEditGroup?: (group: CharacterGroup) => void;
   onAddTagFilter: (tag: string) => void;
   onAssignWriter?: (char: Character) => void;
@@ -20,6 +21,7 @@ interface VirtualScrollListProps {
 export const VirtualScrollList: React.FC<VirtualScrollListProps> = ({
   items,
   onEdit,
+  canEdit,
   onEditGroup,
   onAddTagFilter,
   onAssignWriter,
@@ -77,8 +79,9 @@ export const VirtualScrollList: React.FC<VirtualScrollListProps> = ({
                 <GroupCard
                   group={item.group}
                   members={item.members || []}
-                  onEditGroup={onEditGroup || (() => {})}
+                  onEditGroup={onEditGroup}
                   onEditCharacter={onEdit}
+                  canEditCharacter={canEdit}
                   onAddTagFilter={onAddTagFilter}
                   onAssignWriter={onAssignWriter}
                   disableAccordion={disableAccordion}
@@ -87,6 +90,7 @@ export const VirtualScrollList: React.FC<VirtualScrollListProps> = ({
                 <CharacterCard
                   character={item.character || (item as unknown as Character)}
                   onEdit={onEdit}
+                  canEdit={canEdit}
                   onAddTagFilter={onAddTagFilter}
                   onAssignWriter={onAssignWriter}
                   disableAccordion={disableAccordion}

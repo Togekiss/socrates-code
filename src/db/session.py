@@ -5,17 +5,19 @@ import os
 import re
 import shutil
 import sqlite3
+import sys
 import tempfile
 import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import Pool
 from .models import Base, SchemaVersionModel, CURRENT_SCHEMA_VERSION
+from .audit_models import AuditBase
 from utils import exceptions as exc
 
 
@@ -393,17 +395,28 @@ def invalidate_sqlite_tmp_cache(
                 pass
 
 
+ALLOWED_WAL_MODES = frozenset({"PASSIVE", "FULL", "RESTART", "TRUNCATE"})
+
+
+def _normalize_wal_mode(mode: str) -> str:
+    upper_mode = str(mode or "TRUNCATE").strip().upper()
+    if upper_mode not in ALLOWED_WAL_MODES:
+        raise ValueError(f"Unsupported SQLite WAL checkpoint mode: {mode!r}")
+    return upper_mode
+
+
 def _checkpoint_dbapi_wal(dbapi_connection, mode: str = "TRUNCATE") -> None:
     """Flushes committed SQLite WAL frames back into the main .sqlite file cleanly."""
     if dbapi_connection is None or not dbapi_connection.__class__.__module__.startswith("sqlite3"):
         return
     if getattr(dbapi_connection, "in_transaction", False):
         return
+    safe_mode = _normalize_wal_mode(mode)
     try:
         cursor = dbapi_connection.cursor()
         try:
-            row = cursor.execute(f"PRAGMA wal_checkpoint({mode})").fetchone()
-            if mode == "TRUNCATE" and row and row[0] != 0:
+            row = cursor.execute(f"PRAGMA wal_checkpoint({safe_mode})").fetchone()
+            if safe_mode == "TRUNCATE" and row and row[0] != 0:
                 cursor.execute("PRAGMA wal_checkpoint(PASSIVE)")
         finally:
             cursor.close()
@@ -475,6 +488,66 @@ def _checkpoint_sqlite_on_checkin(dbapi_connection, connection_record):
 _central_engine = None
 _engine_cache = {}
 _initialized_engines = {}  # id(engine) -> bool (True if check_version=True passed)
+_audit_initialized_paths: Set[str] = set()
+_audit_init_lock = threading.RLock()
+_unittest_audit_tmpdir: Optional[str] = None
+_unittest_audit_cleanup_registered = False
+
+
+def _canonical_sqlite_path(path: str) -> str:
+    return os.path.realpath(os.path.abspath(path)).replace("\\", "/")
+
+
+_BASE_DATA_ROOT_AT_IMPORT = _canonical_sqlite_path(
+    os.environ.get("SOCRATES_DATA_DIR")
+    or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
+
+
+def _cleanup_unittest_audit_dir() -> None:
+    global _unittest_audit_tmpdir
+    if not _unittest_audit_tmpdir:
+        return
+    try:
+        close_all_engines()
+    except Exception:
+        pass
+    try:
+        shutil.rmtree(_unittest_audit_tmpdir, ignore_errors=True)
+    finally:
+        _unittest_audit_tmpdir = None
+
+
+def _get_unittest_global_audit_db_path() -> str:
+    global _unittest_audit_tmpdir, _unittest_audit_cleanup_registered
+    with _audit_init_lock:
+        if not _unittest_audit_tmpdir or not os.path.isdir(_unittest_audit_tmpdir):
+            _unittest_audit_tmpdir = tempfile.mkdtemp(prefix="socrates_unittest_audit_")
+        if not _unittest_audit_cleanup_registered:
+            atexit.register(_cleanup_unittest_audit_dir)
+            _unittest_audit_cleanup_registered = True
+        return _canonical_sqlite_path(os.path.join(_unittest_audit_tmpdir, "global_audit.sqlite"))
+
+
+def _get_sqlite_engine_for_source(source_sqlite_path: str) -> Engine:
+    """Creates or returns a cached SQLite engine with tmp-cache and WAL checkpoint tracking."""
+    canonical = _canonical_sqlite_path(source_sqlite_path)
+    with _sync_lock:
+        if canonical not in _engine_cache:
+            if is_sqlite_tmp_cache_enabled():
+                active_path = _prepare_tmp_sqlite_path(canonical)
+            else:
+                parent_dir = os.path.dirname(canonical)
+                if parent_dir:
+                    os.makedirs(parent_dir, exist_ok=True)
+                active_path = canonical
+            eng = create_engine(
+                f"sqlite:///{active_path}",
+                connect_args={"check_same_thread": False},
+            )
+            _engine_cache[canonical] = eng
+            _engine_to_source[id(eng)] = canonical
+        return _engine_cache[canonical]
 
 
 def get_engine(backup_id: Optional[str] = None, backup_path: Optional[str] = None) -> Engine:
@@ -497,20 +570,73 @@ def get_engine(backup_id: Optional[str] = None, backup_path: Optional[str] = Non
     if backup_id:
         _source_to_backup_id[source_sqlite_path] = str(backup_id)
 
-    if source_sqlite_path not in _engine_cache:
-        active_path = (
-            _prepare_tmp_sqlite_path(source_sqlite_path)
-            if is_sqlite_tmp_cache_enabled()
-            else source_sqlite_path
-        )
-        eng = create_engine(
-            f"sqlite:///{active_path}",
-            connect_args={"check_same_thread": False}
-        )
-        _engine_cache[source_sqlite_path] = eng
-        _engine_to_source[id(eng)] = source_sqlite_path
+    return _get_sqlite_engine_for_source(source_sqlite_path)
 
-    return _engine_cache[source_sqlite_path]
+
+def _ensure_audit_engine(source_sqlite_path: str) -> Engine:
+    canonical = _canonical_sqlite_path(source_sqlite_path)
+    with _audit_init_lock:
+        eng = _get_sqlite_engine_for_source(canonical)
+        if canonical not in _audit_initialized_paths:
+            AuditBase.metadata.create_all(bind=eng)
+            _audit_initialized_paths.add(canonical)
+        return eng
+
+
+def resolve_backup_audit_db_path(backup_dir: str) -> str:
+    return _canonical_sqlite_path(os.path.join(backup_dir, "audit.sqlite"))
+
+
+def resolve_global_audit_db_path(data_root: Optional[str] = None) -> str:
+    resolved_root = data_root or os.environ.get("SOCRATES_DATA_DIR") or _BASE_DATA_ROOT_AT_IMPORT
+    canonical_root = _canonical_sqlite_path(resolved_root)
+    if canonical_root == _BASE_DATA_ROOT_AT_IMPORT:
+        override = os.environ.get("SOCRATES_GLOBAL_AUDIT_DB_PATH", "").strip()
+        if override:
+            return _canonical_sqlite_path(override)
+        if "unittest" in sys.modules or os.environ.get("SOCRATES_TEST_SUITE", "").strip() == "1":
+            return _get_unittest_global_audit_db_path()
+    return _canonical_sqlite_path(os.path.join(canonical_root, "out", "global_audit.sqlite"))
+
+
+def get_audit_db_session(backup_dir: str) -> Session:
+    """Creates a new SQLAlchemy session for <backup_dir>/audit.sqlite."""
+    eng = _ensure_audit_engine(resolve_backup_audit_db_path(backup_dir))
+    return sessionmaker(autocommit=False, autoflush=False, bind=eng)()
+
+
+def get_global_audit_db_session(data_root: Optional[str] = None) -> Session:
+    """Creates a new SQLAlchemy session for <DATA_ROOT>/out/global_audit.sqlite."""
+    eng = _ensure_audit_engine(resolve_global_audit_db_path(data_root))
+    return sessionmaker(autocommit=False, autoflush=False, bind=eng)()
+
+
+@contextmanager
+def audit_db_session(backup_dir: str):
+    """Transactional context manager for <backup_dir>/audit.sqlite."""
+    session = get_audit_db_session(backup_dir)
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+@contextmanager
+def global_audit_db_session(data_root: Optional[str] = None):
+    """Transactional context manager for <DATA_ROOT>/out/global_audit.sqlite."""
+    session = get_global_audit_db_session(data_root)
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 def get_db_session(backup_id: Optional[str] = None, backup_path: Optional[str] = None) -> Session:
@@ -681,6 +807,7 @@ def checkpoint_wal(
     mode: str = "TRUNCATE",
 ) -> None:
     """Explicitly checkpoints SQLite WAL frames into the main .sqlite database file."""
+    safe_mode = _normalize_wal_mode(mode)
     try:
         if hasattr(engine_or_backup_id, "connect"):
             engine = engine_or_backup_id
@@ -689,7 +816,7 @@ def checkpoint_wal(
         if engine.dialect.name != "sqlite":
             return
         with engine.connect() as conn:
-            conn.execute(text(f"PRAGMA wal_checkpoint({mode})"))
+            conn.execute(text(f"PRAGMA wal_checkpoint({safe_mode})"))
     except Exception:
         pass
 
@@ -732,6 +859,8 @@ def close_all_engines() -> None:
     _engine_cache.clear()
     _initialized_engines.clear()
     _engine_to_source.clear()
+    with _audit_init_lock:
+        _audit_initialized_paths.clear()
     try:
         from utils.tricks import close_log_handlers
         close_log_handlers()

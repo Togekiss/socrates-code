@@ -20,6 +20,7 @@ import type { BackupInfo, CurationSummary } from '../types';
 import type { TabType } from './Sidebar';
 import { AiDisclosure } from './AiDisclosure';
 import { PanelSurface, StatCard, DataCard, Badge, Button } from './ui';
+import { getRoleLevel, ROLE_LEVELS } from '../utils/rbac';
 
 interface StatusTabProps {
   backupId: string | null;
@@ -28,6 +29,7 @@ interface StatusTabProps {
   backupInfo?: BackupInfo | null;
   backupError?: string | null;
   isLoading?: boolean;
+  roleLevel?: number;
   onUpgrade?: () => void;
   isUpgrading?: boolean;
 }
@@ -46,6 +48,7 @@ export const StatusTab = ({
   backupInfo: parentInfo,
   backupError: parentError,
   isLoading: parentLoading,
+  roleLevel: propRoleLevel,
   onUpgrade,
   isUpgrading,
 }: StatusTabProps) => {
@@ -145,6 +148,9 @@ export const StatusTab = ({
     );
   }
 
+  const effectiveRoleLevel = propRoleLevel ?? info.role_level ?? getRoleLevel(info.effective_role);
+  const canCurate = effectiveRoleLevel >= ROLE_LEVELS.curator;
+  const canManageBackup = effectiveRoleLevel >= ROLE_LEVELS.server_admin;
   const title = info.name || info.server_name || backupId;
   const numScenes = getCount(info.number_of_scenes, info.scenes);
   const numSessions = info.number_of_sessions ?? 0;
@@ -177,7 +183,7 @@ export const StatusTab = ({
               </Badge>
             )}
 
-            {info.is_schema_outdated && onUpgrade && (
+            {info.is_schema_outdated && onUpgrade && canManageBackup && (
               <Button
                 variant="danger"
                 size="sm"
@@ -266,7 +272,7 @@ export const StatusTab = ({
         </div>
 
         {/* Curation & Review Queues Dashboard */}
-        {summary && (
+        {summary && canCurate && (
           <div>
             <h3 className="sidebar-group-title" style={{ padding: 0, marginBottom: '0.75rem' }}>
               Curation &amp; Review Queues

@@ -5,7 +5,8 @@ import { Badge, Button } from '../ui';
 
 export interface CharacterCardProps {
   character: Character;
-  onEdit: (char: Character, parent?: Character) => void;
+  onEdit?: (char: Character, parent?: Character) => void;
+  canEdit?: (char: Character, parent?: Character) => boolean;
   onAddTagFilter: (tag: string) => void;
   onAssignWriter?: (char: Character) => void;
   isNested?: boolean;
@@ -15,6 +16,7 @@ export interface CharacterCardProps {
 export const CharacterCard: React.FC<CharacterCardProps> = ({
   character,
   onEdit,
+  canEdit,
   onAddTagFilter,
   onAssignWriter,
   isNested = false,
@@ -22,6 +24,7 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({
 }) => {
   const [expanded, setExpanded] = useState(false);
   const assignWriterHandler = onAssignWriter;
+  const showEditButton = Boolean(onEdit && (!canEdit || canEdit(character, character._parent)));
 
   const mainName = character.names?.[0] || character.name || 'Unknown';
   const otherNames = character.names?.slice(1).join(', ');
@@ -96,14 +99,16 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({
               </Button>
             )}
 
-            <Button
-              variant="secondary"
-              size="xs"
-              onClick={() => onEdit(character, character._parent)}
-              icon={<Edit2 size={12} />}
-            >
-              Edit
-            </Button>
+            {showEditButton && onEdit && (
+              <Button
+                variant="secondary"
+                size="xs"
+                onClick={() => onEdit(character, character._parent)}
+                icon={<Edit2 size={12} />}
+              >
+                Edit
+              </Button>
+            )}
           </div>
         </div>
 
@@ -181,7 +186,8 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({
                 <CharacterCard
                   key={v.id}
                   character={{ ...v, names: v.names || [v.name] }}
-                  onEdit={(childChar) => onEdit(childChar, character)}
+                  onEdit={onEdit ? (childChar) => onEdit(childChar, character) : undefined}
+                  canEdit={canEdit ? (childChar) => canEdit(childChar, character) : undefined}
                   onAddTagFilter={onAddTagFilter}
                   onAssignWriter={onAssignWriter}
                   isNested={true}

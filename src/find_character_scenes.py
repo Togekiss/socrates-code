@@ -15,9 +15,9 @@ Note:
     performed deterministically via index_scenes.py into SQLite.
 """
 
-# Strict pattern at the end of the message
+# Strict pattern at the end of the message (matched against trailing slice)
 END_PAT1 = re.compile(
-    r"(?:`|```)[^\n]*(?:\n+[^\n]*)?\b(?:end|hold|close|dropped|offline|moved|moving|continu)\w*.{0,10}\n*(?:`|```)\n*(?:$|@[^\n]*|\W*)$",
+    r"(?:```|`)[^`\n]*(?:\n+[^`\n]*)?\b(?:end|hold|close|dropped|offline|moved|moving|continu)[A-Za-z0-9_]{0,20}[^\n`]{0,10}\n*(?:```|`)\s*(?:@[^\n]*|[^\w\n]*)?$",
     re.I
 )
 # Pattern that looks through the entire message for more flexible closing tags
@@ -41,15 +41,18 @@ TIMES = r"(?:morning|afternoon|evening|night|midnight|noon|lunchtime|midday|\d{1
 # Pattern for the start of a scene (only at the beginning of the message)
 # Includes DM/Call openers and dates with times/days
 START_HEADER_PAT = re.compile(
-    r"^\s*(?:[x—\-=_*]{4,}\s*\n\s*)?(?:@\S+\s*)*(?:`+|\[|\*\*)\s*(?:"
+    r"^\s*(?:[x—\-=_*]{4,}\s*\n\s*)?(?:@[^`\n\[\*\s]+\s+){0,10}(?:`+|\[|\*\*)\s*(?:"
     r"dm|direct\s+message|private\s+message|incoming\s+call|outgoing\s+call|video\s+call|call\s+(?:to|from|with)|continu(?:ed|ing)\s+from"
     rf"|(?:{DAYS}[,.\s]+)?(?:{MONTHS}\s+\d{{1,2}}(?:st|nd|rd|th)?|\d{{1,2}}(?:st|nd|rd|th|\.)?\s+(?:of\s+)?{MONTHS}|(?:\d{{1,2}}[./-]\d{{1,2}})[,.\s]+{TIMES}|{TIMES}[,.\s]+\d{{1,2}}[./-]\d{{1,2}})"
     r")\b",
     re.I
 )
 
-# Pattern to detect messages that contain only tag mentions (single or multiple)
-MENTION_ONLY_PAT = re.compile(r"^(?:\s*(?:<@&?[0-9]+>|@(?:deleted-role|unknown-role|[\w\.\-]+(?:\s+[\w\.\-]+)*))\s*)+$")
+# Pattern to detect messages that contain only tag mentions (linear O(n), no nested quantifiers)
+MENTION_ONLY_PAT = re.compile(
+    r"^\s*(?:<@&?[0-9]+>|@(?:deleted-role|unknown-role|[\w.-]+))"
+    r"(?:\s+(?:<@&?[0-9]+>|@?(?:deleted-role|unknown-role|[\w.-]+)))*\s*$"
+)
 
 
 """
@@ -65,8 +68,9 @@ def has_end_tag(message):
     # Convert the message content to normalized form
     content = message.get("content", "") if isinstance(message, dict) else (message or "")
     message_content = unicodedata.normalize("NFKD", str(content))
+    tail = message_content[-SEARCH_CONTENT_PREFIX_LEN:]
 
-    return bool(END_PAT1.search(message_content) or END_PAT2.search(message_content))
+    return bool(END_PAT1.search(tail) or END_PAT2.search(message_content))
 
 
 """
