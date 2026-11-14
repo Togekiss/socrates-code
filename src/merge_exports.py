@@ -216,7 +216,7 @@ def merge_file(path, update_folder, old_folder, main_backup):
 
         # Copy the file from "Update" to "Old"
         if not c.DRY_RUN:
-            shutil.copy2(update_file_path, old_file_path)
+            shutil.copyfile(update_file_path, old_file_path)
         else:
             t.log("info", f"DRY RUN: Would copy {update_file_path} to {old_file_path}")
         t.log("info", f"\tFound new file: Moving {update_file_path} to {old_file_path}")

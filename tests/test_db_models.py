@@ -780,6 +780,55 @@ class TestSqliteTmpCacheAndSync(unittest.TestCase):
                     close_all_engines()
                     invalidate_sqlite_tmp_cache(backup_id=backup_id, backup_path=base_path)
 
+    def test_exdev_sync_does_not_fail_when_copystat_raises_eperm(self):
+        from unittest.mock import patch
+        from db.session import (
+            close_all_engines,
+            sync_dirty_sqlite_dbs,
+            invalidate_sqlite_tmp_cache,
+        )
+        from db import status_service
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            backup_dir = Path(tmpdir) / "eperm_backup"
+            tmp_cache_root = Path(tmpdir) / "tmp_cache"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            tmp_cache_root.mkdir(parents=True, exist_ok=True)
+
+            backup_id = "eperm_test_1"
+            base_path = backup_dir.as_posix()
+            source_sqlite = os.path.abspath((backup_dir / "backup.sqlite").as_posix()).replace("\\", "/")
+
+            env = {
+                "SOCRATES_SQLITE_TMP_CACHE": "1",
+                "SOCRATES_SQLITE_TMP_DIR": tmp_cache_root.as_posix(),
+                "SOCRATES_SQLITE_SYNC_TIMER": "0",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                try:
+                    close_all_engines()
+                    status_service.init_backup_export(
+                        backup_id=backup_id,
+                        backup_path=base_path,
+                        backup_name="EPERM Test",
+                    )
+
+                    real_replace = os.replace
+
+                    def mock_replace(src, dst):
+                        if ".sync." in str(src) and str(dst) == source_sqlite:
+                            raise OSError(18, "Invalid cross-device link")
+                        return real_replace(src, dst)
+
+                    with patch("os.replace", side_effect=mock_replace), \
+                         patch("shutil.copystat", side_effect=PermissionError(1, "Operation not permitted")):
+                        synced = sync_dirty_sqlite_dbs(force=True)
+                        self.assertEqual(synced, [source_sqlite])
+                        self.assertTrue(os.path.exists(source_sqlite))
+                finally:
+                    close_all_engines()
+                    invalidate_sqlite_tmp_cache(backup_id=backup_id, backup_path=base_path)
+
     def test_middleware_opportunistic_get_sync(self):
         from unittest.mock import patch, MagicMock
         from db import status_service

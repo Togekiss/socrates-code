@@ -122,7 +122,7 @@ def _prepare_tmp_sqlite_path(source_sqlite_path: str) -> str:
 
             staging_copy = f"{tmp_path}.load.{os.getpid()}.{threading.get_ident()}.{time.time_ns()}.tmp"
             try:
-                shutil.copy2(source_sqlite_path, staging_copy)
+                shutil.copyfile(source_sqlite_path, staging_copy)
                 os.replace(staging_copy, tmp_path)
                 for suffix in ("-wal", "-shm"):
                     sidecar = f"{tmp_path}{suffix}"
@@ -134,7 +134,7 @@ def _prepare_tmp_sqlite_path(source_sqlite_path: str) -> str:
 
                 source_wal = f"{source_sqlite_path}-wal"
                 if os.path.exists(source_wal) and os.path.getsize(source_wal) > 0:
-                    shutil.copy2(source_wal, f"{tmp_path}-wal")
+                    shutil.copyfile(source_wal, f"{tmp_path}-wal")
                     conn = sqlite3.connect(tmp_path, timeout=10.0)
                     try:
                         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -236,10 +236,10 @@ def _sync_single_sqlite_db(source_sqlite_path: str, tmp_path: str) -> bool:
             os.replace(staging_path, source_sqlite_path)
         except OSError:
             try:
-                shutil.copy2(staging_path, dest_tmp)
+                shutil.copyfile(staging_path, dest_tmp)
                 os.replace(dest_tmp, source_sqlite_path)
             except OSError:
-                shutil.copy2(staging_path, source_sqlite_path)
+                shutil.copyfile(staging_path, source_sqlite_path)
 
         _write_source_meta(tmp_path, source_sqlite_path)
         return True

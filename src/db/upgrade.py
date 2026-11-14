@@ -606,7 +606,7 @@ def upgrade_single_backup(
     close_all_engines()
     if is_sqlite and os.path.exists(sqlite_path):
         t.log("info", f"Creating safety database backup at: {bak_path}")
-        shutil.copy2(sqlite_path, bak_path)
+        shutil.copyfile(sqlite_path, bak_path)
 
     try:
         # 4. Rebuild schema cleanly using SQLAlchemy reflection and Base.metadata
@@ -679,7 +679,7 @@ def upgrade_single_backup(
                         pass
             if os.path.exists(bak_path):
                 t.log("info", f"Restoring safety backup from {bak_path}...")
-                shutil.copy2(bak_path, sqlite_path)
+                shutil.copyfile(bak_path, sqlite_path)
                 try:
                     os.remove(bak_path)
                 except OSError:

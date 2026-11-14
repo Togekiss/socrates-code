@@ -480,7 +480,7 @@ def create_merge_folder():
         shutil.rmtree(c.MERGE_FOLDER)
 
     log("base", f"Creating merge folder by copying {c.DATA_FOLDER} to {c.MERGE_FOLDER}")
-    shutil.copytree(c.DATA_FOLDER, c.MERGE_FOLDER, dirs_exist_ok=True)
+    shutil.copytree(c.DATA_FOLDER, c.MERGE_FOLDER, dirs_exist_ok=True, copy_function=shutil.copyfile)
 
 
     # delete all the folders named "Scenes" and all the files that end with "_scenes.json" from the "Merge" folder
