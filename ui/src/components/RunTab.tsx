@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { api, API_BASE } from '../api';
+import { api } from '../api';
 import {
   AlertTriangle,
   CheckCircle,
@@ -16,65 +16,49 @@ import type { BackupConfig, BackupInfo, GlobalConfig } from '../types';
 
 interface RunTabProps {
   backupId: string;
+  backupInfo?: BackupInfo | null;
+  statusPollTick?: number;
+  onPollStatus?: () => void;
   onRefreshSummary?: () => void;
   onBackupInfoChange?: (info: BackupInfo) => void;
 }
 
-export const RunTab = ({ backupId, onRefreshSummary, onBackupInfoChange }: RunTabProps) => {
+export const RunTab = ({
+  backupId,
+  backupInfo: propBackupInfo,
+  statusPollTick = 0,
+  onPollStatus,
+  onRefreshSummary,
+  onBackupInfoChange,
+}: RunTabProps) => {
   const [globalConfig, setGlobalConfig] = useState<GlobalConfig | null>(null);
-  const [backupInfo, setBackupInfo] = useState<BackupInfo | null>(null);
+  const [localBackupInfo, setLocalBackupInfo] = useState<BackupInfo | null>(null);
   const [backupConfig, setBackupConfig] = useState<BackupConfig | null>(null);
   const [isFormOpen, setIsFormOpen] = useState<boolean>(false);
   const [backupLogs, setBackupLogs] = useState<string[]>([]);
-  const [streamActive, setStreamActive] = useState(false);
-  const [isPolling, setIsPolling] = useState(false);
+  const [loadingLogs, setLoadingLogs] = useState(false);
   const [isUpgrading, setIsUpgrading] = useState(false);
   const wasRunningRef = useRef(false);
   const activeBackupIdRef = useRef(backupId);
+  const logsInFlightRef = useRef(false);
+
+  const backupInfo = propBackupInfo !== undefined ? propBackupInfo : localBackupInfo;
 
   useEffect(() => {
     activeBackupIdRef.current = backupId;
     wasRunningRef.current = false;
-    setBackupInfo(null);
+    setLocalBackupInfo(null);
+    setBackupLogs([]);
+    setIsFormOpen(false);
   }, [backupId]);
 
   const fetchConfig = useCallback(() => {
     api.getGlobalConfig().then(setGlobalConfig).catch(console.error);
   }, []);
 
-  const fetchBackupData = useCallback(() => {
+  const fetchBackupConfig = useCallback(() => {
     if (!backupId) return;
     const requestedId = backupId;
-    api
-      .getBackupInfo(requestedId)
-      .then(res => {
-        if (activeBackupIdRef.current !== requestedId) return;
-        setBackupInfo(res);
-        if (res && onBackupInfoChange) {
-          onBackupInfoChange(res);
-        }
-        const hasStepRunning = res?.steps
-          ? Object.values(res.steps).some(s => s === 'running')
-          : false;
-        const nowRunning = res?.status === 'pending' || res?.status === 'running' || hasStepRunning;
-        if (wasRunningRef.current && !nowRunning) {
-          wasRunningRef.current = false;
-          setIsPolling(false);
-          if (onRefreshSummary) {
-            onRefreshSummary();
-          }
-        } else if (nowRunning) {
-          wasRunningRef.current = true;
-        } else if (res && res.status !== 'running' && !hasStepRunning) {
-          setIsPolling(false);
-        }
-      })
-      .catch(() => {
-        if (activeBackupIdRef.current === requestedId) {
-          setBackupInfo(null);
-        }
-      });
-
     api
       .getBackupConfig(requestedId)
       .then(res => {
@@ -83,20 +67,77 @@ export const RunTab = ({ backupId, onRefreshSummary, onBackupInfoChange }: RunTa
         }
       })
       .catch(() => {
-        if (activeBackupIdRef.current === requestedId) {
-          setBackupConfig(null);
-        }
+        // Keep existing config on transient errors
       });
-  }, [backupId, onBackupInfoChange, onRefreshSummary]);
+  }, [backupId]);
+
+  const fetchBackupInfoStandalone = useCallback(() => {
+    if (!backupId || propBackupInfo !== undefined) return;
+    const requestedId = backupId;
+    api
+      .getBackupInfo(requestedId)
+      .then(res => {
+        if (activeBackupIdRef.current !== requestedId) return;
+        setLocalBackupInfo(res);
+        onBackupInfoChange?.(res);
+      })
+      .catch(() => {
+        // Preserve previous backupInfo on transient errors
+      });
+  }, [backupId, propBackupInfo, onBackupInfoChange]);
+
+  const fetchLogs = useCallback(
+    (showLoading: boolean = true) => {
+      if (!backupId || logsInFlightRef.current) return;
+      const requestedId = backupId;
+      logsInFlightRef.current = true;
+      if (showLoading) setLoadingLogs(true);
+      api
+        .getBackupLogs(requestedId, 50)
+        .then(res => {
+          if (activeBackupIdRef.current === requestedId) {
+            setBackupLogs(res.lines || []);
+          }
+        })
+        .catch(console.error)
+        .finally(() => {
+          logsInFlightRef.current = false;
+          if (showLoading) setLoadingLogs(false);
+        });
+    },
+    [backupId]
+  );
+
+  const clearLogs = () => {
+    if (!backupId) return;
+    api.clearBackupLogs(backupId).then(() => setBackupLogs([])).catch(console.error);
+  };
+
+  const downloadLogs = async () => {
+    if (!backupId) return;
+    try {
+      const text = await api.getBackupRawLogs(backupId);
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `backup-${backupId}-execution.log`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Failed to download raw backup logs:', err);
+    }
+  };
 
   useEffect(() => {
     fetchConfig();
   }, [fetchConfig]);
 
   useEffect(() => {
-    fetchBackupData();
-    setIsFormOpen(false);
-  }, [backupId, fetchBackupData]);
+    fetchBackupConfig();
+    fetchBackupInfoStandalone();
+    fetchLogs(true);
+  }, [fetchBackupConfig, fetchBackupInfoStandalone, fetchLogs]);
 
   const isAnyRunning =
     isUpgrading ||
@@ -104,47 +145,22 @@ export const RunTab = ({ backupId, onRefreshSummary, onBackupInfoChange }: RunTa
     backupInfo?.status === 'running' ||
     Boolean(backupInfo?.steps && Object.values(backupInfo.steps).some(s => s === 'running'));
 
+  // Automatically refresh logs whenever App's lightweight status poll completes while running,
+  // and once more when the pipeline transitions from running to finished.
   useEffect(() => {
-    if (backupInfo && isAnyRunning) {
-      setStreamActive(true);
-    }
-  }, [backupInfo, isAnyRunning]);
-
-  // Poll for backup info updates while a task is running
-  useEffect(() => {
-    if (!isAnyRunning && !isPolling) return;
-    const interval = setInterval(() => {
-      fetchBackupData();
-    }, 1500);
-    return () => clearInterval(interval);
-  }, [isAnyRunning, isPolling, fetchBackupData]);
-
-  // Handle EventSource for live log stream
-  useEffect(() => {
-    if (!backupId || !streamActive) return;
-
-    const es = new EventSource(`${API_BASE}/backups/${backupId}/logs/stream`);
-    es.onmessage = e => {
-      setBackupLogs(prev => {
-        const newLogs = [...prev, e.data];
-        if (newLogs.length > 50) return newLogs.slice(newLogs.length - 50);
-        return newLogs;
-      });
-      if (
-        e.data.includes('Backup complete') ||
-        e.data.includes('fatal') ||
-        e.data.includes('error')
-      ) {
-        fetchBackupData();
+    if (isAnyRunning) {
+      wasRunningRef.current = true;
+      if (statusPollTick > 0) {
+        fetchLogs(false);
       }
-    };
-    es.onerror = () => {
-      es.close();
-      setStreamActive(false);
-    };
+      return;
+    }
 
-    return () => es.close();
-  }, [backupId, streamActive, fetchBackupData]);
+    if (wasRunningRef.current) {
+      wasRunningRef.current = false;
+      fetchLogs(false);
+    }
+  }, [isAnyRunning, statusPollTick, fetchLogs]);
 
   const renderStatusIcon = (status?: string) => {
     if (status === 'success') return <CheckCircle size={16} className="text-success" />;
@@ -160,6 +176,14 @@ export const RunTab = ({ backupId, onRefreshSummary, onBackupInfoChange }: RunTa
     return <AlertTriangle size={16} style={{ color: 'var(--warning)' }} />;
   };
 
+  const refreshStatus = useCallback(() => {
+    if (onPollStatus) {
+      onPollStatus();
+    } else {
+      fetchBackupInfoStandalone();
+    }
+  }, [onPollStatus, fetchBackupInfoStandalone]);
+
   const markOptimisticRunning = useCallback(
     (stepKey: 'assign_ids' | 'fix_messages' | 'index_scenes' | 'update') => {
       wasRunningRef.current = true;
@@ -169,66 +193,65 @@ export const RunTab = ({ backupId, onRefreshSummary, onBackupInfoChange }: RunTa
         status: 'running',
         steps: { ...backupInfo.steps, [stepKey]: 'running' },
       };
-      setBackupInfo(newInfo);
+      if (propBackupInfo === undefined) {
+        setLocalBackupInfo(newInfo);
+      }
       if (onBackupInfoChange) {
         onBackupInfoChange(newInfo);
       }
     },
-    [backupInfo, onBackupInfoChange]
+    [backupInfo, propBackupInfo, onBackupInfoChange]
   );
 
   const handleAction = (action: string) => {
     if (action === 'reapply_characters') markOptimisticRunning('assign_ids');
     else if (action === 'fix_messages') markOptimisticRunning('fix_messages');
     else if (action === 'reindex') markOptimisticRunning('index_scenes');
-    setStreamActive(true);
-    setIsPolling(true);
 
     api
       .rerunAction(backupId, action)
       .then(() => {
-        setTimeout(fetchBackupData, 1000);
+        fetchLogs(false);
+        setTimeout(refreshStatus, 1000);
       })
       .catch(err => {
         console.error('Failed to rerun action:', err);
         wasRunningRef.current = false;
-        fetchBackupData();
-        setIsPolling(false);
+        refreshStatus();
+        fetchLogs(false);
       });
   };
 
   const handleUpdate = () => {
     markOptimisticRunning('update');
-    setStreamActive(true);
-    setIsPolling(true);
 
     api
       .runBackup(backupId)
       .then(() => {
-        setTimeout(fetchBackupData, 1000);
+        fetchLogs(false);
+        setTimeout(refreshStatus, 1000);
       })
       .catch(err => {
         console.error('Failed to run backup:', err);
         wasRunningRef.current = false;
-        fetchBackupData();
-        setIsPolling(false);
+        refreshStatus();
+        fetchLogs(false);
       });
   };
 
   const handleUpgradeDatabase = async () => {
     if (!backupId || isUpgrading || isAnyRunning) return;
     setIsUpgrading(true);
-    setStreamActive(true);
     try {
       await api.upgradeBackup(backupId);
-      fetchBackupData();
+      refreshStatus();
       if (onRefreshSummary) {
         onRefreshSummary();
       }
-      api.getBackupLogs(backupId, 100).then(res => setBackupLogs(res.lines || [])).catch(() => {});
+      fetchLogs(false);
     } catch (err) {
       console.error('Failed to upgrade database:', err);
-      fetchBackupData();
+      refreshStatus();
     } finally {
       setIsUpgrading(false);
     }
@@ -239,16 +262,15 @@ export const RunTab = ({ backupId, onRefreshSummary, onBackupInfoChange }: RunTa
       .cancelRun(backupId)
       .then(() => {
         wasRunningRef.current = false;
-        setIsPolling(false);
-        fetchBackupData();
+        refreshStatus();
         if (onRefreshSummary) {
           onRefreshSummary();
         }
-        setStreamActive(false);
+        fetchLogs(false);
       })
       .catch(err => {
         console.error('Failed to cancel run:', err);
-        fetchBackupData();
+        refreshStatus();
       });
   };
 
@@ -421,13 +443,16 @@ export const RunTab = ({ backupId, onRefreshSummary, onBackupInfoChange }: RunTa
         </div>
       </PanelSurface>
 
-      {/* Live Stream / Execution Log Console */}
+      {/* Execution Log Console */}
       <LogConsole
         logs={backupLogs}
-        title="Live Execution Console"
+        loading={loadingLogs}
+        onRefresh={() => fetchLogs(true)}
+        onClear={clearLogs}
+        onDownload={downloadLogs}
         downloadFilename={`backup-${backupId}-execution.log`}
-        onClear={() => setBackupLogs([])}
-        emptyMessage={streamActive ? 'Waiting for pipeline output...' : 'Console idle. Start an update or step to view live logs.'}
+        title="Live Execution Console"
+        emptyMessage="No execution log entries recorded."
       />
 
       {/* Configuration Modal */}
@@ -439,10 +464,9 @@ export const RunTab = ({ backupId, onRefreshSummary, onBackupInfoChange }: RunTa
           isModal={true}
           onStart={() => {
             setIsFormOpen(false);
-            setStreamActive(true);
-            setIsPolling(true);
             markOptimisticRunning('update');
-            setTimeout(fetchBackupData, 1000);
+            fetchLogs(false);
+            setTimeout(refreshStatus, 1000);
           }}
           onSave={savedConfig => {
             setBackupConfig(savedConfig);

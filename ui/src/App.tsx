@@ -275,11 +275,16 @@ function AppContent() {
   const [isLoadingBackup, setIsLoadingBackup] = useState<boolean>(false);
   const [myWriter, setMyWriter] = useState<MyWriter | null>(null);
   const [isUpgrading, setIsUpgrading] = useState(false);
+  const [statusPollTick, setStatusPollTick] = useState(0);
   const activeBackupIdRef = useRef<string | null>(selectedBackupId);
   const lastLoadedBackupIdRef = useRef<string | null>(null);
+  const statusPollInFlightRef = useRef(false);
+  const wasBackupRunningRef = useRef(false);
 
   useEffect(() => {
     activeBackupIdRef.current = selectedBackupId;
+    wasBackupRunningRef.current = false;
+    statusPollInFlightRef.current = false;
   }, [selectedBackupId]);
 
   const handleSelectBackup = useCallback((id: string | null) => {
@@ -346,6 +351,28 @@ function AppContent() {
     [selectedBackupId]
   );
 
+  const pollBackupStatus = useCallback(() => {
+    const targetId = activeBackupIdRef.current;
+    if (!targetId || statusPollInFlightRef.current) return;
+
+    statusPollInFlightRef.current = true;
+    api
+      .getBackupInfo(targetId)
+      .then(infoRes => {
+        if (activeBackupIdRef.current !== targetId) return;
+        setBackupInfo(infoRes);
+        setBackupError(null);
+        setStatusPollTick(prev => prev + 1);
+      })
+      .catch(err => {
+        // Keep previous backupInfo intact on transient 429/network errors
+        console.warn('Lightweight backup status poll failed:', err);
+      })
+      .finally(() => {
+        statusPollInFlightRef.current = false;
+      });
+  }, []);
+
   const isBackupRunning = Boolean(
     backupInfo &&
       (backupInfo.status === 'pending' ||
@@ -353,13 +380,36 @@ function AppContent() {
         Object.values(backupInfo.steps ?? {}).some(s => s === 'running'))
   );
 
+  // Guard against closing/reloading browser tab while a Cloud Run pipeline step is executing
   useEffect(() => {
-    if (!selectedBackupId || !isBackupRunning) return;
-    const interval = setInterval(() => {
+    if (!isBackupRunning && !isUpgrading) return;
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isBackupRunning, isUpgrading]);
+
+  useEffect(() => {
+    if (!selectedBackupId) {
+      wasBackupRunningRef.current = false;
+      return;
+    }
+
+    if (isBackupRunning) {
+      wasBackupRunningRef.current = true;
+      const interval = setInterval(() => {
+        pollBackupStatus();
+      }, 3000);
+      return () => clearInterval(interval);
+    }
+
+    if (wasBackupRunningRef.current) {
+      wasBackupRunningRef.current = false;
       refreshSummary();
-    }, 2500);
-    return () => clearInterval(interval);
-  }, [selectedBackupId, isBackupRunning, refreshSummary]);
+    }
+  }, [selectedBackupId, isBackupRunning, pollBackupStatus, refreshSummary]);
 
   const handleUpgradeDatabase = async () => {
     if (!selectedBackupId || isUpgrading) return;
@@ -597,6 +647,9 @@ function AppContent() {
               >
                 <CharactersTab
                   backupId={selectedBackupId!}
+                  backupInfo={backupInfo}
+                  backupError={backupError}
+                  backupLoading={isLoadingBackup}
                   myWriter={myWriter}
                   onNavigateToWriters={() => navigate('/writers')}
                 />
@@ -613,6 +666,9 @@ function AppContent() {
               >
                 <WritersTab
                   backupId={selectedBackupId!}
+                  backupInfo={backupInfo}
+                  backupError={backupError}
+                  backupLoading={isLoadingBackup}
                   onRefreshSummary={refreshSummary}
                 />
               </RequireBackup>
@@ -686,6 +742,9 @@ function AppContent() {
               >
                 <SceneIssuesTab
                   backupId={selectedBackupId!}
+                  backupInfo={backupInfo}
+                  backupError={backupError}
+                  backupLoading={isLoadingBackup}
                   onRefreshSummary={refreshSummary}
                 />
               </RequireBackup>
@@ -701,6 +760,9 @@ function AppContent() {
               >
                 <FlaggedMessagesTab
                   backupId={selectedBackupId!}
+                  backupInfo={backupInfo}
+                  backupError={backupError}
+                  backupLoading={isLoadingBackup}
                   onRefreshSummary={refreshSummary}
                 />
               </RequireBackup>
@@ -716,6 +778,9 @@ function AppContent() {
               >
                 <RunTab
                   backupId={selectedBackupId!}
+                  backupInfo={backupInfo}
+                  statusPollTick={statusPollTick}
+                  onPollStatus={pollBackupStatus}
                   onRefreshSummary={refreshSummary}
                   onBackupInfoChange={handleBackupInfoChange}
                 />

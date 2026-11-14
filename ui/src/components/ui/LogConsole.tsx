@@ -7,6 +7,7 @@ export interface LogConsoleProps {
   loading?: boolean;
   onRefresh?: () => void;
   onClear?: () => void;
+  onDownload?: () => void;
   downloadFilename?: string;
   title?: string;
   emptyMessage?: string;
@@ -36,6 +37,7 @@ export const LogConsole: React.FC<LogConsoleProps> = ({
   loading = false,
   onRefresh,
   onClear,
+  onDownload,
   downloadFilename = 'console-logs.txt',
   title = 'Live Console',
   emptyMessage = 'No log entries recorded.',
@@ -52,6 +54,10 @@ export const LogConsole: React.FC<LogConsoleProps> = ({
 
   const handleDownload = () => {
     if (logs.length === 0) return;
+    if (onDownload) {
+      onDownload();
+      return;
+    }
     const blob = new Blob([logs.join('\n')], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');

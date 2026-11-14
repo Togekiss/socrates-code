@@ -11,15 +11,28 @@ import {
 import { api, getErrorMessage } from '../api';
 import { WriterEditModal } from './curation/WriterEditModal';
 import { WriterCard } from './curation/WriterCard';
+import { BackupStatusGuard } from './layout/BackupStatusGuard';
+import { useBackupStatusGuard } from '../hooks/useBackupStatusGuard';
 import { PanelSurface, Button, Badge } from './ui';
-import type { WriterDetailed, WriterLinkSuggestion } from '../types';
+import type { BackupInfo, WriterDetailed, WriterLinkSuggestion } from '../types';
 
 interface WritersTabProps {
   backupId: string;
+  backupStatus?: string;
+  backupInfo?: BackupInfo | null;
+  backupError?: string | null;
+  backupLoading?: boolean;
   onRefreshSummary?: () => void;
 }
 
-export const WritersTab = ({ backupId, onRefreshSummary }: WritersTabProps) => {
+export const WritersTab = ({
+  backupId,
+  backupStatus,
+  backupInfo,
+  backupError,
+  backupLoading,
+  onRefreshSummary,
+}: WritersTabProps) => {
   const [writers, setWriters] = useState<WriterDetailed[]>([]);
   const [suggestions, setSuggestions] = useState<WriterLinkSuggestion[]>([]);
   const [loading, setLoading] = useState(true);
@@ -31,6 +44,14 @@ export const WritersTab = ({ backupId, onRefreshSummary }: WritersTabProps) => {
   const [isCreatingWriter, setIsCreatingWriter] = useState(false);
   const [linkingSuggestionId, setLinkingSuggestionId] = useState<number | null>(null);
 
+  const statusGuard = useBackupStatusGuard({
+    backupId,
+    backupStatus,
+    backupInfo,
+    backupError,
+    backupLoading,
+  });
+
   useEffect(() => {
     setWriters([]);
     setSuggestions([]);
@@ -38,7 +59,7 @@ export const WritersTab = ({ backupId, onRefreshSummary }: WritersTabProps) => {
   }, [backupId]);
 
   const fetchData = useCallback(() => {
-    if (!backupId) return;
+    if (!backupId || !statusGuard.isReady) return;
     setLoading(true);
     setError(null);
     Promise.all([
@@ -58,11 +79,13 @@ export const WritersTab = ({ backupId, onRefreshSummary }: WritersTabProps) => {
       .finally(() => {
         setLoading(false);
       });
-  }, [backupId]);
+  }, [backupId, statusGuard.isReady]);
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    if (statusGuard.isReady) {
+      fetchData();
+    }
+  }, [statusGuard.isReady, fetchData]);
 
   const handleAcceptSuggestion = async (sugg: WriterLinkSuggestion) => {
     const writerId = sugg.writer_id ?? sugg.writer_pk;
@@ -92,6 +115,10 @@ export const WritersTab = ({ backupId, onRefreshSummary }: WritersTabProps) => {
     const hasCharMatch = w.characters?.some(c => c.name.toLowerCase().includes(q));
     return hasNameMatch || hasAliasMatch || hasCharMatch;
   });
+
+  if (!statusGuard.isReady) {
+    return <BackupStatusGuard title="Writers & Attribution" guard={statusGuard} />;
+  }
 
   return (
     <div className="flex-col gap-lg">

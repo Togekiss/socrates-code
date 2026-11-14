@@ -24,10 +24,11 @@ def reset_test_backup() -> bool:
 
     try:
         # pyrefly: ignore [missing-import]
-        from db.session import close_all_engines
+        from db.session import close_engine, close_all_engines
         # pyrefly: ignore [missing-import]
         from models import SceneManager
         SceneManager.clear_cache()
+        close_engine(backup_path=target.as_posix(), sync=False, invalidate_cache=True)
         close_all_engines()
         import gc
         gc.collect()

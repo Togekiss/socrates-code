@@ -65,6 +65,7 @@ from server import (
     cancel_backup_action,
     run_script_in_background,
     get_backup_logs,
+    clear_backup_logs,
     reset_testing_backup,
     migrate_testing_backup,
     run_python_tests,
@@ -617,6 +618,21 @@ class TestBackupConfigEndpoints(unittest.TestCase):
         self.assertIsInstance(logs_res, dict)
         self.assertIn("lines", logs_res)
         self.assertIsInstance(logs_res["lines"], list)
+
+    def test_clear_backup_logs(self):
+        log_path = DATA_ROOT / "Backups" / "Elysium-sql-tests" / "log.txt"
+        had_file = log_path.exists()
+        orig_content = log_path.read_text(encoding="utf-8") if had_file else ""
+        try:
+            log_path.write_text("line1\nline2\n", encoding="utf-8")
+            res = clear_backup_logs("1791895360")
+            self.assertEqual(res, {"status": "cleared"})
+            self.assertEqual(log_path.read_text(encoding="utf-8"), "")
+        finally:
+            if had_file:
+                log_path.write_text(orig_content, encoding="utf-8")
+            else:
+                log_path.write_text("", encoding="utf-8")
 
     def test_dev_login_endpoint(self):
         # pyrefly: ignore [missing-import]

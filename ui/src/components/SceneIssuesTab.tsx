@@ -11,15 +11,28 @@ import { ActionConfirmationModal } from './curation/ActionConfirmationModal';
 import { ManualSplitModal } from './curation/ManualSplitModal';
 import { SceneIssueCard } from './curation/SceneIssueCard';
 import { SceneIssuesFilters } from './curation/SceneIssuesFilters';
+import { BackupStatusGuard } from './layout/BackupStatusGuard';
+import { useBackupStatusGuard } from '../hooks/useBackupStatusGuard';
 import { Pagination } from './ui';
-import type { SceneIssue, SceneIssuesResponse } from '../types';
+import type { BackupInfo, SceneIssue, SceneIssuesResponse } from '../types';
 
 interface SceneIssuesTabProps {
   backupId: string;
+  backupStatus?: string;
+  backupInfo?: BackupInfo | null;
+  backupError?: string | null;
+  backupLoading?: boolean;
   onRefreshSummary?: () => void;
 }
 
-export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabProps) => {
+export const SceneIssuesTab = ({
+  backupId,
+  backupStatus,
+  backupInfo,
+  backupError,
+  backupLoading,
+  onRefreshSummary,
+}: SceneIssuesTabProps) => {
   const [data, setData] = useState<SceneIssuesResponse>({
     total_items: 0,
     issues: [],
@@ -47,6 +60,14 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
     return localStorage.getItem('socrates_scene_guide_collapsed') === 'true';
   });
 
+  const statusGuard = useBackupStatusGuard({
+    backupId,
+    backupStatus,
+    backupInfo,
+    backupError,
+    backupLoading,
+  });
+
   const toggleGuide = () => {
     setGuideCollapsed(prev => {
       const next = !prev;
@@ -69,7 +90,7 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
   }, [backupId]);
 
   const fetchIssues = useCallback(() => {
-    if (!backupId) return;
+    if (!backupId || !statusGuard.isReady) return;
     setLoading(true);
     setError(null);
 
@@ -103,11 +124,13 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
       .finally(() => {
         setLoading(false);
       });
-  }, [backupId, statusFilter, kindFilter, sceneTypeFilter, reasonFilter, page]);
+  }, [backupId, statusGuard.isReady, statusFilter, kindFilter, sceneTypeFilter, reasonFilter, page]);
 
   useEffect(() => {
-    fetchIssues();
-  }, [fetchIssues]);
+    if (statusGuard.isReady) {
+      fetchIssues();
+    }
+  }, [statusGuard.isReady, fetchIssues]);
 
   const handleReopen = async (issueId: number) => {
     const targetIssue = data.issues.find(i => i.id === issueId);
@@ -140,6 +163,10 @@ export const SceneIssuesTab = ({ backupId, onRefreshSummary }: SceneIssuesTabPro
   const handleCloseOppositeAction = () => {
     setOppositeAction(null);
   };
+
+  if (!statusGuard.isReady) {
+    return <BackupStatusGuard title="Scene Issues" guard={statusGuard} />;
+  }
 
   return (
     <div className="flex-col gap-md">
