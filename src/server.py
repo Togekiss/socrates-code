@@ -495,7 +495,8 @@ def _apply_api_security_headers(request: Request, response):
 async def sqlite_tmp_sync_middleware(request: Request, call_next):
     """Triggers debounced /tmp SQLite -> GCS sync on mutating requests or opportunistically on GET (safe under --cpu-throttling)."""
     xff = request.headers.get("x-forwarded-for")
-    req_ip = str(xff).split(",")[0].strip() if xff else (request.client.host if request.client else None)
+    raw_ip = str(xff).split(",")[0].strip() if xff else (request.client.host if request.client else None)
+    req_ip = audit_service.hash_ip_address(raw_ip)
     token = _REQUEST_AUDIT_CTX.set(
         {
             "request_ip": req_ip,

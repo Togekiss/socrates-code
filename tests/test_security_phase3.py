@@ -284,6 +284,47 @@ class TestAuditRetentionPruning(unittest.TestCase):
             finally:
                 close_all_engines()
 
+    def test_request_ip_is_hmac_hashed_and_never_stored_raw(self):
+        self.assertIsNone(audit_service.hash_ip_address(None))
+        self.assertIsNone(audit_service.hash_ip_address("   "))
+
+        h1 = audit_service.hash_ip_address("203.0.113.42")
+        h2 = audit_service.hash_ip_address(" 203.0.113.42 ")
+        h3 = audit_service.hash_ip_address("203.0.113.43")
+        self.assertIsNotNone(h1)
+        self.assertTrue(h1.startswith("ip:") and len(h1) == 19)
+        self.assertEqual(h1, h2)
+        self.assertNotEqual(h1, h3)
+        self.assertNotIn("203.0.113", h1)
+        # Idempotent if already hashed
+        self.assertEqual(audit_service.hash_ip_address(h1), h1)
+        # IPv6 normalization
+        self.assertEqual(
+            audit_service.hash_ip_address("2001:0db8:0000:0000:0000:0000:0000:0001"),
+            audit_service.hash_ip_address("2001:db8::1"),
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                backup_dir = Path(tmpdir) / "Backups" / "IpHashTest"
+                backup_dir.mkdir(parents=True, exist_ok=True)
+                audit_service.record_audit_event(
+                    action="auth.login",
+                    target_type="auth",
+                    actor={"id": "100", "username": "tester"},
+                    actor_role="viewer",
+                    backup_dir=backup_dir.as_posix(),
+                    write_global=False,
+                    request_ip="203.0.113.42",
+                )
+                with audit_db_session(backup_dir.as_posix()) as session:
+                    row = session.query(AuditLog).first()
+                    self.assertIsNotNone(row)
+                    self.assertEqual(row.request_ip, h1)
+                    self.assertNotEqual(row.request_ip, "203.0.113.42")
+            finally:
+                close_all_engines()
+
 
 class TestAuditEndpointsAndRecording(unittest.TestCase):
     """End-to-end HTTP tests for audit recording (auth, curation, admin, 403 denials) and query endpoints."""

@@ -1,5 +1,10 @@
+import hashlib
+import hmac
+import ipaddress
 import json
 import math
+import os
+import secrets
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -24,6 +29,38 @@ DEFAULT_MAX_AUDIT_ROWS = 100_000
 
 _prune_lock = threading.RLock()
 _last_prune_times: Dict[str, float] = {}
+_FALLBACK_IP_HMAC_KEY = secrets.token_bytes(32)
+_HASHED_IP_PREFIX = "ip:"
+
+
+def _get_ip_hmac_key() -> bytes:
+    """Returns the keyed HMAC secret for IP pseudonymization (JWT_SECRET in prod, process-local fallback in dev/test)."""
+    secret = os.environ.get("JWT_SECRET", "").strip()
+    if secret:
+        return secret.encode("utf-8")
+    return _FALLBACK_IP_HMAC_KEY
+
+
+def hash_ip_address(raw_ip: Optional[str]) -> Optional[str]:
+    """
+    Pseudonymizes a client IP address using a keyed HMAC-SHA256 digest (`ip:<16-hex>`).
+    Preserves correlation across requests without persisting raw PII IP addresses.
+    """
+    if raw_ip is None:
+        return None
+    text = str(raw_ip).strip()
+    if not text:
+        return None
+    if text.startswith(_HASHED_IP_PREFIX) and len(text) == 19:
+        suffix = text[len(_HASHED_IP_PREFIX):]
+        if all(ch in "0123456789abcdef" for ch in suffix):
+            return text
+    try:
+        normalized = ipaddress.ip_address(text).compressed
+    except ValueError:
+        normalized = text
+    digest = hmac.new(_get_ip_hmac_key(), normalized.encode("utf-8"), hashlib.sha256).hexdigest()[:16]
+    return f"{_HASHED_IP_PREFIX}{digest}"
 
 
 def clear_prune_throttle() -> None:
@@ -116,7 +153,7 @@ def _extract_request_context(
             if ua:
                 resolved_ua = str(ua).strip()
     if resolved_ip is not None:
-        resolved_ip = str(resolved_ip)[:64] or None
+        resolved_ip = hash_ip_address(str(resolved_ip)[:64])
     if resolved_ua is not None:
         resolved_ua = str(resolved_ua)[:512] or None
     return resolved_ip, resolved_ua
