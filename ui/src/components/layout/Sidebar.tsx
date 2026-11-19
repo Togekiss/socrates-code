@@ -23,6 +23,7 @@ import {
   X,
 } from 'lucide-react';
 import type { BackupInfo, BackupRole, CurationSummary, User } from '../../types';
+import { useResponsiveText } from '../../utils';
 import {
   formatRoleLabel,
   getEffectiveRole,
@@ -87,10 +88,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onCloseMobile,
 }) => {
   const navigate = useNavigate();
+  const { isMobile } = useResponsiveText();
 
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     return localStorage.getItem('socrates_sidebar_collapsed') === 'true';
   });
+  // Mobile slide-over drawer always renders expanded while preserving desktop collapsed state.
+  const isCollapsed = collapsed && !isMobile;
 
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     const saved = localStorage.getItem('socrates_theme');
@@ -293,12 +297,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <aside
-      className={`app-sidebar ${collapsed ? 'is-collapsed' : ''} ${mobileOpen ? 'is-open' : ''}`}
+      className={`app-sidebar ${isCollapsed ? 'is-collapsed' : ''} ${mobileOpen ? 'is-open' : ''}`}
       aria-label="Sidebar navigation"
     >
       {/* Sidebar Header: Brand & Collapse Toggle */}
       <div className="sidebar-header">
-        {!collapsed && (
+        {!isCollapsed && (
           <NavLink to="/" className="sidebar-brand" onClick={handleNavLinkClick}>
             <span>Socrates</span>
           </NavLink>
@@ -321,17 +325,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
             type="button"
             className="btn btn-ghost btn-icon btn-sm desktop-only-collapse-btn"
             onClick={toggleCollapsed}
-            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            title={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
-            {collapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
+            {isCollapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
           </button>
         </div>
       </div>
 
       {/* Active Backup Header Section */}
       <div className="sidebar-backup-section">
-        {collapsed ? (
+        {isCollapsed ? (
           <>
             <div
               className="sidebar-backup-badge"
@@ -397,11 +401,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <nav className="sidebar-nav">
         {navGroups.map((group, groupIdx) => (
           <React.Fragment key={group.title}>
-            {collapsed && groupIdx > 0 && (
+            {isCollapsed && groupIdx > 0 && (
               <div className="sidebar-group-separator" aria-hidden="true" />
             )}
             <div className="sidebar-group">
-              {!collapsed && <div className="sidebar-group-title">{group.title}</div>}
+              {!isCollapsed && <div className="sidebar-group-title">{group.title}</div>}
               <div className="sidebar-group-items">
                 {group.items.map(item => {
                 const Icon = item.icon;
@@ -419,17 +423,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     <div className="sidebar-nav-item-left">
                       <div className="sidebar-nav-icon-wrapper">
                         <Icon size={18} className="flex-shrink-0" />
-                        {collapsed && item.badge != null && (
+                        {isCollapsed && item.badge != null && (
                           <span
                             className={`sidebar-nav-dot sidebar-nav-dot--${item.badgeVariant || 'accent'}`}
                             title={`${item.label}: ${item.badge}`}
                           />
                         )}
                       </div>
-                      {!collapsed && <span className="sidebar-nav-label">{item.label}</span>}
+                      {!isCollapsed && <span className="sidebar-nav-label">{item.label}</span>}
                     </div>
 
-                    {!collapsed && item.badge != null && (
+                    {!isCollapsed && item.badge != null && (
                       <span
                         className={`badge badge-${item.badgeVariant || 'neutral'} sidebar-nav-badge`}
                         data-sidebar-badge
@@ -449,7 +453,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Footer Controls: Theme Switch, User Profile & Logout */}
       <div className="sidebar-footer">
-        {collapsed ? (
+        {isCollapsed ? (
           <>
             <button
               type="button"

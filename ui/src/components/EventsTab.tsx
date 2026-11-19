@@ -1,14 +1,16 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
+import { ArrowUpDown, Loader2 } from 'lucide-react';
 import { api, getErrorMessage } from '../api';
 import { ScenesFilter } from './scenes/ScenesFilter';
 import { EventCard } from './scenes/EventCard';
 import { EventEditModal } from './scenes/EventEditModal';
-import { Search, ArrowUpDown } from 'lucide-react';
-import { Button, ResponsiveText } from './ui';
+import { Button, Pagination, PanelSurface, ResponsiveText } from './ui';
 import { UnlinkedWriterBanner } from './layout/UnlinkedWriterBanner';
 import { BackupStatusGuard } from './layout/BackupStatusGuard';
+import { ListPageLayout } from './layout/ListPageLayout';
 import { useBackupStatusGuard } from '../hooks/useBackupStatusGuard';
-import type { BackupInfo, Character, EventRecord, MyWriter } from '../types';
+import { useArchiveRoster } from '../hooks/useArchiveRoster';
+import type { BackupInfo, EventRecord, MyWriter } from '../types';
 import { getRoleLevel, ROLE_LEVELS } from '../utils/rbac';
 
 interface EventsTabProps {
@@ -35,21 +37,22 @@ export const EventsTab = ({
   onRefreshSummary,
 }: EventsTabProps) => {
   const [events, setEvents] = useState<EventRecord[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [totalItems, setTotalItems] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
-  const [hasMore, setHasMore] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
-  const [allCharacters, setAllCharacters] = useState<Character[]>([]);
   const [myWriter, setMyWriter] = useState<MyWriter | null>(initialMyWriter || null);
   const [editingEvent, setEditingEvent] = useState<EventRecord | null>(null);
 
   // Filters
   const [charactersFilter, setCharactersFilter] = useState<number[]>([]);
+  const [groupsFilter, setGroupsFilter] = useState<number[]>([]);
   const [characterLogic, setCharacterLogic] = useState<'AND' | 'OR'>('AND');
   const [writersFilter, setWritersFilter] = useState<string[]>([]);
   const [writerLogic, setWriterLogic] = useState<'AND' | 'OR'>('AND');
-  const [channelsFilter, setChannelsFilter] = useState<string[]>([]);
   const [typesFilter, setTypesFilter] = useState<string[]>([]);
   const [statusesFilter, setStatusesFilter] = useState<string[]>([]);
   const [includeAlterEgos, setIncludeAlterEgos] = useState(true);
@@ -59,6 +62,7 @@ export const EventsTab = ({
   const [after, setAfter] = useState('');
   const [byMe, setByMe] = useState(false);
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
 
   const statusGuard = useBackupStatusGuard({
@@ -69,42 +73,24 @@ export const EventsTab = ({
     backupLoading,
   });
   const { isReady } = statusGuard;
+  const { allCharacters, allGroups, allWriters } = useArchiveRoster(backupId, isReady);
+
+  useEffect(() => {
+    setMyWriter(initialMyWriter || null);
+  }, [initialMyWriter]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 350);
+    return () => clearTimeout(timer);
+  }, [search]);
 
   useEffect(() => {
     setEvents([]);
+    setTotalItems(0);
+    setTotalPages(1);
     setPage(1);
-    setHasMore(false);
     setError(null);
-    setAllCharacters([]);
   }, [backupId]);
-
-  useEffect(() => {
-    if (isReady) {
-      Promise.all([
-        api.getCharacters(backupId).then(res => {
-          if (Array.isArray(res)) setAllCharacters(res);
-        }),
-        api.getMyWriter(backupId).then(setMyWriter).catch(() => null),
-      ]).catch(console.error);
-    }
-  }, [backupId, isReady]);
-
-  const resolvedCharacterIds = useMemo(() => {
-    if (charactersFilter.length === 0) return [];
-    const resolved = new Set<number>();
-    charactersFilter.forEach(id => {
-      resolved.add(id);
-      const char = allCharacters.find(c => c.id === id);
-      if (char && char.versions) {
-        char.versions.forEach(v => {
-          if (includeAlterEgos && v.version_type === 'alter_ego') resolved.add(v.id);
-          if (includeFamiliars && v.version_type === 'familiar') resolved.add(v.id);
-          if (includeNPCs && v.version_type === 'npc') resolved.add(v.id);
-        });
-      }
-    });
-    return Array.from(resolved);
-  }, [charactersFilter, includeAlterEgos, includeFamiliars, includeNPCs, allCharacters]);
 
   const buildQueryParams = useCallback(
     (targetPage: number) => {
@@ -112,9 +98,8 @@ export const EventsTab = ({
       params.append('page', targetPage.toString());
       params.append('per_page', '50');
       params.append('sort', sortOrder);
-      if (search.trim()) params.append('search', search.trim());
+      if (debouncedSearch.trim()) params.append('search', debouncedSearch.trim());
 
-      channelsFilter.forEach(ch => params.append('channels', ch));
       typesFilter.forEach(t => params.append('types', t));
       statusesFilter.forEach(s => params.append('statuses', s));
 
@@ -130,17 +115,21 @@ export const EventsTab = ({
         }
       }
 
-      resolvedCharacterIds.forEach(id => params.append('characters', id.toString()));
-      if (resolvedCharacterIds.length > 0) {
+      charactersFilter.forEach(id => params.append('characters', id.toString()));
+      groupsFilter.forEach(gid => params.append('character_groups', gid.toString()));
+      if (charactersFilter.length > 0 || groupsFilter.length > 0) {
         params.append('character_logic', characterLogic);
+        const allowVersions = characterLogic === 'OR';
+        params.append('include_alter_egos', String(allowVersions && includeAlterEgos));
+        params.append('include_familiars', String(allowVersions && includeFamiliars));
+        params.append('include_npcs', String(allowVersions && includeNPCs));
       }
 
       return params;
     },
     [
       sortOrder,
-      search,
-      channelsFilter,
+      debouncedSearch,
       typesFilter,
       statusesFilter,
       before,
@@ -148,13 +137,17 @@ export const EventsTab = ({
       byMe,
       writersFilter,
       writerLogic,
-      resolvedCharacterIds,
+      charactersFilter,
+      groupsFilter,
       characterLogic,
+      includeAlterEgos,
+      includeFamiliars,
+      includeNPCs,
     ]
   );
 
   const loadEvents = useCallback(
-    (targetPage: number, reset = false) => {
+    (targetPage: number) => {
       if (!isReady) return;
       setLoading(true);
       setError(null);
@@ -164,13 +157,16 @@ export const EventsTab = ({
       api
         .getEvents(backupId, params)
         .then(res => {
-          const newEvents = res.events || [];
-          setEvents(prev => (reset ? newEvents : [...prev, ...newEvents]));
-          setHasMore(newEvents.length === 50);
+          const nextEvents = res.events || [];
+          setEvents(nextEvents);
+          setTotalItems(res.total_items ?? nextEvents.length);
+          setTotalPages(Math.max(1, res.total_pages ?? 1));
         })
         .catch(err => {
           console.error(err);
-          setHasMore(false);
+          setEvents([]);
+          setTotalItems(0);
+          setTotalPages(1);
           setError(getErrorMessage(err, 'Failed to fetch events.'));
         })
         .finally(() => setLoading(false));
@@ -178,30 +174,42 @@ export const EventsTab = ({
     [backupId, isReady, buildQueryParams]
   );
 
-  // Debounced filter effect
-  useEffect(() => {
-    setPage(1);
-    const timeout = setTimeout(() => {
-      loadEvents(1, true);
-    }, 400);
-    return () => clearTimeout(timeout);
-  }, [
+  const filterKey = JSON.stringify({
     backupId,
-    isReady,
-    resolvedCharacterIds,
+    debouncedSearch,
+    charactersFilter,
+    groupsFilter,
     characterLogic,
+    includeAlterEgos,
+    includeFamiliars,
+    includeNPCs,
     writersFilter,
     writerLogic,
-    channelsFilter,
     typesFilter,
     statusesFilter,
     before,
     after,
     byMe,
-    search,
     sortOrder,
-    loadEvents,
-  ]);
+  });
+  const prevFilterKeyRef = useRef(filterKey);
+
+  useEffect(() => {
+    if (!isReady) return;
+    if (prevFilterKeyRef.current !== filterKey) {
+      prevFilterKeyRef.current = filterKey;
+      if (page !== 1) {
+        setPage(1);
+        return;
+      }
+    }
+    loadEvents(page);
+  }, [isReady, filterKey, page, loadEvents]);
+
+  const handlePageChange = (nextPage: number) => {
+    setPage(nextPage);
+    scrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
   const effectiveRoleLevel = propRoleLevel ?? backupInfo?.role_level ?? getRoleLevel(backupInfo?.effective_role);
   const canCurate = effectiveRoleLevel >= ROLE_LEVELS.curator;
@@ -210,26 +218,23 @@ export const EventsTab = ({
     return <BackupStatusGuard title="Events" guard={statusGuard} />;
   }
 
+  const filtersActive = Boolean(
+    debouncedSearch.trim() ||
+      charactersFilter.length > 0 ||
+      groupsFilter.length > 0 ||
+      writersFilter.length > 0 ||
+      statusesFilter.length > 0 ||
+      before ||
+      after ||
+      byMe
+  );
+
   return (
-    <div className="flex-col gap-md">
-      {/* Guidance Banner when By Me is active and User is unlinked */}
-      {byMe && !myWriter && (
-        <UnlinkedWriterBanner onNavigateToWriters={onNavigateToWriters} className="mb-sm" />
-      )}
-
-      {/* Search & Sort Bar */}
-      <div className="flex-row gap-sm items-center">
-        <div className="search-input-wrapper" style={{ flex: '1 1 260px' }}>
-          <Search size={16} />
-          <input
-            type="text"
-            className="input"
-            placeholder="Search events or location custom names..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-          />
-        </div>
-
+    <ListPageLayout
+      title="Events"
+      descriptionKey="descEvents"
+      guideKey="events"
+      headerAction={
         <Button
           variant="secondary"
           size="md"
@@ -238,91 +243,114 @@ export const EventsTab = ({
         >
           <ResponsiveText textKey={sortOrder === 'asc' ? 'sortOldest' : 'sortNewest'} />
         </Button>
-      </div>
-
-      <ScenesFilter
-        mode="events"
-        charactersFilter={charactersFilter}
-        setCharactersFilter={setCharactersFilter}
-        characterLogic={characterLogic}
-        setCharacterLogic={setCharacterLogic}
-        writersFilter={writersFilter}
-        setWritersFilter={setWritersFilter}
-        writerLogic={writerLogic}
-        setWriterLogic={setWriterLogic}
-        categoriesFilter={channelsFilter}
-        setCategoriesFilter={setChannelsFilter}
-        typesFilter={typesFilter}
-        setTypesFilter={setTypesFilter}
-        statusesFilter={statusesFilter}
-        setStatusesFilter={setStatusesFilter}
-        includeAlterEgos={includeAlterEgos}
-        setIncludeAlterEgos={setIncludeAlterEgos}
-        includeFamiliars={includeFamiliars}
-        setIncludeFamiliars={setIncludeFamiliars}
-        includeNPCs={includeNPCs}
-        setIncludeNPCs={setIncludeNPCs}
-        before={before}
-        setBefore={setBefore}
-        after={after}
-        setAfter={setAfter}
-        byMe={byMe}
-        setByMe={setByMe}
-        allCharacters={allCharacters}
-      />
-
-      {error && (
+      }
+      filterBar={
+        <ScenesFilter
+          mode="events"
+          search={search}
+          setSearch={setSearch}
+          charactersFilter={charactersFilter}
+          setCharactersFilter={setCharactersFilter}
+          groupsFilter={groupsFilter}
+          setGroupsFilter={setGroupsFilter}
+          characterLogic={characterLogic}
+          setCharacterLogic={setCharacterLogic}
+          writersFilter={writersFilter}
+          setWritersFilter={setWritersFilter}
+          writerLogic={writerLogic}
+          setWriterLogic={setWriterLogic}
+          typesFilter={typesFilter}
+          setTypesFilter={setTypesFilter}
+          statusesFilter={statusesFilter}
+          setStatusesFilter={setStatusesFilter}
+          includeAlterEgos={includeAlterEgos}
+          setIncludeAlterEgos={setIncludeAlterEgos}
+          includeFamiliars={includeFamiliars}
+          setIncludeFamiliars={setIncludeFamiliars}
+          includeNPCs={includeNPCs}
+          setIncludeNPCs={setIncludeNPCs}
+          before={before}
+          setBefore={setBefore}
+          after={after}
+          setAfter={setAfter}
+          byMe={byMe}
+          setByMe={setByMe}
+          allCharacters={allCharacters}
+          allGroups={allGroups}
+          allWriters={allWriters}
+        />
+      }
+      banners={
+        byMe && !myWriter ? (
+          <UnlinkedWriterBanner onNavigateToWriters={onNavigateToWriters} />
+        ) : undefined
+      }
+      countText={
+        !error && (!loading || totalItems > 0) ? (
+          <span>
+            Showing{' '}
+            <strong>
+              {totalItems > events.length ? `${events.length} of ${totalItems}` : totalItems}
+            </strong>{' '}
+            {totalItems === 1 ? 'event' : 'events'}
+            {filtersActive && ' (filtered)'}
+          </span>
+        ) : undefined
+      }
+      scrollRef={scrollRef}
+      modals={
+        canCurate && editingEvent ? (
+          <EventEditModal
+            backupId={backupId}
+            event={editingEvent}
+            allEvents={events}
+            onClose={() => setEditingEvent(null)}
+            onUpdated={() => {
+              loadEvents(page);
+              if (onRefreshSummary) onRefreshSummary();
+            }}
+          />
+        ) : undefined
+      }
+    >
+      {loading ? (
+        <PanelSurface className="text-center p-xl">
+          <Loader2
+            size={32}
+            className="animate-spin text-accent"
+            style={{ margin: '0 auto 1rem auto' }}
+          />
+          <p className="text-secondary">Loading events...</p>
+        </PanelSurface>
+      ) : error ? (
         <div className="banner-danger">
           <span className="text-md">{error}</span>
         </div>
-      )}
-
-      <div className="flex-col gap-sm">
-        {events.length === 0 && !loading && !error ? (
-          <div className="text-secondary text-center p-xl">
-            No events match the current filters.
-          </div>
-        ) : (
-          events.map(ev => (
+      ) : events.length === 0 ? (
+        <div className="text-secondary text-center p-xl">
+          No events match the current filters.
+        </div>
+      ) : (
+        <div className="flex-col gap-sm">
+          {events.map(ev => (
             <EventCard
               key={ev.pk || ev.id}
               event={ev}
               allCharacters={allCharacters}
               onEdit={canCurate ? target => setEditingEvent(target) : undefined}
             />
-          ))
-        )}
-      </div>
-
-      {hasMore && (
-        <div className="flex-row justify-center mt-md">
-          <Button
-            variant="secondary"
-            size="md"
-            onClick={() => {
-              const next = page + 1;
-              setPage(next);
-              loadEvents(next, false);
-            }}
-            loading={loading}
-          >
-            Load More Events
-          </Button>
+          ))}
         </div>
       )}
 
-      {canCurate && editingEvent && (
-        <EventEditModal
-          backupId={backupId}
-          event={editingEvent}
-          allEvents={events}
-          onClose={() => setEditingEvent(null)}
-          onUpdated={() => {
-            loadEvents(1, true);
-            if (onRefreshSummary) onRefreshSummary();
-          }}
+      {!loading && !error && totalPages > 1 && (
+        <Pagination
+          currentPage={page}
+          totalPages={totalPages}
+          totalItems={totalItems}
+          onPageChange={handlePageChange}
         />
       )}
-    </div>
+    </ListPageLayout>
   );
 };

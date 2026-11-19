@@ -122,7 +122,7 @@ export const EventEditModal: React.FC<EventEditModalProps> = ({
       title={`Edit Event (${event.id})`}
       size="lg"
     >
-      <div className="flex-col gap-lg">
+      <div className="flex-col gap-xl">
         {error && (
           <div className="banner-danger">
             <span className="text-md">{error}</span>
@@ -130,7 +130,7 @@ export const EventEditModal: React.FC<EventEditModalProps> = ({
         )}
 
         {/* Section 1: Event & Channel Custom Names */}
-        <form onSubmit={handleSaveMetadata} className="flex-col gap-md">
+        <form onSubmit={handleSaveMetadata} className="flex-col gap-lg">
           <div className="flex-col gap-xs">
             <label className="text-secondary text-sm font-semibold">Event Name</label>
             <input

@@ -917,6 +917,7 @@ def _query_events_in_session(
     status: str = "all",
     character_ids: Optional[List[int]] = None,
     characters: Optional[List[int]] = None,
+    character_group_ids: Optional[List[int]] = None,
     character_logic: str = "AND",
     character_name: Optional[str] = None,
     writer_names: Optional[List[str]] = None,
@@ -983,6 +984,7 @@ def _query_events_in_session(
                 func.lower(EventModel.event_key).like(like_pattern, escape="\\"),
                 EventModel.scenes.any(func.lower(SceneModel.custom_name).like(like_pattern, escape="\\")),
                 EventModel.scenes.any(SceneModel.channel_pk.in_(matching_chan_pks)),
+                EventModel.scenes.any(SceneModel.category_pk.in_(matching_chan_pks)),
             )
         )
 
@@ -1003,35 +1005,17 @@ def _query_events_in_session(
             if mc.char_id not in eff_char_ids:
                 eff_char_ids.append(mc.char_id)
 
-    if eff_char_ids:
-        chars_by_cid = {}
-        fetched_chars = (
-            session.query(CharacterModel)
-            .options(selectinload(CharacterModel.children))
-            .filter(
-                CharacterModel.backup_id == str(backup_id),
-                CharacterModel.char_id.in_(eff_char_ids),
-            )
-            .all()
-        )
-        chars_by_cid = {c.char_id: c for c in fetched_chars}
-
-        resolved_clusters = []
-        for cid in eff_char_ids:
-            family_pks = set()
-            char = chars_by_cid.get(cid)
-            if char:
-                family_pks.add(char.pk)
-                for child in char.children:
-                    vt = child.version_type
-                    if include_alter_egos and vt == "alter_ego":
-                        family_pks.add(child.pk)
-                    if include_familiars and vt == "familiar":
-                        family_pks.add(child.pk)
-                    if include_npcs and vt == "npc":
-                        family_pks.add(child.pk)
-            resolved_clusters.append(family_pks)
-
+    from db.character_service import resolve_character_filter_clusters
+    resolved_clusters = resolve_character_filter_clusters(
+        session=session,
+        backup_id=backup_id,
+        character_ids=eff_char_ids,
+        character_group_ids=character_group_ids,
+        include_alter_egos=include_alter_egos,
+        include_familiars=include_familiars,
+        include_npcs=include_npcs,
+    )
+    if resolved_clusters is not None:
         empty_res = {
             "total_items": 0,
             "current_page": page or 1,

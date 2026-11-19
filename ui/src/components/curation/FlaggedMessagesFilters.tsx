@@ -1,6 +1,5 @@
 import React from 'react';
-import { Plus } from 'lucide-react';
-import { CollapsibleFilterBar, SegmentedControl, FilterChip, Badge, Button } from '../ui';
+import { CollapsibleFilterBar, SegmentedControl, FilterChip, Badge } from '../ui';
 
 const KIND_OPTIONS = [
   { value: 'failed_tupper', label: 'Failed Tupper' },
@@ -16,7 +15,6 @@ const RESOLUTION_OPTIONS = [
 ] as const;
 
 export interface FlaggedMessagesFiltersProps {
-  totalItems: number;
   statusFilter: 'unresolved' | 'resolved' | 'all';
   onStatusChange: (status: 'unresolved' | 'resolved' | 'all') => void;
   statusCounts: { unresolved: number; resolved: number; all: number };
@@ -27,11 +25,9 @@ export interface FlaggedMessagesFiltersProps {
   onSceneTypeChange?: (sceneType: string) => void;
   resolutionFilter: string;
   onResolutionChange: (res: string) => void;
-  onOpenAddModal: () => void;
 }
 
 export const FlaggedMessagesFilters: React.FC<FlaggedMessagesFiltersProps> = ({
-  totalItems,
   statusFilter,
   onStatusChange,
   statusCounts,
@@ -42,7 +38,6 @@ export const FlaggedMessagesFilters: React.FC<FlaggedMessagesFiltersProps> = ({
   onSceneTypeChange,
   resolutionFilter,
   onResolutionChange,
-  onOpenAddModal,
 }) => {
   const handleKindClick = (value: string) => {
     onKindChange(kindFilter === value ? '' : value);
@@ -113,87 +108,77 @@ export const FlaggedMessagesFilters: React.FC<FlaggedMessagesFiltersProps> = ({
 
   return (
     <CollapsibleFilterBar
-      title={`Flagged Messages Review Queue (${totalItems})`}
+      title="Flagged Messages"
       activeCount={activeCount}
       summaryPills={summaryPills}
       onClearAll={handleClearAll}
-      actions={
-        <Button
-          variant="secondary"
-          size="xs"
-          onClick={onOpenAddModal}
-          icon={<Plus size={13} />}
-          title="Add flagged message manually"
-        >
-          Add Message
-        </Button>
-      }
-      className="mb-md"
     >
-      <div className="flex-col gap-md pt-xs">
-        {/* Prominent Controls: Status & Archive Scope Segmented Controls */}
-        <div className="flex-row justify-between items-center flex-wrap gap-md">
-          {/* Status Segmented Control */}
-          <div className="flex-col gap-xs">
+      <div className="filter-cols-row">
+        {/* Status Segmented Control */}
+        <div className="filter-col filter-col-auto">
+          <div className="filter-col-header">
             <label className="text-secondary text-sm font-semibold">Status</label>
-            <SegmentedControl<'unresolved' | 'resolved' | 'all'>
-              options={statusOptions}
-              value={statusFilter}
-              onChange={onStatusChange}
-              ariaLabel="Flagged Message Status Filter"
-            />
           </div>
-
-          {/* Archive Scope Segmented Control */}
-          {onSceneTypeChange && (
-            <div className="flex-col gap-xs">
-              <label className="text-secondary text-sm font-semibold">Archive Scope</label>
-              <SegmentedControl<string>
-                options={scopeOptions}
-                value={sceneTypeFilter}
-                onChange={onSceneTypeChange}
-                ariaLabel="Archive Scope Filter"
-              />
-            </div>
-          )}
+          <SegmentedControl<'unresolved' | 'resolved' | 'all'>
+            options={statusOptions}
+            value={statusFilter}
+            onChange={onStatusChange}
+            ariaLabel="Flagged Message Status Filter"
+          />
         </div>
 
-        {/* Independent Kind & Resolution Toggles */}
-        <div className="flex-row items-center justify-between flex-wrap gap-md pt-xs border-t border-color">
-          {/* Flagged Message Kind Chips */}
-          <div className="flex-col gap-xs">
+        {/* Archive Scope Segmented Control */}
+        {onSceneTypeChange && (
+          <div className="filter-col filter-col-auto">
+            <div className="filter-col-header">
+              <label className="text-secondary text-sm font-semibold">Archive Scope</label>
+            </div>
+            <SegmentedControl<string>
+              options={scopeOptions}
+              value={sceneTypeFilter}
+              onChange={onSceneTypeChange}
+              ariaLabel="Archive Scope Filter"
+            />
+          </div>
+        )}
+
+        {/* Flagged Message Kind Chips */}
+        <div className="filter-col filter-col-auto">
+          <div className="filter-col-header">
             <label className="text-secondary text-sm font-semibold">Message Kind</label>
-            <div className="flex-row items-center gap-xs flex-wrap">
-              {KIND_OPTIONS.map(opt => (
+          </div>
+          <div className="flex-row flex-wrap gap-xs">
+            {KIND_OPTIONS.map(opt => (
+              <FilterChip
+                key={opt.value}
+                active={kindFilter === opt.value}
+                onClick={() => handleKindClick(opt.value)}
+              >
+                {opt.label}
+              </FilterChip>
+            ))}
+          </div>
+        </div>
+
+        {/* Resolution Chips (only applicable when viewing resolved or all) */}
+        {statusFilter !== 'unresolved' && (
+          <div className="filter-col filter-col-auto">
+            <div className="filter-col-header">
+              <label className="text-secondary text-sm font-semibold">Resolution</label>
+            </div>
+            <div className="flex-row flex-wrap gap-xs">
+              {RESOLUTION_OPTIONS.map(opt => (
                 <FilterChip
                   key={opt.value}
-                  active={kindFilter === opt.value}
-                  onClick={() => handleKindClick(opt.value)}
+                  active={resolutionFilter === opt.value}
+                  onClick={() => handleResolutionClick(opt.value)}
                 >
                   {opt.label}
                 </FilterChip>
               ))}
             </div>
           </div>
-
-          {/* Resolution Chips (only applicable when viewing resolved or all) */}
-          {statusFilter !== 'unresolved' && (
-            <div className="flex-col gap-xs">
-              <label className="text-secondary text-sm font-semibold">Resolution</label>
-              <div className="flex-row items-center gap-xs flex-wrap">
-                {RESOLUTION_OPTIONS.map(opt => (
-                  <FilterChip
-                    key={opt.value}
-                    active={resolutionFilter === opt.value}
-                    onClick={() => handleResolutionClick(opt.value)}
-                  >
-                    {opt.label}
-                  </FilterChip>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
+        )}
       </div>
     </CollapsibleFilterBar>
   );

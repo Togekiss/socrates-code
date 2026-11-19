@@ -1,8 +1,16 @@
-import { Fragment, useCallback, useEffect, useState } from 'react';
-import { ChevronDown, ChevronRight, RefreshCw, ScrollText } from 'lucide-react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { ChevronDown, ChevronRight, RefreshCw, ScrollText, Search } from 'lucide-react';
 import { getErrorMessage, type ApiError } from '../api';
 import type { AuditLogEntry, AuditLogsResponse } from '../types';
-import { Button, PanelSurface } from './ui';
+import {
+  Badge,
+  Button,
+  CollapsibleFilterBar,
+  FilterChip,
+  Pagination,
+  PanelSurface,
+  type BadgeVariant,
+} from './ui';
 
 interface AuditLogViewerProps {
   title: string;
@@ -37,27 +45,11 @@ const formatUtcTimestamp = (raw?: string): string => {
   return `${parsed.toISOString().replace('T', ' ').slice(0, 19)} UTC`;
 };
 
-const statusBadgeStyle = (status?: string) => {
+const getStatusBadgeVariant = (status?: string): BadgeVariant => {
   const s = (status || '').toLowerCase();
-  if (s === 'denied') {
-    return {
-      color: 'var(--danger-color, #ef4444)',
-      borderColor: 'rgba(239, 68, 68, 0.35)',
-      background: 'rgba(239, 68, 68, 0.1)',
-    };
-  }
-  if (s === 'error' || s === 'failed') {
-    return {
-      color: '#f59e0b',
-      borderColor: 'rgba(245, 158, 11, 0.35)',
-      background: 'rgba(245, 158, 11, 0.1)',
-    };
-  }
-  return {
-    color: '#22c55e',
-    borderColor: 'rgba(34, 197, 94, 0.35)',
-    background: 'rgba(34, 197, 94, 0.1)',
-  };
+  if (s === 'denied') return 'danger';
+  if (s === 'error' || s === 'failed') return 'warning';
+  return 'success';
 };
 
 export const AuditLogViewer = ({
@@ -131,122 +123,229 @@ export const AuditLogViewer = ({
     setPage(1);
   };
 
+  const clearSingleFilter = (key: keyof FilterState) => {
+    setDraftFilters(prev => ({ ...prev, [key]: '' }));
+    setAppliedFilters(prev => ({ ...prev, [key]: '' }));
+    setPage(1);
+  };
+
+  const activeFilterEntries = useMemo(() => {
+    const entries: Array<{ key: keyof FilterState; label: string; value: string }> = [];
+    if (appliedFilters.action.trim()) {
+      entries.push({ key: 'action', label: 'Action', value: appliedFilters.action.trim() });
+    }
+    if (appliedFilters.status) {
+      entries.push({ key: 'status', label: 'Status', value: appliedFilters.status });
+    }
+    if (appliedFilters.actor_user_id.trim()) {
+      entries.push({ key: 'actor_user_id', label: 'Actor', value: appliedFilters.actor_user_id.trim() });
+    }
+    if (appliedFilters.target_type.trim()) {
+      entries.push({ key: 'target_type', label: 'Target', value: appliedFilters.target_type.trim() });
+    }
+    if (appliedFilters.from_ts.trim()) {
+      entries.push({ key: 'from_ts', label: 'From', value: appliedFilters.from_ts.trim() });
+    }
+    if (appliedFilters.to_ts.trim()) {
+      entries.push({ key: 'to_ts', label: 'To', value: appliedFilters.to_ts.trim() });
+    }
+    return entries;
+  }, [appliedFilters]);
+
+  const summaryPills = useMemo(() => {
+    if (activeFilterEntries.length === 0) return null;
+    return activeFilterEntries.map(entry => (
+      <Badge key={entry.key} variant="neutral">
+        {entry.label}: {entry.value}
+      </Badge>
+    ));
+  }, [activeFilterEntries]);
+
   const colCount = showBackupColumn ? 7 : 6;
 
   return (
-    <PanelSurface className="flex-col gap-md">
-      <div className="flex-row items-center justify-between gap-md flex-wrap">
-        <div className="flex-row items-center gap-sm">
-          <ScrollText size={18} style={{ color: 'var(--text-secondary)' }} />
+    <PanelSurface className="flex-col gap-lg">
+      <div className="section-header">
+        <div className="section-header-title-row">
+          <ScrollText size={18} className="section-header-icon section-header-icon--secondary" />
           <div>
-            <h3 style={{ margin: 0, fontSize: '1.05rem', color: 'var(--text-primary)' }}>{title}</h3>
-            {description && (
-              <p className="text-sm text-muted" style={{ margin: 0 }}>
-                {description}
-              </p>
-            )}
+            <h3 className="section-header-title">{title}</h3>
+            {description && <p className="section-header-desc">{description}</p>}
           </div>
         </div>
-        <Button type="button" variant="secondary" size="sm" onClick={() => void load()} disabled={loading}>
-          <RefreshCw size={14} className={loading ? 'spin' : ''} /> Refresh
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          onClick={() => void load()}
+          disabled={loading}
+          icon={<RefreshCw size={14} className={loading ? 'animate-spin' : ''} />}
+        >
+          Refresh
         </Button>
       </div>
 
-      {/* Filters */}
-      <div className="flex-row gap-xs flex-wrap items-center">
-        <input
-          type="text"
-          value={draftFilters.action}
-          onChange={e => setDraftFilters(prev => ({ ...prev, action: e.target.value }))}
-          onKeyDown={e => e.key === 'Enter' && applyFilters()}
-          placeholder="Action (e.g. writer.update)"
-          style={{ minWidth: '170px', fontSize: '0.8rem', padding: '0.35rem 0.5rem' }}
-        />
-        <select
-          value={draftFilters.status}
-          onChange={e => setDraftFilters(prev => ({ ...prev, status: e.target.value }))}
-          style={{ fontSize: '0.8rem', padding: '0.35rem 0.5rem' }}
-        >
-          <option value="">All statuses</option>
-          <option value="success">success</option>
-          <option value="denied">denied</option>
-          <option value="error">error</option>
-        </select>
-        <input
-          type="text"
-          value={draftFilters.actor_user_id}
-          onChange={e => setDraftFilters(prev => ({ ...prev, actor_user_id: e.target.value }))}
-          onKeyDown={e => e.key === 'Enter' && applyFilters()}
-          placeholder="Actor ID"
-          style={{ width: '140px', fontSize: '0.8rem', padding: '0.35rem 0.5rem' }}
-        />
-        <input
-          type="text"
-          value={draftFilters.target_type}
-          onChange={e => setDraftFilters(prev => ({ ...prev, target_type: e.target.value }))}
-          onKeyDown={e => e.key === 'Enter' && applyFilters()}
-          placeholder="Target type"
-          style={{ width: '125px', fontSize: '0.8rem', padding: '0.35rem 0.5rem' }}
-        />
-        <input
-          type="text"
-          value={draftFilters.from_ts}
-          onChange={e => setDraftFilters(prev => ({ ...prev, from_ts: e.target.value }))}
-          onKeyDown={e => e.key === 'Enter' && applyFilters()}
-          placeholder="From UTC ISO"
-          style={{ width: '155px', fontSize: '0.8rem', padding: '0.35rem 0.5rem' }}
-        />
-        <input
-          type="text"
-          value={draftFilters.to_ts}
-          onChange={e => setDraftFilters(prev => ({ ...prev, to_ts: e.target.value }))}
-          onKeyDown={e => e.key === 'Enter' && applyFilters()}
-          placeholder="To UTC ISO"
-          style={{ width: '155px', fontSize: '0.8rem', padding: '0.35rem 0.5rem' }}
-        />
-        <Button type="button" variant="secondary" size="sm" onClick={applyFilters}>
-          Filter
-        </Button>
-        <Button type="button" variant="ghost" size="sm" onClick={resetFilters}>
-          Reset
-        </Button>
-      </div>
+      <CollapsibleFilterBar
+        title="Audit Filters"
+        activeCount={activeFilterEntries.length}
+        summaryPills={summaryPills}
+        onClearAll={resetFilters}
+        actions={
+          <Button type="button" variant="primary" size="xs" onClick={applyFilters}>
+            Apply
+          </Button>
+        }
+      >
+        <div className="filter-cols-row">
+          <div className="filter-col filter-col-sm">
+            <div className="filter-col-header">
+              <label htmlFor="audit-filter-action" className="text-secondary">
+                Action
+              </label>
+            </div>
+            <div className="search-input-wrapper">
+              <Search size={14} />
+              <input
+                id="audit-filter-action"
+                type="text"
+                value={draftFilters.action}
+                onChange={e => setDraftFilters(prev => ({ ...prev, action: e.target.value }))}
+                onKeyDown={e => e.key === 'Enter' && applyFilters()}
+                placeholder="e.g. writer.update"
+              />
+            </div>
+          </div>
+
+          <div className="filter-col filter-col-xs">
+            <div className="filter-col-header">
+              <label htmlFor="audit-filter-status" className="text-secondary">
+                Status
+              </label>
+            </div>
+            <select
+              id="audit-filter-status"
+              className="select"
+              value={draftFilters.status}
+              onChange={e => setDraftFilters(prev => ({ ...prev, status: e.target.value }))}
+            >
+              <option value="">All statuses</option>
+              <option value="success">success</option>
+              <option value="denied">denied</option>
+              <option value="error">error</option>
+            </select>
+          </div>
+
+          <div className="filter-col filter-col-xs">
+            <div className="filter-col-header">
+              <label htmlFor="audit-filter-actor" className="text-secondary">
+                Actor ID
+              </label>
+            </div>
+            <input
+              id="audit-filter-actor"
+              type="text"
+              className="input"
+              value={draftFilters.actor_user_id}
+              onChange={e => setDraftFilters(prev => ({ ...prev, actor_user_id: e.target.value }))}
+              onKeyDown={e => e.key === 'Enter' && applyFilters()}
+              placeholder="Discord ID"
+            />
+          </div>
+
+          <div className="filter-col filter-col-xs">
+            <div className="filter-col-header">
+              <label htmlFor="audit-filter-target" className="text-secondary">
+                Target Type
+              </label>
+            </div>
+            <input
+              id="audit-filter-target"
+              type="text"
+              className="input"
+              value={draftFilters.target_type}
+              onChange={e => setDraftFilters(prev => ({ ...prev, target_type: e.target.value }))}
+              onKeyDown={e => e.key === 'Enter' && applyFilters()}
+              placeholder="e.g. writer"
+            />
+          </div>
+
+          <div className="filter-group">
+            <div className="filter-col filter-col-xs">
+              <div className="filter-col-header">
+                <label htmlFor="audit-filter-from" className="text-secondary">
+                  From (UTC ISO)
+                </label>
+              </div>
+              <input
+                id="audit-filter-from"
+                type="text"
+                className="input"
+                value={draftFilters.from_ts}
+                onChange={e => setDraftFilters(prev => ({ ...prev, from_ts: e.target.value }))}
+                onKeyDown={e => e.key === 'Enter' && applyFilters()}
+                placeholder="YYYY-MM-DD"
+              />
+            </div>
+
+            <div className="filter-col filter-col-xs">
+              <div className="filter-col-header">
+                <label htmlFor="audit-filter-to" className="text-secondary">
+                  To (UTC ISO)
+                </label>
+              </div>
+              <input
+                id="audit-filter-to"
+                type="text"
+                className="input"
+                value={draftFilters.to_ts}
+                onChange={e => setDraftFilters(prev => ({ ...prev, to_ts: e.target.value }))}
+                onKeyDown={e => e.key === 'Enter' && applyFilters()}
+                placeholder="YYYY-MM-DD"
+              />
+            </div>
+          </div>
+        </div>
+
+        {activeFilterEntries.length > 0 && (
+          <div className="filter-active-chips-row">
+            <span className="filter-active-chips-label">Filters:</span>
+            {activeFilterEntries.map(entry => (
+              <FilterChip
+                key={entry.key}
+                active
+                variant="info"
+                onRemove={() => clearSingleFilter(entry.key)}
+              >
+                {entry.label}: {entry.value}
+              </FilterChip>
+            ))}
+          </div>
+        )}
+      </CollapsibleFilterBar>
 
       {errorMsg ? (
-        <div
-          className="text-sm text-muted"
-          style={{
-            padding: '0.75rem 1rem',
-            borderRadius: '6px',
-            border: '1px dashed var(--border-color)',
-            background: 'var(--bg-secondary)',
-          }}
-        >
-          {errorMsg}
+        <div className="banner-danger mb-0" role="alert">
+          <span className="text-sm">{errorMsg}</span>
         </div>
       ) : items.length === 0 ? (
-        <div
-          className="text-sm text-muted"
-          style={{
-            padding: '0.75rem 1rem',
-            borderRadius: '6px',
-            border: '1px dashed var(--border-color)',
-          }}
-        >
-          {loading ? 'Loading audit log entries...' : 'No audit log entries match the current filters.'}
+        <div className="empty-state audit-empty-state">
+          <ScrollText size={28} className="empty-state-icon" />
+          <p className="m-0 text-sm text-secondary">
+            {loading ? 'Loading audit log entries...' : 'No audit log entries match the current filters.'}
+          </p>
         </div>
       ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
+        <div className="audit-table-wrapper">
+          <table className="audit-table">
             <thead>
-              <tr style={{ borderBottom: '1px solid var(--border-color)', textAlign: 'left' }}>
-                <th style={{ padding: '0.45rem 0.5rem', width: '28px' }}></th>
-                <th style={{ padding: '0.45rem 0.5rem' }}>Time (UTC)</th>
-                <th style={{ padding: '0.45rem 0.5rem' }}>Actor</th>
-                <th style={{ padding: '0.45rem 0.5rem' }}>Action</th>
-                <th style={{ padding: '0.45rem 0.5rem' }}>Status</th>
-                {showBackupColumn && <th style={{ padding: '0.45rem 0.5rem' }}>Backup</th>}
-                <th style={{ padding: '0.45rem 0.5rem' }}>Target</th>
+              <tr>
+                <th className="audit-table-chevron" aria-label="Expand details" />
+                <th>Time (UTC)</th>
+                <th>Actor</th>
+                <th>Action</th>
+                <th>Status</th>
+                {showBackupColumn && <th>Backup</th>}
+                <th>Target</th>
               </tr>
             </thead>
             <tbody>
@@ -262,72 +361,73 @@ export const AuditLogViewer = ({
                 return (
                   <Fragment key={entry.id}>
                     <tr
-                      style={{ borderBottom: '1px solid var(--border-color)', cursor: 'pointer' }}
+                      className={`audit-table-row ${isExpanded ? 'is-expanded' : ''}`}
                       onClick={() => setExpandedId(isExpanded ? null : entry.id)}
                     >
-                      <td style={{ padding: '0.45rem 0.5rem', color: 'var(--text-muted)' }}>
+                      <td className="audit-table-chevron">
                         {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                       </td>
-                      <td style={{ padding: '0.45rem 0.5rem', whiteSpace: 'nowrap', fontFamily: 'monospace' }}>
+                      <td className="audit-table-nowrap font-mono">
                         {formatUtcTimestamp(entry.created_at)}
                       </td>
-                      <td style={{ padding: '0.45rem 0.5rem' }}>
+                      <td>
                         <div>{actorLabel}</div>
                         {entry.actor_role && (
-                          <div className="text-xs text-muted">{entry.actor_role}</div>
+                          <div className="text-sm text-muted">{entry.actor_role}</div>
                         )}
                       </td>
-                      <td style={{ padding: '0.45rem 0.5rem', fontFamily: 'monospace' }}>{entry.action}</td>
-                      <td style={{ padding: '0.45rem 0.5rem' }}>
-                        <span
-                          style={{
-                            ...statusBadgeStyle(entry.status),
-                            border: '1px solid',
-                            borderRadius: '999px',
-                            padding: '0.1rem 0.45rem',
-                            fontSize: '0.72rem',
-                            fontWeight: 600,
-                          }}
-                        >
+                      <td className="font-mono">{entry.action}</td>
+                      <td>
+                        <Badge variant={getStatusBadgeVariant(entry.status)}>
                           {entry.status}
-                        </span>
+                        </Badge>
                       </td>
                       {showBackupColumn && (
-                        <td style={{ padding: '0.45rem 0.5rem', fontFamily: 'monospace' }}>
-                          {entry.backup_id || '—'}
-                        </td>
+                        <td className="font-mono">{entry.backup_id || '—'}</td>
                       )}
-                      <td style={{ padding: '0.45rem 0.5rem', fontFamily: 'monospace' }}>{targetLabel}</td>
+                      <td className="font-mono">{targetLabel}</td>
                     </tr>
                     {isExpanded && (
-                      <tr style={{ borderBottom: '1px solid var(--border-color)', background: 'var(--bg-secondary)' }}>
-                        <td colSpan={colCount} style={{ padding: '0.75rem' }}>
-                          <div className="flex-col gap-xs text-xs">
-                            <div className="flex-row gap-md flex-wrap text-muted">
-                              <span>Actor ID: <code>{entry.actor_user_id || '—'}</code></span>
-                              <span>Auth: <code>{entry.auth_method || '—'}</code></span>
-                              <span>IP: <code>{entry.request_ip || '—'}</code></span>
-                              <span>Timestamp: <code>{entry.created_at}</code></span>
+                      <tr className="audit-table-detail-row">
+                        <td colSpan={colCount}>
+                          <div className="audit-detail-meta">
+                            <span>
+                              Actor ID: <code>{entry.actor_user_id || '—'}</code>
+                            </span>
+                            <span>
+                              Auth: <code>{entry.auth_method || '—'}</code>
+                            </span>
+                            <span>
+                              IP: <code>{entry.request_ip || '—'}</code>
+                            </span>
+                            <span>
+                              Timestamp: <code>{entry.created_at}</code>
+                            </span>
+                          </div>
+                          <div className="audit-detail-grid">
+                            <div>
+                              <div className="audit-detail-label">Before</div>
+                              <pre className="audit-detail-pre">
+                                {entry.before !== undefined && entry.before !== null
+                                  ? JSON.stringify(entry.before, null, 2)
+                                  : '—'}
+                              </pre>
                             </div>
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.5rem', marginTop: '0.25rem' }}>
-                              <div>
-                                <div className="text-muted" style={{ fontWeight: 600, marginBottom: '0.2rem' }}>Before</div>
-                                <pre style={{ margin: 0, padding: '0.5rem', borderRadius: '4px', background: 'var(--bg-primary)', overflowX: 'auto', maxHeight: '220px' }}>
-                                  {entry.before !== undefined && entry.before !== null ? JSON.stringify(entry.before, null, 2) : '—'}
-                                </pre>
-                              </div>
-                              <div>
-                                <div className="text-muted" style={{ fontWeight: 600, marginBottom: '0.2rem' }}>After</div>
-                                <pre style={{ margin: 0, padding: '0.5rem', borderRadius: '4px', background: 'var(--bg-primary)', overflowX: 'auto', maxHeight: '220px' }}>
-                                  {entry.after !== undefined && entry.after !== null ? JSON.stringify(entry.after, null, 2) : '—'}
-                                </pre>
-                              </div>
-                              <div>
-                                <div className="text-muted" style={{ fontWeight: 600, marginBottom: '0.2rem' }}>Metadata</div>
-                                <pre style={{ margin: 0, padding: '0.5rem', borderRadius: '4px', background: 'var(--bg-primary)', overflowX: 'auto', maxHeight: '220px' }}>
-                                  {entry.metadata !== undefined && entry.metadata !== null ? JSON.stringify(entry.metadata, null, 2) : '—'}
-                                </pre>
-                              </div>
+                            <div>
+                              <div className="audit-detail-label">After</div>
+                              <pre className="audit-detail-pre">
+                                {entry.after !== undefined && entry.after !== null
+                                  ? JSON.stringify(entry.after, null, 2)
+                                  : '—'}
+                              </pre>
+                            </div>
+                            <div>
+                              <div className="audit-detail-label">Metadata</div>
+                              <pre className="audit-detail-pre">
+                                {entry.metadata !== undefined && entry.metadata !== null
+                                  ? JSON.stringify(entry.metadata, null, 2)
+                                  : '—'}
+                              </pre>
                             </div>
                           </div>
                         </td>
@@ -341,32 +441,12 @@ export const AuditLogViewer = ({
         </div>
       )}
 
-      {/* Pagination */}
-      <div className="flex-row items-center justify-between gap-md flex-wrap text-xs text-muted">
-        <span>
-          Showing page {page} of {totalPages} ({total} {total === 1 ? 'entry' : 'entries'})
-        </span>
-        <div className="flex-row gap-xs">
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            onClick={() => setPage(p => Math.max(1, p - 1))}
-            disabled={loading || page <= 1}
-          >
-            Previous
-          </Button>
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-            disabled={loading || page >= totalPages}
-          >
-            Next
-          </Button>
-        </div>
-      </div>
+      <Pagination
+        currentPage={page}
+        totalPages={totalPages}
+        totalItems={total}
+        onPageChange={setPage}
+      />
     </PanelSurface>
   );
 };

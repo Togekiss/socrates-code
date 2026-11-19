@@ -11,15 +11,17 @@
   /* ==========================================================================
      Backgrounds & Surfaces (Dark Theme Default)
      ========================================================================== */
-  --bg-primary: #0f1115;
-  --bg-secondary: #17191e;
-  --bg-tertiary: #1f2229;
-  --bg-elevated: #262a34;
-  --bg-terminal: #090a0f;
+  --bg-primary: rgb(15, 17, 21);
+  --bg-secondary: rgb(23, 25, 30);
+  --bg-tertiary: rgb(31, 34, 41);
+  --bg-elevated: rgb(38, 42, 52);
+  --bg-terminal: rgb(9, 10, 15);
+  --bg-subtle:rgba(0, 0, 0, 0.15);
+  --bg-accent:rgba(109, 40, 217, 0.12);
   
   --surface-panel: rgba(23, 25, 30, 0.72);
-  --surface-card: #1b1e26;
-  --surface-card-hover: #21252f;
+  --surface-card: rgb(27, 30, 38);
+  --surface-card-hover: rgb(33, 37, 47);
   
   /* Glassmorphism (Legacy compatibility + modern blur surfaces) */
   --glass-bg: rgba(23, 25, 30, 0.6);
@@ -29,10 +31,11 @@
   /* ==========================================================================
      Accents (Violet / Purple)
      ========================================================================== */
-  --accent-primary: #6d28d9;
-  --accent-primary-hover: #7c3aed;
-  --accent-secondary: #8b5cf6;
-  --accent-light: #c4b5fd;
+  --accent-primary: rgb(109, 40, 217);
+  --accent-primary-hover: rgb(124, 58, 237);
+  --accent-secondary: rgb(139, 92, 246);
+  --accent-light: rgb(196, 181, 253);
+  --accent-faint: rgba(139, 92, 246, 0.08);
   --accent-subtle: rgba(139, 92, 246, 0.14);
   --accent-border: rgba(139, 92, 246, 0.35);
   --accent-glow: rgba(139, 92, 246, 0.4);
@@ -40,10 +43,10 @@
   /* ==========================================================================
      Text Hierarchy
      ========================================================================== */
-  --text-primary: #f8fafc;
-  --text-secondary: #94a3b8;
-  --text-muted: #64748b;
-  --text-on-accent: #ffffff;
+  --text-primary: rgb(248, 250, 252);
+  --text-secondary: rgb(148, 163, 184);
+  --text-muted: rgb(100, 116, 139);
+  --text-on-accent: rgb(255, 255, 255);
 
   /* ==========================================================================
      Font Sizes
@@ -130,6 +133,7 @@
   --bg-tertiary: #e2e8f0;
   --bg-elevated: #ffffff;
   --bg-terminal: #0f172a;
+  --bg-subtle:rgba(0, 80, 161, 0.08);
   
   --surface-panel: rgba(255, 255, 255, 0.85);
   --surface-card: #ffffff;
@@ -144,6 +148,7 @@
   --accent-primary-hover: #5b21b6;
   --accent-secondary: #7c3aed;
   --accent-light: #5b21b6;
+  --accent-faint: rgba(109, 40, 217, 0.04);
   --accent-subtle: rgba(109, 40, 217, 0.08);
   --accent-border: rgba(109, 40, 217, 0.25);
   --accent-glow: rgba(109, 40, 217, 0.2);

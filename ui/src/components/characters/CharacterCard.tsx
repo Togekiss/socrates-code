@@ -48,16 +48,17 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({
 
   return (
     <div
-      className={`data-card character-card-full ${isNested ? 'event-channel-row--thread' : ''}`.trim()}
+      className={`data-card character-card-full`.trim()}
       style={{
-        borderLeft: isNested ? '3px solid var(--accent-secondary)' : undefined,
+        borderLeft: isNested ? '2px solid var(--accent-secondary)' : undefined,
       }}
     >
       <div className="flex-col gap-xs">
         {/* Header Row */}
-        <div className="flex-row items-start justify-between flex-wrap gap-xs">
-          <div>
-            <div className="flex-row items-center gap-xs flex-wrap">
+        <div className="flex-row items-start justify-between gap-xs">
+          {/* Header info */}
+          <div className="flex-col flex-1 gap-xs">
+            <div className="flex-row items-baseline gap-sm flex-wrap">
               <h4 style={{ margin: 0, fontSize: isNested ? '0.95rem' : '1.1rem', color: 'var(--text-primary)' }}>
                 {mainName}
               </h4>
@@ -67,37 +68,31 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({
                 </Badge>
               )}
             </div>
+            <div className="flex-row items-baseline gap-xs" style={{ minWidth: 0 }}> 
+              <div className="ellipsis-in-mobile" style={{ minWidth: 0 , lineHeight: '1.2'}}>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginRight: '0.2rem', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                  ID: #{character.id}
+                </span>
 
-            {otherNames && (
-              <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                aka {otherNames}
+                {otherNames && (
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', minWidth: 0 }}>
+                    · aka {otherNames}
+                  </span>
+                )}
               </div>
-            )}
-
+            </div>
+            
             {/* Flattened Parent Badge */}
             {character._parent && (
               <div className="flex-row items-center gap-xs" style={{ fontSize: '0.75rem', color: 'var(--accent-secondary)', marginTop: '0.2rem' }}>
                 <LinkIcon size={11} /> Alt version of {character._parent.names?.[0] || character._parent.name} (ID: {character._parent.id})
               </div>
             )}
-
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
-              ID: #{character.id}
-            </div>
+            
           </div>
 
           {/* Action Buttons */}
-          <div className="flex-row items-center gap-xs">
-            {!hasWriter && assignWriterHandler && (
-              <Button
-                variant="warning"
-                size="xs"
-                onClick={() => assignWriterHandler(character)}
-                icon={<UserPlus size={12} />}
-              >
-                Assign Writer
-              </Button>
-            )}
+          <div className="flex-col items-end gap-xs" style={{ flexShrink: 0 }}>
 
             {showEditButton && onEdit && (
               <Button
@@ -106,19 +101,38 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({
                 onClick={() => onEdit(character, character._parent)}
                 icon={<Edit2 size={12} />}
               >
-                Edit
+                <span className="hide-in-mobile">Edit</span>
               </Button>
             )}
+
           </div>
         </div>
 
         {/* Writer Row */}
-        <div className="flex-row items-center gap-xs" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-          <User size={13} style={{ color: hasWriter ? 'var(--text-muted)' : 'var(--warning)' }} />
-          <span style={{ fontWeight: hasWriter ? 500 : 600, color: hasWriter ? 'var(--text-primary)' : 'var(--warning-text)' }}>
-            {mainWriter}
-          </span>
-          {otherWriters && <span style={{ opacity: 0.6 }}>(aka {otherWriters})</span>}
+        <div className="flex-row items-baseline justify-between gap-xs" style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+          
+          <div className="flex-row items-center gap-sm flex-wrap" style={{ marginBottom: '0.2rem' }} >
+            <User size={13} style={{ color: hasWriter ? 'var(--text-muted)' : 'var(--warning)' }} />
+            <span style={{ fontWeight: hasWriter ? 500 : 600, color: hasWriter ? 'var(--text-primary)' : 'var(--warning-text)' }}>
+              {mainWriter}
+            </span>
+            {otherWriters && <span className="ellipsis-in-mobile" style={{ opacity: 0.6 }}>(aka {otherWriters})</span>}
+          </div>
+          
+          {!hasWriter && assignWriterHandler && (
+            <div>
+              <Button
+                variant="warning"
+                size="xs"
+                onClick={() => assignWriterHandler(character)}
+                icon={<UserPlus size={12} />}
+              >
+                <span className="hide-in-mobile">Assign Writer</span>
+              </Button>
+            </div>
+          )}
+        
+        
         </div>
 
         {/* Activity Stats when available */}
@@ -181,11 +195,11 @@ export const CharacterCard: React.FC<CharacterCardProps> = ({
           </button>
 
           {expanded && (
-            <div className="flex-col gap-xs" style={{ marginTop: '0.5rem', paddingLeft: '0.5rem' }}>
+            <div className="flex-col gap-xs" style={{ marginTop: '0.5rem', paddingLeft: '0.2rem' }}>
               {versionsList.map((v: CharacterVersion) => (
                 <CharacterCard
                   key={v.id}
-                  character={{ ...v, names: v.names || [v.name] }}
+                  character={{ ...v, names: v.names || (v.name ? [v.name] : []) }}
                   onEdit={onEdit ? (childChar) => onEdit(childChar, character) : undefined}
                   canEdit={canEdit ? (childChar) => canEdit(childChar, character) : undefined}
                   onAddTagFilter={onAddTagFilter}

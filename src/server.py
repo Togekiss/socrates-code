@@ -150,6 +150,7 @@ class UpdateCharacterRequest(BaseModel):
     tags: Optional[List[str]] = None
     names: Optional[List[str]] = None
     writer: Optional[List[str]] = None
+    writer_id: Optional[int] = None
 
 
 class CreateGroupRequest(BaseModel):
@@ -2302,10 +2303,18 @@ def unnest_character(backup_id: str, char_id: int, user = Depends(get_current_us
 def update_character(backup_id: str, char_id: int, req: UpdateCharacterRequest, user = Depends(get_current_user)):
     base_path, actor, role_name, role_level, _ = resolve_authorized_backup(backup_id, user, min_role="participant")
     eff_writer = req.writer
+    eff_writer_id = req.writer_id
+    eff_update_writer_id = "writer_id" in getattr(req, "model_fields_set", set())
     if role_level == rbac.ROLE_LEVELS["participant"]:
         try:
             rbac.assert_participant_character_update(
-                backup_id, base_path, char_id, str(actor.get("sub") or ""), req.writer
+                backup_id,
+                base_path,
+                char_id,
+                str(actor.get("sub") or ""),
+                req.writer,
+                requested_writer_id=req.writer_id,
+                writer_id_provided=eff_update_writer_id,
             )
         except HTTPException as exc_denied:
             if exc_denied.status_code == 403:
@@ -2323,6 +2332,7 @@ def update_character(backup_id: str, char_id: int, req: UpdateCharacterRequest, 
                 )
             raise
         eff_writer = None
+        eff_update_writer_id = False
     before_char = _snapshot_backup_record(backup_id, base_path, "character", char_id)
     try:
         char_dict = character_service.update_character(
@@ -2332,6 +2342,8 @@ def update_character(backup_id: str, char_id: int, req: UpdateCharacterRequest, 
             names=req.names,
             tags=req.tags,
             writer=eff_writer,
+            writer_id=eff_writer_id,
+            update_writer_id=eff_update_writer_id,
         )
         from models import SceneManager
         SceneManager.clear_cache(backup_id)
@@ -2383,6 +2395,7 @@ def get_scenes(
     statuses: Optional[List[str]] = Query(None),
     types: Optional[List[str]] = Query(None),
     characters: Optional[List[int]] = Query(None),
+    character_groups: Optional[List[int]] = Query(None),
     character_logic: str = Query('AND'),
     writers: Optional[List[str]] = Query(None),
     writer_logic: str = Query('AND'),
@@ -2407,6 +2420,7 @@ def get_scenes(
     if not isinstance(statuses, (list, tuple, set)): statuses = None
     if not isinstance(types, (list, tuple, set)): types = None
     if not isinstance(characters, (list, tuple, set)): characters = None
+    if not isinstance(character_groups, (list, tuple, set)): character_groups = None
     if not isinstance(character_logic, str): character_logic = 'AND'
     if not isinstance(writers, (list, tuple, set)): writers = None
     if not isinstance(writer_logic, str): writer_logic = 'AND'
@@ -2457,6 +2471,7 @@ def get_scenes(
         statuses=statuses,
         types=types,
         character_ids=characters,
+        character_group_ids=character_groups,
         character_logic=character_logic,
         writer_names=writers,
         writer_logic=writer_logic,
@@ -2591,6 +2606,7 @@ def get_sessions(
     channels: Optional[List[str]] = Query(None),
     statuses: Optional[List[str]] = Query(None),
     characters: Optional[List[int]] = Query(None),
+    character_groups: Optional[List[int]] = Query(None),
     character_logic: str = Query('AND'),
     writers: Optional[List[str]] = Query(None),
     writer_logic: str = Query('AND'),
@@ -2613,6 +2629,7 @@ def get_sessions(
     if not isinstance(channels, (list, tuple, set)): channels = None
     if not isinstance(statuses, (list, tuple, set)): statuses = None
     if not isinstance(characters, (list, tuple, set)): characters = None
+    if not isinstance(character_groups, (list, tuple, set)): character_groups = None
     if not isinstance(character_logic, str): character_logic = 'AND'
     if not isinstance(writers, (list, tuple, set)): writers = None
     if not isinstance(writer_logic, str): writer_logic = 'AND'
@@ -2663,6 +2680,7 @@ def get_sessions(
         channels=channels,
         statuses=statuses,
         character_ids=characters,
+        character_group_ids=character_groups,
         character_logic=character_logic,
         writer_names=writers,
         writer_logic=writer_logic,
@@ -2688,6 +2706,7 @@ def get_events(
     statuses: Optional[List[str]] = Query(None),
     status: str = Query("all"),
     characters: Optional[List[int]] = Query(None),
+    character_groups: Optional[List[int]] = Query(None),
     character_logic: str = Query("AND"),
     character_name: Optional[str] = Query(None),
     writers: Optional[List[str]] = Query(None),
@@ -2714,6 +2733,7 @@ def get_events(
     if not isinstance(statuses, (list, tuple, set)): statuses = None
     if not isinstance(status, str): status = "all"
     if not isinstance(characters, (list, tuple, set)): characters = None
+    if not isinstance(character_groups, (list, tuple, set)): character_groups = None
     if not isinstance(character_logic, str): character_logic = "AND"
     if not isinstance(character_name, str): character_name = None
     if not isinstance(writers, (list, tuple, set)): writers = None
@@ -2767,6 +2787,7 @@ def get_events(
         statuses=statuses,
         status=status,
         character_ids=characters,
+        character_group_ids=character_groups,
         character_logic=character_logic,
         character_name=character_name,
         writer_names=writers,

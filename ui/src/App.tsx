@@ -187,7 +187,7 @@ function NewBackupTab({
       : globalConfig;
 
   return (
-    <div className="flex-col gap-md">
+    <div className="flex-col gap-lg">
       <div className="glass-panel">
         <h2 style={{ marginTop: 0, color: 'var(--text-primary)', marginBottom: '1.5rem' }}>
           Create a New Backup

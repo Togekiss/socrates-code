@@ -34,7 +34,6 @@ import type {
   SceneMergeNeighborsResponse,
   MergeSceneResponse,
   UnassignedCharacter,
-  Writer,
   WriterDetailed,
   WriterLinkSuggestion,
 } from './types';
@@ -256,7 +255,11 @@ export const api = {
   unnestCharacter: (backupId: string, charId: number): Promise<{ status: string }> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/characters/${charId}/unnest`, { method: 'POST' }).then(res => res.json()),
 
-  updateCharacter: (backupId: string, charId: number, data: { tags?: string[]; names?: string[]; writer?: string[] }): Promise<{ status: string }> =>
+  updateCharacter: (
+    backupId: string,
+    charId: number,
+    data: { tags?: string[]; names?: string[]; writer?: string[]; writer_id?: number | null }
+  ): Promise<{ status: string }> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/characters/${charId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -371,13 +374,13 @@ export const api = {
     }).then(res => res.json()),
 
   // --- Writers & User Linking ---
-  getWriters: (backupId: string): Promise<Writer[]> =>
+  getWriters: (backupId: string): Promise<string[]> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/writers`).then(res => res.json()),
 
   getWritersDetailed: (backupId: string): Promise<WriterDetailed[]> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/writers/detailed`).then(res => res.json()),
 
-  createWriter: (backupId: string, data: { display_name: string; aliases?: string[]; discord_user_id?: string }): Promise<{ status: string; writer_id: number }> =>
+  createWriter: (backupId: string, data: { display_name: string; aliases?: string[]; discord_user_id?: string }): Promise<WriterDetailed> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/writers`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

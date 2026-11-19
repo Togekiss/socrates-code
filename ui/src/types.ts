@@ -132,18 +132,23 @@ export interface CurationSummary {
 
 export interface CharacterVersion {
   id: number;
-  name: string;
+  name?: string;
   names?: string[];
   writer?: string[];
   writer_id?: number | null;
+  writer_name?: string | null;
+  tags?: string[];
   version_type?: string;
   origin?: string | null;
   activity?: string | null;
+  scene_count?: number;
+  last_active_at?: string | null;
+  last_channel_name?: string | null;
 }
 
 export interface Character {
   id: number;
-  name: string;
+  name?: string;
   names: string[];
   origin?: string | null;
   activity?: string | null;
@@ -164,7 +169,7 @@ export interface Character {
 }
 
 export interface CharacterGroupMember { id: number; name: string; }
-export interface CharacterGroup { id: number; name: string; names: string[]; members: CharacterGroupMember[]; }
+export interface CharacterGroup { id: number; name?: string; names: string[]; members: Array<CharacterGroupMember | number>; }
 export interface Writer { id: number; name: string; aliases: string[]; }
 
 export interface WriterDetailed {
@@ -173,6 +178,7 @@ export interface WriterDetailed {
   discord_user_id: string | null;
   is_self?: boolean;
   aliases: string[];
+  character_count?: number;
   characters: Array<{ id: number; name: string; names: string[]; origin?: string | null; activity?: string | null }>;
 }
 
@@ -193,7 +199,7 @@ export interface WriterLinkSuggestion {
 export interface MyWriter { id: number; display_name: string; discord_user_id: string; aliases: string[]; character_ids: number[]; }
 export interface UnassignedCharacter {
   id: number;
-  name: string;
+  name?: string;
   names: string[];
   origin?: string | null;
   activity?: string | null;

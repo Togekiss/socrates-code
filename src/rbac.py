@@ -500,6 +500,8 @@ def assert_participant_character_update(
     char_id: int,
     caller_id: str,
     requested_writer: Optional[List[str]],
+    requested_writer_id: Optional[int] = None,
+    writer_id_provided: bool = False,
 ) -> None:
     """Enforces Participant self-service ownership and rejects writer reassignment on character updates."""
     from db.models import CharacterModel
@@ -523,6 +525,9 @@ def assert_participant_character_update(
         owner_uid = str(writer.discord_user_id or "").strip() if writer else ""
         if not writer or not owner_uid or not caller_id or owner_uid != str(caller_id):
             raise HTTPException(status_code=403, detail="Participants can only edit characters assigned to them")
+
+        if writer_id_provided and requested_writer_id != writer.pk:
+            raise HTTPException(status_code=403, detail="Participants cannot reassign character writer")
 
         if requested_writer is not None:
             cleaned = [w.strip().lower() for w in requested_writer if w and w.strip()]

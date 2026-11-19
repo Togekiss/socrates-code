@@ -94,16 +94,14 @@ export const AdminTab = ({ onRefreshSummary }: AdminTabProps) => {
   const isTestBusy = activeTestAction !== null;
 
   return (
-    <div className="flex-col gap-lg">
+    <div className="flex-col gap-xl">
       {/* Testing & Verification Section */}
-      <PanelSurface className="flex-col gap-md">
-        <div className="flex-row items-center gap-sm">
-          <FlaskConical size={20} style={{ color: 'var(--accent-secondary)' }} />
-          <h2 style={{ margin: 0, fontSize: '1.25rem', color: 'var(--text-primary)' }}>
-            Testing &amp; Verification
-          </h2>
+      <PanelSurface className="flex-col gap-lg">
+        <div className="section-header-title-row items-center">
+          <FlaskConical size={20} className="text-accent shrink-0" />
+          <h2 className="section-header-title">Testing &amp; Verification</h2>
         </div>
-        <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', margin: 0 }}>
+        <p className="section-header-desc m-0">
           Manage the reversible testing dataset (<code>Elysium-sql-tests</code>) and run the automated Python test suite.
         </p>
 
@@ -154,11 +152,8 @@ export const AdminTab = ({ onRefreshSummary }: AdminTabProps) => {
         </div>
 
         {testResult && (
-          <div className="flex-col gap-sm" style={{ marginTop: '0.5rem' }}>
-            <div
-              className={`banner-${testResult.status === 'success' ? 'success' : 'danger'}`}
-              style={{ marginBottom: 0 }}
-            >
+          <div className="flex-col gap-sm">
+            <div className={`banner-${testResult.status === 'success' ? 'success' : 'danger'} mb-0`}>
               <div className="flex-row items-center gap-sm">
                 {testResult.status === 'success' ? <CheckCircle size={18} /> : <XCircle size={18} />}
                 <strong>{testResult.message}</strong>
@@ -182,10 +177,8 @@ export const AdminTab = ({ onRefreshSummary }: AdminTabProps) => {
       </PanelSurface>
 
       {/* Activity and Logs Section */}
-      <PanelSurface className="flex-col gap-md">
-        <h2 style={{ margin: 0, fontSize: '1.25rem', color: 'var(--text-primary)' }}>
-          Activity and Logging Configuration
-        </h2>
+      <PanelSurface className="flex-col gap-lg">
+        <h2 className="section-header-title">Activity and Logging Configuration</h2>
 
         {globalConfig && globalConfig.admin && (
           <div className="flex-row gap-xl flex-wrap">

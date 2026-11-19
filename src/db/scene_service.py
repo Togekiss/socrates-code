@@ -346,6 +346,7 @@ def query_scenes(
     status: str = "all",
     types: Optional[List[str]] = None,
     character_ids: Optional[List[int]] = None,
+    character_group_ids: Optional[List[int]] = None,
     character_logic: str = "AND",
     writer_names: Optional[List[str]] = None,
     writer_logic: str = "AND",
@@ -433,38 +434,18 @@ def query_scenes(
             if after_dt:
                 query = query.filter(SceneModel.start_at > after_dt)
 
-        # Filter by character_ids
-        if character_ids and isinstance(character_ids, (list, tuple, set)):
-            cid_list = list(character_ids)
-            chars_by_cid = {}
-            if cid_list:
-                fetched_chars = (
-                    session.query(CharacterModel)
-                    .options(selectinload(CharacterModel.children))
-                    .filter(
-                        CharacterModel.backup_id == str(backup_id),
-                        CharacterModel.char_id.in_(cid_list),
-                    )
-                    .all()
-                )
-                chars_by_cid = {c.char_id: c for c in fetched_chars}
-
-            resolved_clusters = []
-            for cid in cid_list:
-                family_pks = set()
-                char = chars_by_cid.get(cid)
-                if char:
-                    family_pks.add(char.pk)
-                    for child in char.children:
-                        vt = child.version_type
-                        if include_alter_egos and vt == "alter_ego":
-                            family_pks.add(child.pk)
-                        if include_familiars and vt == "familiar":
-                            family_pks.add(child.pk)
-                        if include_npcs and vt == "npc":
-                            family_pks.add(child.pk)
-                resolved_clusters.append(family_pks)
-
+        # Filter by character_ids and character_group_ids
+        from db.character_service import resolve_character_filter_clusters
+        resolved_clusters = resolve_character_filter_clusters(
+            session=session,
+            backup_id=backup_id,
+            character_ids=character_ids,
+            character_group_ids=character_group_ids,
+            include_alter_egos=include_alter_egos,
+            include_familiars=include_familiars,
+            include_npcs=include_npcs,
+        )
+        if resolved_clusters is not None:
             if character_logic == "AND":
                 for cluster in resolved_clusters:
                     if cluster:
@@ -530,7 +511,7 @@ def query_scenes(
                     else:
                         return {"total_items": 0, "current_page": page or 1, "per_page": per_page, "total_pages": 0, "scenes": []} if page is not None else []
 
-        # Filter by search query (custom_name, scene_key, or channel name)
+        # Filter by search query (custom_name, scene_key, channel name, or category name)
         if search and isinstance(search, str) and search.strip():
             validate_search_query_safety(search)
             s_term = escape_like(search.strip().lower())
@@ -543,6 +524,7 @@ def query_scenes(
                     func.lower(SceneModel.custom_name).like(like_pattern, escape="\\"),
                     func.lower(SceneModel.scene_key).like(like_pattern, escape="\\"),
                     SceneModel.channel_pk.in_(matching_chan_pks),
+                    SceneModel.category_pk.in_(matching_chan_pks),
                 )
             )
 

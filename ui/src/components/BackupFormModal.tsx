@@ -67,7 +67,7 @@ export const BackupFormModal: React.FC<BackupFormModalProps> = ({
       size="lg"
       footer={modalFooter}
     >
-      <div className="flex-col gap-md">
+      <div className="flex-col gap-lg">
         {saveError && (
           <div className="banner-danger">
             <span>{saveError}</span>

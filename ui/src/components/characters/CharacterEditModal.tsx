@@ -1,14 +1,18 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { X, Users, AlertTriangle } from 'lucide-react';
 import { api } from '../../api';
-import type { Character, CharacterGroup } from '../../types';
-import { Modal, ChipInput, Button, Badge } from '../ui';
+import type { Character, CharacterGroup, WriterDetailed } from '../../types';
+import { getCharacterVersionList } from '../../utils/characters';
+import { Modal, ChipInput, Button, CharacterPicker, WriterPicker } from '../ui';
 
 interface CharacterEditModalProps {
   backupId: string;
   character: Character;
   parentCharacter?: Character;
   allCharacters?: Character[];
+  allGroups?: CharacterGroup[];
+  allWriters?: WriterDetailed[];
+  onWriterCreated?: (writer: WriterDetailed) => void;
   isParticipantMode?: boolean;
   selfWriterId?: number | null;
   selfCharacterIds?: number[];
@@ -21,6 +25,9 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
   character,
   parentCharacter,
   allCharacters = [],
+  allGroups,
+  allWriters,
+  onWriterCreated,
   isParticipantMode = false,
   selfWriterId = null,
   selfCharacterIds = [],
@@ -29,22 +36,70 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
 }) => {
   const [tags, setTags] = useState<string[]>(character.tags || []);
   const [names, setNames] = useState<string[]>(character.names || []);
-  const [writer, setWriter] = useState<string[]>(character.writer || []);
+  const [writers, setWriters] = useState<WriterDetailed[]>(allWriters ?? []);
+  const [loadingWriters, setLoadingWriters] = useState(false);
+  const [writerId, setWriterId] = useState<number | null>(() => {
+    if (character.writer_id != null) return character.writer_id;
+    if (allWriters && character.writer && character.writer.length > 0) {
+      const targetNames = new Set(character.writer.map(w => w.trim().toLowerCase()).filter(Boolean));
+      const matched = allWriters.find(
+        w =>
+          targetNames.has(w.display_name.trim().toLowerCase()) ||
+          (w.aliases || []).some(a => targetNames.has(a.trim().toLowerCase()))
+      );
+      if (matched) return matched.id;
+    }
+    return null;
+  });
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [actionState, setActionState] = useState<'idle' | 'merge' | 'nest'>('idle');
-  const [targetSearch, setTargetSearch] = useState('');
   const [targetId, setTargetId] = useState<number | null>(null);
   const [versionType, setVersionType] = useState<string>('alter_ego');
 
   // Character Groups state
-  const [groups, setGroups] = useState<CharacterGroup[]>([]);
+  const [groups, setGroups] = useState<CharacterGroup[]>(allGroups ?? []);
   const [selectedGroupId, setSelectedGroupId] = useState<number | ''>('');
   const [updatingGroup, setUpdatingGroup] = useState(false);
 
   useEffect(() => {
+    if (allWriters) {
+      setWriters(allWriters);
+      return;
+    }
+    if (isParticipantMode) return;
+    setLoadingWriters(true);
+    api
+      .getWritersDetailed(backupId)
+      .then(wList => {
+        if (Array.isArray(wList)) {
+          setWriters(wList);
+          if (character.writer_id == null && character.writer && character.writer.length > 0) {
+            const targetNames = new Set(character.writer.map(w => w.trim().toLowerCase()).filter(Boolean));
+            const matched = wList.find(
+              w =>
+                targetNames.has(w.display_name.trim().toLowerCase()) ||
+                (w.aliases || []).some(a => targetNames.has(a.trim().toLowerCase()))
+            );
+            if (matched) setWriterId(matched.id);
+          }
+        }
+      })
+      .catch(console.error)
+      .finally(() => setLoadingWriters(false));
+  }, [backupId, isParticipantMode, allWriters, character.writer_id, character.writer]);
+
+  useEffect(() => {
+    if (allGroups) {
+      setGroups(allGroups);
+      const current = allGroups.find(g =>
+        (g.members || []).some(m => (typeof m === 'object' ? m.id === character.id : m === character.id))
+      );
+      setSelectedGroupId(current ? current.id : '');
+      return;
+    }
     if (isParticipantMode) return;
     api
       .getGroups(backupId)
@@ -58,7 +113,7 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
         }
       })
       .catch(console.error);
-  }, [backupId, character.id, isParticipantMode]);
+  }, [backupId, character.id, isParticipantMode, allGroups]);
 
   const currentAssignedGroup = groups.find(g =>
     (g.members || []).some(m => (typeof m === 'object' ? m.id === character.id : m === character.id))
@@ -101,19 +156,17 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
     }
   };
 
-  const searchResults =
-    targetSearch.length > 1 && allCharacters
-      ? allCharacters
-          .filter(
-            c =>
-              c.id !== character.id &&
-              (!isParticipantMode ||
-                (selfWriterId != null &&
-                  (c.writer_id === selfWriterId || selfCharacterIds.includes(c.id)))) &&
-              c.names?.some(n => n.toLowerCase().includes(targetSearch.toLowerCase()))
-          )
-          .slice(0, 5)
-      : [];
+  const mergeNestCandidates = useMemo(() => {
+    if (!allCharacters) return [];
+    return allCharacters.filter(
+      c =>
+        c.id !== character.id &&
+        c.parent_id == null &&
+        (!isParticipantMode ||
+          (selfWriterId != null &&
+            (c.writer_id === selfWriterId || selfCharacterIds.includes(c.id))))
+    );
+  }, [allCharacters, character.id, isParticipantMode, selfWriterId, selfCharacterIds]);
 
   const handleMerge = async () => {
     if (!targetId) return;
@@ -162,7 +215,7 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
       await api.updateCharacter(
         backupId,
         character.id,
-        isParticipantMode ? { tags, names } : { tags, names, writer }
+        isParticipantMode ? { tags, names } : { tags, names, writer_id: writerId }
       );
       onSaved();
       onClose();
@@ -185,7 +238,7 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
     }
   };
 
-  const hasNested = character.versions && character.versions.length > 0;
+  const hasNested = getCharacterVersionList(character).length > 0;
   const isNested = Boolean(parentCharacter);
 
   const modalFooter = (
@@ -207,7 +260,7 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
       size="lg"
       footer={modalFooter}
     >
-      <div className="flex-col gap-md">
+      <div className="flex-col gap-lg">
         {error && (
           <div className="banner-danger">
             <AlertTriangle size={16} />
@@ -223,12 +276,30 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
         />
 
         {!isParticipantMode && (
-          <ChipInput
-            label="Writer"
-            values={writer}
-            onChange={setWriter}
-            placeholder="Type writer username and press Enter..."
-          />
+          <div className="form-group">
+            <label className="form-label">Writer</label>
+            <WriterPicker
+              writers={writers}
+              selectedIds={writerId != null ? [writerId] : []}
+              onChange={ids => setWriterId(ids[0] ?? null)}
+              multiple={false}
+              variant="inline"
+              allowUnassigned={true}
+              allowCreate={true}
+              backupId={backupId}
+              loading={loadingWriters}
+              disabled={saving}
+              maxListHeight={180}
+              onWriterCreated={created => {
+                setWriters(prev =>
+                  [...prev.filter(w => w.id !== created.id), created].sort((a, b) =>
+                    a.display_name.localeCompare(b.display_name)
+                  )
+                );
+                onWriterCreated?.(created);
+              }}
+            />
+          </div>
         )}
 
         {/* Tags */}
@@ -400,7 +471,6 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
                   onClick={() => {
                     setActionState('idle');
                     setTargetId(null);
-                    setTargetSearch('');
                   }}
                   aria-label="Cancel action"
                 >
@@ -408,41 +478,19 @@ export const CharacterEditModal: React.FC<CharacterEditModalProps> = ({
                 </button>
               </div>
 
-              <input
-                type="text"
-                className="input"
-                placeholder="Search for target character by name..."
-                value={targetSearch}
-                onChange={e => setTargetSearch(e.target.value)}
+              <CharacterPicker
+                characters={mergeNestCandidates}
+                selectedIds={targetId != null ? [targetId] : []}
+                onChange={ids => setTargetId(ids[0] ?? null)}
+                multiple={false}
+                includeVersions={actionState === 'merge'}
+                variant="inline"
+                placeholder="Search target character by name, alias, or ID..."
+                maxListHeight={180}
               />
 
-              {targetSearch.length > 1 && !targetId && (
-                <div className="flex-col gap-xs">
-                  {searchResults.length === 0 ? (
-                    <div className="form-hint">No characters found.</div>
-                  ) : (
-                    searchResults.map(c => (
-                      <button
-                        key={c.id}
-                        type="button"
-                        className="btn btn-secondary btn-sm justify-between"
-                        onClick={() => setTargetId(c.id)}
-                      >
-                        <span>{c.names?.[0] || c.name}</span>
-                        <span className="text-secondary" style={{ fontSize: '0.75rem' }}>ID: #{c.id}</span>
-                      </button>
-                    ))
-                  )}
-                </div>
-              )}
-
-              {targetId && (
+              {targetId != null && (
                 <div className="flex-col gap-sm" style={{ marginTop: '0.25rem' }}>
-                  <div className="flex-row items-center gap-xs">
-                    <span className="form-hint">Target Character ID:</span>
-                    <Badge variant="accent">#{targetId}</Badge>
-                  </div>
-
                   {actionState === 'nest' && (
                     <div className="form-group" style={{ marginBottom: 0 }}>
                       <label className="form-label">Version Type</label>

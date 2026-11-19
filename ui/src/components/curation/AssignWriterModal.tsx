@@ -1,13 +1,14 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { UserCheck } from 'lucide-react';
 import { api } from '../../api';
 import type { UnassignedCharacter, WriterDetailed } from '../../types';
-import { Modal, Button, Badge } from '../ui';
+import { Modal, Button, Badge, WriterPicker } from '../ui';
 
 interface AssignWriterModalProps {
   backupId: string;
   character: UnassignedCharacter | null;
   writers: WriterDetailed[];
+  onWriterCreated?: (writer: WriterDetailed) => void;
   onClose: () => void;
   onAssigned: () => void;
 }
@@ -16,12 +17,18 @@ export const AssignWriterModal: React.FC<AssignWriterModalProps> = ({
   backupId,
   character,
   writers,
+  onWriterCreated,
   onClose,
   onAssigned,
 }) => {
+  const [writerList, setWriterList] = useState<WriterDetailed[]>(writers);
   const [selectedWriterId, setSelectedWriterId] = useState<number | ''>('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setWriterList(writers);
+  }, [writers]);
 
   if (!character) return null;
 
@@ -67,10 +74,10 @@ export const AssignWriterModal: React.FC<AssignWriterModalProps> = ({
       isOpen={true}
       onClose={onClose}
       title="Assign Writer to Character"
-      size="sm"
+      size="md"
       footer={modalFooter}
     >
-      <div className="flex-col gap-md">
+      <div className="flex-col gap-lg">
         {error && (
           <div className="banner-danger">
             <span>{error}</span>
@@ -91,22 +98,26 @@ export const AssignWriterModal: React.FC<AssignWriterModalProps> = ({
         </div>
 
         <div className="form-group">
-          <label htmlFor="assign-writer-select" className="form-label">
-            Assign to Writer
-          </label>
-          <select
-            id="assign-writer-select"
-            className="select"
-            value={selectedWriterId}
-            onChange={e => setSelectedWriterId(e.target.value ? Number(e.target.value) : '')}
-          >
-            <option value="">-- Choose Writer --</option>
-            {writers.map(w => (
-              <option key={w.id} value={w.id}>
-                {w.display_name} ({w.characters?.length || 0} characters)
-              </option>
-            ))}
-          </select>
+          <label className="form-label">Assign to Writer</label>
+          <WriterPicker
+            writers={writerList}
+            selectedIds={selectedWriterId !== '' ? [Number(selectedWriterId)] : []}
+            onChange={ids => setSelectedWriterId(ids[0] ?? '')}
+            multiple={false}
+            variant="inline"
+            allowCreate={true}
+            backupId={backupId}
+            disabled={saving}
+            maxListHeight={200}
+            onWriterCreated={created => {
+              setWriterList(prev =>
+                [...prev.filter(w => w.id !== created.id), created].sort((a, b) =>
+                  a.display_name.localeCompare(b.display_name)
+                )
+              );
+              onWriterCreated?.(created);
+            }}
+          />
         </div>
       </div>
     </Modal>

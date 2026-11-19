@@ -11,6 +11,10 @@ export interface ResponsiveTextProps {
    */
   desktop?: string;
   /**
+   * Fallback or custom tablet label if not using a dictionary key.
+   */
+  tablet?: string;
+  /**
    * Fallback or custom mobile label if not using a dictionary key.
    */
   mobile?: string;
@@ -25,15 +29,18 @@ export interface ResponsiveTextProps {
 export const ResponsiveText: React.FC<ResponsiveTextProps> = ({
   textKey,
   desktop,
+  tablet,
   mobile,
   className = '',
 }) => {
   const d = textKey ? RESPONSIVE_TEXT[textKey].desktop : desktop;
+  const t = textKey ? RESPONSIVE_TEXT[textKey].tablet : tablet;
   const m = textKey ? RESPONSIVE_TEXT[textKey].mobile : mobile;
 
   return (
     <span className={`responsive-text-wrapper ${className}`.trim()}>
       <span className="responsive-text-desktop">{d}</span>
+      <span className="responsive-text-tablet">{t}</span>
       <span className="responsive-text-mobile">{m}</span>
     </span>
   );

@@ -251,6 +251,103 @@ def get_characters(
         return results
 
 
+def _collect_character_family_pks(
+    char: CharacterModel,
+    include_alter_egos: bool = True,
+    include_familiars: bool = True,
+    include_npcs: bool = True,
+) -> Set[int]:
+    """Collects a character's PK plus allowed child version PKs."""
+    family_pks: Set[int] = {char.pk}
+    for child in char.children:
+        vt = child.version_type
+        if include_alter_egos and vt == "alter_ego":
+            family_pks.add(child.pk)
+        elif include_familiars and vt == "familiar":
+            family_pks.add(child.pk)
+        elif include_npcs and vt == "npc":
+            family_pks.add(child.pk)
+    return family_pks
+
+
+def resolve_character_filter_clusters(
+    session: Any,
+    backup_id: str,
+    character_ids: Optional[List[int]] = None,
+    character_group_ids: Optional[List[int]] = None,
+    include_alter_egos: bool = False,
+    include_familiars: bool = False,
+    include_npcs: bool = False,
+) -> Optional[List[Set[int]]]:
+    """
+    Resolves selected character IDs and character group PKs into participant PK clusters.
+    Each individual character forms one cluster (char + allowed versions), and each group
+    forms one cluster containing all of its members (plus their allowed versions).
+    Returns None if no character or group filters were provided.
+    """
+    cid_list = list(character_ids) if character_ids and isinstance(character_ids, (list, tuple, set)) else []
+    gid_list = list(character_group_ids) if character_group_ids and isinstance(character_group_ids, (list, tuple, set)) else []
+    if not cid_list and not gid_list:
+        return None
+
+    resolved_clusters: List[Set[int]] = []
+
+    if cid_list:
+        fetched_chars = (
+            session.query(CharacterModel)
+            .options(selectinload(CharacterModel.children))
+            .filter(
+                CharacterModel.backup_id == str(backup_id),
+                CharacterModel.char_id.in_(cid_list),
+            )
+            .all()
+        )
+        chars_by_cid = {c.char_id: c for c in fetched_chars}
+        for cid in cid_list:
+            char = chars_by_cid.get(cid)
+            if char:
+                resolved_clusters.append(
+                    _collect_character_family_pks(
+                        char,
+                        include_alter_egos=include_alter_egos,
+                        include_familiars=include_familiars,
+                        include_npcs=include_npcs,
+                    )
+                )
+            else:
+                resolved_clusters.append(set())
+
+    if gid_list:
+        fetched_groups = (
+            session.query(CharacterGroupModel)
+            .options(
+                selectinload(CharacterGroupModel.characters).selectinload(CharacterModel.children)
+            )
+            .filter(
+                CharacterGroupModel.backup_id == str(backup_id),
+                CharacterGroupModel.pk.in_(gid_list),
+            )
+            .all()
+        )
+        groups_by_pk = {g.pk: g for g in fetched_groups}
+        for gid in gid_list:
+            group = groups_by_pk.get(gid)
+            group_pks: Set[int] = set()
+            if group:
+                for member in group.characters:
+                    group_pks.update(
+                        _collect_character_family_pks(
+                            member,
+                            include_alter_egos=include_alter_egos,
+                            include_familiars=include_familiars,
+                            include_npcs=include_npcs,
+                        )
+                    )
+            resolved_clusters.append(group_pks)
+
+    return resolved_clusters
+
+
 def save_new_characters(
     backup_id: str,
     base_path: str,
@@ -490,7 +587,9 @@ def update_character(
     char_id: int,
     names: Optional[List[str]] = None,
     tags: Optional[List[str]] = None,
-    writer: Optional[List[str]] = None
+    writer: Optional[List[str]] = None,
+    writer_id: Optional[int] = None,
+    update_writer_id: bool = False,
 ) -> Dict[str, Any]:
     """Updates character attributes (names, tags, writer) in SQLite and exports snapshot."""
     _require_valid_db(backup_id, base_path)
@@ -523,7 +622,18 @@ def update_character(
             else:
                 char.version_type = vt_match
 
-        if writer is not None:
+        if update_writer_id:
+            if writer_id is None:
+                char.writer_pk = None
+            else:
+                w_model = session.query(WriterModel).filter(
+                    WriterModel.backup_id == str(backup_id),
+                    WriterModel.pk == writer_id,
+                ).first()
+                if not w_model:
+                    raise ValueError(f"Writer #{writer_id} not found")
+                char.writer_pk = w_model.pk
+        elif writer is not None:
             w_list = writer if isinstance(writer, list) else [writer]
             cleaned_w = [w.strip() for w in w_list if w and w.strip()]
             if cleaned_w:
@@ -573,6 +683,7 @@ def update_character(
             "id": char.char_id,
             "names": char_names,
             "writer": char_writer,
+            "writer_id": char.writer_pk,
             "tags": result_tags,
             "other_versions": [],
         }

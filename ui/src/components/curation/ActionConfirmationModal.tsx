@@ -90,7 +90,7 @@ export const ActionConfirmationModal: React.FC<ActionConfirmationModalProps> = (
       size="md"
       footer={footer}
     >
-      <div className="flex-col gap-md">
+      <div className="flex-col gap-lg">
         {error && (
           <div className="banner-danger">
             <span className="text-md">{error}</span>

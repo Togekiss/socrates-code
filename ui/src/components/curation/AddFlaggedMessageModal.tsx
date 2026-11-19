@@ -80,7 +80,7 @@ export const AddFlaggedMessageModal: React.FC<AddFlaggedMessageModalProps> = ({
       size="md"
       footer={footer}
     >
-      <form onSubmit={handleSubmit} className="flex-col gap-md">
+      <form onSubmit={handleSubmit} className="flex-col gap-lg">
         {error && (
           <div className="banner-danger">
             <span className="text-md">{error}</span>

@@ -1,14 +1,16 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
+import { ArrowUpDown, Loader2 } from 'lucide-react';
 import { api, getErrorMessage } from '../api';
 import { ScenesFilter } from './scenes/ScenesFilter';
-import { VirtualSceneList } from './scenes/VirtualSceneList';
+import { SessionCard } from './scenes/SessionCard';
 import { SceneEditModal } from './scenes/SceneEditModal';
-import { Search, ArrowUpDown } from 'lucide-react';
-import { Button, ResponsiveText } from './ui';
+import { Button, Pagination, PanelSurface, ResponsiveText } from './ui';
 import { UnlinkedWriterBanner } from './layout/UnlinkedWriterBanner';
 import { BackupStatusGuard } from './layout/BackupStatusGuard';
+import { ListPageLayout } from './layout/ListPageLayout';
 import { useBackupStatusGuard } from '../hooks/useBackupStatusGuard';
-import type { BackupInfo, Character, ChatSession, MyWriter } from '../types';
+import { useArchiveRoster } from '../hooks/useArchiveRoster';
+import type { BackupInfo, ChatSession, MyWriter } from '../types';
 import { getRoleLevel, ROLE_LEVELS } from '../utils/rbac';
 
 interface ChatSessionsTabProps {
@@ -33,21 +35,22 @@ export const ChatSessionsTab = ({
   myWriter: initialMyWriter,
 }: ChatSessionsTabProps) => {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [totalItems, setTotalItems] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
-  const [hasMore, setHasMore] = useState(false);
   const [editingSession, setEditingSession] = useState<ChatSession | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
-  const [allCharacters, setAllCharacters] = useState<Character[]>([]);
   const [myWriter, setMyWriter] = useState<MyWriter | null>(initialMyWriter || null);
 
-  // Filters: note that categoriesFilter is bound to channels for sessions mode
+  // Filters
   const [charactersFilter, setCharactersFilter] = useState<number[]>([]);
+  const [groupsFilter, setGroupsFilter] = useState<number[]>([]);
   const [characterLogic, setCharacterLogic] = useState<'AND' | 'OR'>('AND');
   const [writersFilter, setWritersFilter] = useState<string[]>([]);
   const [writerLogic, setWriterLogic] = useState<'AND' | 'OR'>('AND');
-  const [channelsFilter, setChannelsFilter] = useState<string[]>([]);
   const [typesFilter, setTypesFilter] = useState<string[]>([]);
   const [statusesFilter, setStatusesFilter] = useState<string[]>([]);
   const [includeAlterEgos, setIncludeAlterEgos] = useState(true);
@@ -57,6 +60,7 @@ export const ChatSessionsTab = ({
   const [after, setAfter] = useState('');
   const [byMe, setByMe] = useState(false);
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
 
   const statusGuard = useBackupStatusGuard({
@@ -67,42 +71,24 @@ export const ChatSessionsTab = ({
     backupLoading,
   });
   const { isReady } = statusGuard;
+  const { allCharacters, allGroups, allWriters } = useArchiveRoster(backupId, isReady);
+
+  useEffect(() => {
+    setMyWriter(initialMyWriter || null);
+  }, [initialMyWriter]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 350);
+    return () => clearTimeout(timer);
+  }, [search]);
 
   useEffect(() => {
     setSessions([]);
+    setTotalItems(0);
+    setTotalPages(1);
     setPage(1);
-    setHasMore(false);
     setError(null);
-    setAllCharacters([]);
   }, [backupId]);
-
-  useEffect(() => {
-    if (isReady) {
-      Promise.all([
-        api.getCharacters(backupId).then(res => {
-          if (Array.isArray(res)) setAllCharacters(res);
-        }),
-        api.getMyWriter(backupId).then(setMyWriter).catch(() => null),
-      ]).catch(console.error);
-    }
-  }, [backupId, isReady]);
-
-  const resolvedCharacterIds = useMemo(() => {
-    if (charactersFilter.length === 0) return [];
-    const resolved = new Set<number>();
-    charactersFilter.forEach(id => {
-      resolved.add(id);
-      const char = allCharacters.find(c => c.id === id);
-      if (char && char.versions) {
-        char.versions.forEach(v => {
-          if (includeAlterEgos && v.version_type === 'alter_ego') resolved.add(v.id);
-          if (includeFamiliars && v.version_type === 'familiar') resolved.add(v.id);
-          if (includeNPCs && v.version_type === 'npc') resolved.add(v.id);
-        });
-      }
-    });
-    return Array.from(resolved);
-  }, [charactersFilter, includeAlterEgos, includeFamiliars, includeNPCs, allCharacters]);
 
   const buildQueryParams = useCallback(
     (targetPage: number) => {
@@ -110,9 +96,8 @@ export const ChatSessionsTab = ({
       params.append('page', targetPage.toString());
       params.append('per_page', '50');
       params.append('sort', sortOrder);
-      if (search.trim()) params.append('search', search.trim());
+      if (debouncedSearch.trim()) params.append('search', debouncedSearch.trim());
 
-      channelsFilter.forEach(ch => params.append('channels', ch));
       typesFilter.forEach(t => params.append('types', t));
       statusesFilter.forEach(s => params.append('statuses', s));
 
@@ -128,17 +113,21 @@ export const ChatSessionsTab = ({
         }
       }
 
-      resolvedCharacterIds.forEach(id => params.append('characters', id.toString()));
-      if (resolvedCharacterIds.length > 0) {
+      charactersFilter.forEach(id => params.append('characters', id.toString()));
+      groupsFilter.forEach(gid => params.append('character_groups', gid.toString()));
+      if (charactersFilter.length > 0 || groupsFilter.length > 0) {
         params.append('character_logic', characterLogic);
+        const allowVersions = characterLogic === 'OR';
+        params.append('include_alter_egos', String(allowVersions && includeAlterEgos));
+        params.append('include_familiars', String(allowVersions && includeFamiliars));
+        params.append('include_npcs', String(allowVersions && includeNPCs));
       }
 
       return params;
     },
     [
       sortOrder,
-      search,
-      channelsFilter,
+      debouncedSearch,
       typesFilter,
       statusesFilter,
       before,
@@ -146,13 +135,17 @@ export const ChatSessionsTab = ({
       byMe,
       writersFilter,
       writerLogic,
-      resolvedCharacterIds,
+      charactersFilter,
+      groupsFilter,
       characterLogic,
+      includeAlterEgos,
+      includeFamiliars,
+      includeNPCs,
     ]
   );
 
   const fetchSessions = useCallback(
-    (targetPage: number, reset = false) => {
+    (targetPage: number) => {
       if (!isReady) return;
       setLoading(true);
       setError(null);
@@ -162,13 +155,16 @@ export const ChatSessionsTab = ({
       api
         .getSessions(backupId, params)
         .then(res => {
-          const newSessions = res.sessions || [];
-          setSessions(prev => (reset ? newSessions : [...prev, ...newSessions]));
-          setHasMore(newSessions.length === 50);
+          const nextSessions = res.sessions || [];
+          setSessions(nextSessions);
+          setTotalItems(res.total_items ?? nextSessions.length);
+          setTotalPages(Math.max(1, res.total_pages ?? 1));
         })
         .catch(err => {
           console.error(err);
-          setHasMore(false);
+          setSessions([]);
+          setTotalItems(0);
+          setTotalPages(1);
           setError(getErrorMessage(err, 'Failed to fetch chat sessions.'));
         })
         .finally(() => setLoading(false));
@@ -176,35 +172,41 @@ export const ChatSessionsTab = ({
     [backupId, isReady, buildQueryParams]
   );
 
-  // Debounced filter effect
-  useEffect(() => {
-    setPage(1);
-    const timeout = setTimeout(() => {
-      fetchSessions(1, true);
-    }, 400);
-    return () => clearTimeout(timeout);
-  }, [
+  const filterKey = JSON.stringify({
     backupId,
-    isReady,
-    resolvedCharacterIds,
+    debouncedSearch,
+    charactersFilter,
+    groupsFilter,
     characterLogic,
+    includeAlterEgos,
+    includeFamiliars,
+    includeNPCs,
     writersFilter,
     writerLogic,
-    channelsFilter,
     typesFilter,
     statusesFilter,
     before,
     after,
     byMe,
-    search,
     sortOrder,
-    fetchSessions,
-  ]);
+  });
+  const prevFilterKeyRef = useRef(filterKey);
 
-  const loadMore = () => {
-    const nextPage = page + 1;
+  useEffect(() => {
+    if (!isReady) return;
+    if (prevFilterKeyRef.current !== filterKey) {
+      prevFilterKeyRef.current = filterKey;
+      if (page !== 1) {
+        setPage(1);
+        return;
+      }
+    }
+    fetchSessions(page);
+  }, [isReady, filterKey, page, fetchSessions]);
+
+  const handlePageChange = (nextPage: number) => {
     setPage(nextPage);
-    fetchSessions(nextPage);
+    scrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const effectiveRoleLevel = propRoleLevel ?? backupInfo?.role_level ?? getRoleLevel(backupInfo?.effective_role);
@@ -214,26 +216,23 @@ export const ChatSessionsTab = ({
     return <BackupStatusGuard title="Chat Sessions" guard={statusGuard} />;
   }
 
+  const filtersActive = Boolean(
+    debouncedSearch.trim() ||
+      charactersFilter.length > 0 ||
+      groupsFilter.length > 0 ||
+      writersFilter.length > 0 ||
+      statusesFilter.length > 0 ||
+      before ||
+      after ||
+      byMe
+  );
+
   return (
-    <div className="flex-col gap-md">
-      {/* Guidance Banner when By Me is active and User is unlinked */}
-      {byMe && !myWriter && (
-        <UnlinkedWriterBanner onNavigateToWriters={onNavigateToWriters} className="mb-sm" />
-      )}
-
-      {/* Search & Sort Bar */}
-      <div className="flex-row gap-sm items-center">
-        <div className="search-input-wrapper" style={{ flex: '1 1 260px' }}>
-          <Search size={16} />
-          <input
-            type="text"
-            className="input"
-            placeholder="Search chat sessions or custom names..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-          />
-        </div>
-
+    <ListPageLayout
+      title="Chat Sessions"
+      descriptionKey="descChatSessions"
+      guideKey="chatSessions"
+      headerAction={
         <Button
           variant="secondary"
           size="md"
@@ -242,80 +241,126 @@ export const ChatSessionsTab = ({
         >
           <ResponsiveText textKey={sortOrder === 'asc' ? 'sortOldest' : 'sortNewest'} />
         </Button>
-      </div>
-
-      <ScenesFilter
-        mode="sessions"
-        charactersFilter={charactersFilter}
-        setCharactersFilter={setCharactersFilter}
-        characterLogic={characterLogic}
-        setCharacterLogic={setCharacterLogic}
-        writersFilter={writersFilter}
-        setWritersFilter={setWritersFilter}
-        writerLogic={writerLogic}
-        setWriterLogic={setWriterLogic}
-        categoriesFilter={channelsFilter}
-        setCategoriesFilter={setChannelsFilter}
-        typesFilter={typesFilter}
-        setTypesFilter={setTypesFilter}
-        statusesFilter={statusesFilter}
-        setStatusesFilter={setStatusesFilter}
-        includeAlterEgos={includeAlterEgos}
-        setIncludeAlterEgos={setIncludeAlterEgos}
-        includeFamiliars={includeFamiliars}
-        setIncludeFamiliars={setIncludeFamiliars}
-        includeNPCs={includeNPCs}
-        setIncludeNPCs={setIncludeNPCs}
-        before={before}
-        setBefore={setBefore}
-        after={after}
-        setAfter={setAfter}
-        byMe={byMe}
-        setByMe={setByMe}
-        allCharacters={allCharacters}
-      />
-
-      {error && (
+      }
+      filterBar={
+        <ScenesFilter
+          mode="sessions"
+          search={search}
+          setSearch={setSearch}
+          charactersFilter={charactersFilter}
+          setCharactersFilter={setCharactersFilter}
+          groupsFilter={groupsFilter}
+          setGroupsFilter={setGroupsFilter}
+          characterLogic={characterLogic}
+          setCharacterLogic={setCharacterLogic}
+          writersFilter={writersFilter}
+          setWritersFilter={setWritersFilter}
+          writerLogic={writerLogic}
+          setWriterLogic={setWriterLogic}
+          typesFilter={typesFilter}
+          setTypesFilter={setTypesFilter}
+          statusesFilter={statusesFilter}
+          setStatusesFilter={setStatusesFilter}
+          includeAlterEgos={includeAlterEgos}
+          setIncludeAlterEgos={setIncludeAlterEgos}
+          includeFamiliars={includeFamiliars}
+          setIncludeFamiliars={setIncludeFamiliars}
+          includeNPCs={includeNPCs}
+          setIncludeNPCs={setIncludeNPCs}
+          before={before}
+          setBefore={setBefore}
+          after={after}
+          setAfter={setAfter}
+          byMe={byMe}
+          setByMe={setByMe}
+          allCharacters={allCharacters}
+          allGroups={allGroups}
+          allWriters={allWriters}
+        />
+      }
+      banners={
+        byMe && !myWriter ? (
+          <UnlinkedWriterBanner onNavigateToWriters={onNavigateToWriters} />
+        ) : undefined
+      }
+      countText={
+        !error && (!loading || totalItems > 0) ? (
+          <span>
+            Showing{' '}
+            <strong>
+              {totalItems > sessions.length ? `${sessions.length} of ${totalItems}` : totalItems}
+            </strong>{' '}
+            {totalItems === 1 ? 'chat session' : 'chat sessions'}
+            {filtersActive && ' (filtered)'}
+          </span>
+        ) : undefined
+      }
+      scrollRef={scrollRef}
+      modals={
+        canCurate && editingSession ? (
+          <SceneEditModal
+            backupId={backupId}
+            scene={editingSession}
+            onClose={() => setEditingSession(null)}
+            onUpdated={updated => {
+              if (updated) {
+                setSessions(prev =>
+                  prev.map(s =>
+                    s.scene_key === updated.scene_key ||
+                    s.id === updated.scene_key ||
+                    (updated.pk && (s.pk === updated.pk || s.scene_pk === updated.pk))
+                      ? { ...s, custom_name: updated.custom_name }
+                      : s
+                  )
+                );
+              } else {
+                fetchSessions(page);
+              }
+            }}
+          />
+        ) : undefined
+      }
+    >
+      {loading ? (
+        <PanelSurface className="text-center p-xl">
+          <Loader2
+            size={32}
+            className="animate-spin text-accent"
+            style={{ margin: '0 auto 1rem auto' }}
+          />
+          <p className="text-secondary">Loading chat sessions...</p>
+        </PanelSurface>
+      ) : error ? (
         <div className="banner-danger">
           <span className="text-md">{error}</span>
         </div>
+      ) : sessions.length === 0 ? (
+        <div className="text-secondary text-center p-xl">
+          No chat sessions match the current filters.
+        </div>
+      ) : (
+        <div className="flex-col gap-sm">
+          {sessions.map(session => (
+            <SessionCard
+              key={session.pk ?? session.scene_pk ?? session.scene_key ?? session.id}
+              session={session}
+              allCharacters={allCharacters}
+              charactersFilter={charactersFilter}
+              setCharactersFilter={setCharactersFilter}
+              onEdit={canCurate ? item => setEditingSession(item as ChatSession) : undefined}
+            />
+          ))}
+        </div>
       )}
 
-      <VirtualSceneList
-        mode="sessions"
-        scenes={sessions}
-        allCharacters={allCharacters}
-        charactersFilter={charactersFilter}
-        setCharactersFilter={setCharactersFilter}
-        loadMore={loadMore}
-        hasMore={hasMore}
-        loading={loading}
-        error={error}
-        onEdit={canCurate ? item => setEditingSession(item as ChatSession) : undefined}
-      />
-
-      {canCurate && editingSession && (
-        <SceneEditModal
-          backupId={backupId}
-          scene={editingSession}
-          onClose={() => setEditingSession(null)}
-          onUpdated={updated => {
-            if (updated) {
-              setSessions(prev =>
-                prev.map(s =>
-                  s.scene_key === updated.scene_key ||
-                  s.id === updated.scene_key ||
-                  (updated.pk && (s.pk === updated.pk || s.scene_pk === updated.pk))
-                    ? { ...s, custom_name: updated.custom_name }
-                    : s
-                )
-              );
-            } else {
-              fetchSessions(1, true);
-            }
-          }}
+      {!loading && !error && totalPages > 1 && (
+        <Pagination
+          currentPage={page}
+          totalPages={totalPages}
+          totalItems={totalItems}
+          onPageChange={handlePageChange}
         />
       )}
-    </div>
+    </ListPageLayout>
   );
 };

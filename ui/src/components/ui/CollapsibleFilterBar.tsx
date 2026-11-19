@@ -1,6 +1,7 @@
 import React, { useState, useRef, useLayoutEffect, useMemo } from 'react';
 import { Filter, ChevronDown, RotateCcw } from 'lucide-react';
 import { Badge } from './Badge';
+import { useResponsiveText } from '../../utils/responsiveText';
 
 export interface CollapsibleFilterBarProps {
   title?: string;
@@ -142,12 +143,13 @@ export const CollapsibleFilterBar: React.FC<CollapsibleFilterBarProps> = ({
   activeCount = 0,
   summaryPills,
   onClearAll,
-  defaultCollapsed = false,
+  defaultCollapsed,
   actions,
   children,
   className = '',
 }) => {
-  const [isCollapsed, setIsCollapsed] = useState(defaultCollapsed);
+  const { isMobile } = useResponsiveText();
+  const [isCollapsed, setIsCollapsed] = useState(() => defaultCollapsed ?? isMobile);
 
   const containerClasses = [
     'collapsible-filter-container',
@@ -201,7 +203,7 @@ export const CollapsibleFilterBar: React.FC<CollapsibleFilterBarProps> = ({
             onClick={() => setIsCollapsed(prev => !prev)}
             aria-label={isCollapsed ? 'Expand filters' : 'Collapse filters'}
           >
-            <span>{isCollapsed ? 'Show' : 'Hide'}</span>
+            <span className='hide-in-tablet'>{isCollapsed ? 'Show' : 'Hide'}</span>
             <ChevronDown
               size={14}
               style={{

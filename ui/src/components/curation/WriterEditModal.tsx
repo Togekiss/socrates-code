@@ -120,7 +120,7 @@ export const WriterEditModal: React.FC<WriterEditModalProps> = ({
       size="md"
       footer={modalFooter}
     >
-      <div className="flex-col gap-md">
+      <div className="flex-col gap-lg">
         {error && (
           <div className="banner-danger">
             <span>{error}</span>

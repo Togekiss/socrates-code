@@ -1,14 +1,15 @@
-import { useState, useEffect, useCallback } from 'react';
-import { CheckCircle, Loader2 } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { CheckCircle, Loader2, Plus } from 'lucide-react';
 import { api, getErrorMessage } from '../api';
 import { PromoteMessageModal } from './curation/PromoteMessageModal';
 import { AddFlaggedMessageModal } from './curation/AddFlaggedMessageModal';
 import { FlaggedMessageCard } from './curation/FlaggedMessageCard';
 import { FlaggedMessagesFilters } from './curation/FlaggedMessagesFilters';
 import { BackupStatusGuard } from './layout/BackupStatusGuard';
+import { ListPageLayout } from './layout/ListPageLayout';
 import { useBackupStatusGuard } from '../hooks/useBackupStatusGuard';
-import { Pagination } from './ui';
-import type { BackupInfo, FlaggedMessage, FlaggedMessagesResponse, FlaggedResolution } from '../types';
+import { Button, Pagination } from './ui';
+import type { BackupInfo, Character, FlaggedMessage, FlaggedMessagesResponse, FlaggedResolution } from '../types';
 import { getRoleLevel, ROLE_LEVELS } from '../utils/rbac';
 
 interface FlaggedMessagesTabProps {
@@ -52,9 +53,16 @@ export const FlaggedMessagesTab = ({
   const [error, setError] = useState<string | null>(null);
 
   const [promotingMsg, setPromotingMsg] = useState<FlaggedMessage | null>(null);
+  const [characters, setCharacters] = useState<Character[]>([]);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [resolvingId, setResolvingId] = useState<string | null>(null);
   const [reopeningId, setReopeningId] = useState<string | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const handlePageChange = (nextPage: number) => {
+    setPage(nextPage);
+    scrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
   const statusGuard = useBackupStatusGuard({
     backupId,
@@ -66,6 +74,7 @@ export const FlaggedMessagesTab = ({
 
   useEffect(() => {
     setPage(1);
+    setCharacters([]);
     setData({
       total_items: 0,
       messages: [],
@@ -123,6 +132,20 @@ export const FlaggedMessagesTab = ({
     }
   }, [statusGuard.isReady, canCurate, fetchMessages]);
 
+  useEffect(() => {
+    if (!backupId || !statusGuard.isReady || !canCurate) return;
+    let cancelled = false;
+    api
+      .getCharacters(backupId)
+      .then(res => {
+        if (!cancelled && Array.isArray(res)) setCharacters(res);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [backupId, statusGuard.isReady, canCurate]);
+
   const handleResolve = async (msg: FlaggedMessage, resolution: FlaggedResolution) => {
     setResolvingId(msg.message_id);
     try {
@@ -163,40 +186,107 @@ export const FlaggedMessagesTab = ({
     return <BackupStatusGuard title="Flagged Messages" guard={statusGuard} />;
   }
 
-  return (
-    <div className="flex-col gap-md">
-      {/* Header & Filter Controls */}
-      <FlaggedMessagesFilters
-        totalItems={data.total_items}
-        statusFilter={statusFilter}
-        onStatusChange={st => {
-          setStatusFilter(st);
-          setPage(1);
-        }}
-        statusCounts={statusCounts}
-        scopeCounts={data.scope_counts}
-        sceneTypeFilter={sceneTypeFilter}
-        onSceneTypeChange={t => {
-          setSceneTypeFilter(t);
-          setPage(1);
-        }}
-        kindFilter={kindFilter}
-        onKindChange={k => {
-          setKindFilter(k);
-          setPage(1);
-        }}
-        resolutionFilter={resolutionFilter}
-        onResolutionChange={r => {
-          setResolutionFilter(r);
-          setPage(1);
-        }}
-        onOpenAddModal={() => setIsAddModalOpen(true)}
-      />
+  const filtersActive = Boolean(
+    statusFilter !== 'all' ||
+      sceneTypeFilter ||
+      kindFilter ||
+      resolutionFilter
+  );
 
+  return (
+    <ListPageLayout
+      title="Flagged Messages"
+      descriptionKey="descFlaggedMessages"
+      guideKey="flaggedMessages"
+      headerAction={
+        <Button
+          variant="secondary"
+          size="md"
+          onClick={() => setIsAddModalOpen(true)}
+          icon={<Plus size={14} />}
+          title="Add flagged message manually"
+        >
+          Add Message
+        </Button>
+      }
+      filterBar={
+        <FlaggedMessagesFilters
+          statusFilter={statusFilter}
+          onStatusChange={st => {
+            setStatusFilter(st);
+            setPage(1);
+          }}
+          statusCounts={statusCounts}
+          scopeCounts={data.scope_counts}
+          sceneTypeFilter={sceneTypeFilter}
+          onSceneTypeChange={t => {
+            setSceneTypeFilter(t);
+            setPage(1);
+          }}
+          kindFilter={kindFilter}
+          onKindChange={k => {
+            setKindFilter(k);
+            setPage(1);
+          }}
+          resolutionFilter={resolutionFilter}
+          onResolutionChange={r => {
+            setResolutionFilter(r);
+            setPage(1);
+          }}
+        />
+      }
+      countText={
+        !error ? (
+          <span>
+            Showing{' '}
+            <strong>
+              {data.total_items > data.messages.length
+                ? `${data.messages.length} of ${data.total_items}`
+                : data.total_items}
+            </strong>{' '}
+            flagged {data.total_items === 1 ? 'message' : 'messages'}
+            {filtersActive && ' (filtered)'}
+          </span>
+        ) : undefined
+      }
+      scrollRef={scrollRef}
+      modals={
+        <>
+          {promotingMsg && (
+            <PromoteMessageModal
+              backupId={backupId}
+              message={promotingMsg}
+              allCharacters={characters.length > 0 ? characters : undefined}
+              onClose={() => setPromotingMsg(null)}
+              onPromoted={() => {
+                fetchMessages();
+                if (onRefreshSummary) onRefreshSummary();
+              }}
+            />
+          )}
+
+          {isAddModalOpen && (
+            <AddFlaggedMessageModal
+              backupId={backupId}
+              onClose={() => setIsAddModalOpen(false)}
+              onSuccess={newMsg => {
+                fetchMessages();
+                if (onRefreshSummary) onRefreshSummary();
+                setPromotingMsg(newMsg);
+              }}
+            />
+          )}
+        </>
+      }
+    >
       {/* Main Content Area */}
       {loading ? (
         <div className="glass-panel text-center p-xl">
-          <Loader2 size={32} className="animate-spin text-accent" style={{ margin: '0 auto 1rem auto' }} />
+          <Loader2
+            size={32}
+            className="animate-spin text-accent"
+            style={{ margin: '0 auto 1rem auto' }}
+          />
           <p className="text-secondary">Loading flagged messages...</p>
         </div>
       ) : error ? (
@@ -226,41 +316,18 @@ export const FlaggedMessagesTab = ({
               onReopen={handleReopen}
             />
           ))}
-
-          {/* Pagination Controls */}
-          <Pagination
-            currentPage={data.current_page}
-            totalPages={data.total_pages}
-            totalItems={data.total_items}
-            onPageChange={setPage}
-          />
         </div>
       )}
 
-      {/* Modals */}
-      {promotingMsg && (
-        <PromoteMessageModal
-          backupId={backupId}
-          message={promotingMsg}
-          onClose={() => setPromotingMsg(null)}
-          onPromoted={() => {
-            fetchMessages();
-            if (onRefreshSummary) onRefreshSummary();
-          }}
+      {/* Pagination Controls */}
+      {!loading && !error && data.total_pages > 1 && (
+        <Pagination
+          currentPage={data.current_page}
+          totalPages={data.total_pages}
+          totalItems={data.total_items}
+          onPageChange={handlePageChange}
         />
       )}
-
-      {isAddModalOpen && (
-        <AddFlaggedMessageModal
-          backupId={backupId}
-          onClose={() => setIsAddModalOpen(false)}
-          onSuccess={newMsg => {
-            fetchMessages();
-            if (onRefreshSummary) onRefreshSummary();
-            setPromotingMsg(newMsg);
-          }}
-        />
-      )}
-    </div>
+    </ListPageLayout>
   );
 };

@@ -79,7 +79,7 @@ export const CharactersFilter: React.FC<CharactersFilterProps> = ({
 
   return (
     <CollapsibleFilterBar
-      title="Character Searcher"
+      title="Filters"
       activeCount={activeCount}
       summaryPills={summaryPills}
       onClearAll={handleClearAll}

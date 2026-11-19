@@ -3,10 +3,9 @@ import {
   AlertCircle,
   CheckCircle,
   Eye,
-  Plus,
+  Info,
   RefreshCw,
   Shield,
-  Trash2,
   UserX,
 } from 'lucide-react';
 import { api, getErrorMessage } from '../api';
@@ -16,7 +15,8 @@ import type {
   WriterDetailed,
 } from '../types';
 import { AuditLogViewer } from './AuditLogViewer';
-import { Button, PanelSurface } from './ui';
+import { RbacBucketCard } from './users/RbacBucketCard';
+import { Button, PanelSurface, type BadgeVariant, type DataCardAccent } from './ui';
 
 interface UsersTabProps {
   backupId: string;
@@ -35,6 +35,62 @@ const SNOWFLAKE_RE = /^\d{15,22}$/;
 
 type RoleBucketKey = 'adminRoleIds' | 'curatorRoleIds' | 'participantRoleIds';
 type UserBucketKey = 'restrictedUserIds' | 'blockedUserIds';
+
+const ROLE_SECTIONS: Array<{
+  key: RoleBucketKey;
+  title: string;
+  description: string;
+  accent: DataCardAccent;
+  chipVariant: BadgeVariant;
+}> = [
+  {
+    key: 'adminRoleIds',
+    title: 'Server Admin Roles',
+    description: 'Full control over this backup: pipeline runs, server configuration, logs, and user access rules.',
+    accent: 'accent',
+    chipVariant: 'accent',
+  },
+  {
+    key: 'curatorRoleIds',
+    title: 'Curator Roles',
+    description: 'Can manage writers, characters, scenes, events, scene issues, and flagged messages.',
+    accent: 'success',
+    chipVariant: 'info',
+  },
+  {
+    key: 'participantRoleIds',
+    title: 'Participant Roles',
+    description: 'Can edit their own linked writer profile and manage their own assigned characters.',
+    accent: 'resolved',
+    chipVariant: 'success',
+  },
+];
+
+const USER_SECTIONS: Array<{
+  key: UserBucketKey;
+  title: string;
+  description: string;
+  accent: DataCardAccent;
+  chipVariant: BadgeVariant;
+  icon: typeof Eye;
+}> = [
+  {
+    key: 'restrictedUserIds',
+    title: 'Restricted Users (Viewer Lock)',
+    description: 'Forced to read-only Viewer access on this backup regardless of Discord server roles.',
+    accent: 'warning',
+    chipVariant: 'warning',
+    icon: Eye,
+  },
+  {
+    key: 'blockedUserIds',
+    title: 'Blocked Users (403 Denied)',
+    description: 'Completely blocked from viewing or modifying this backup.',
+    accent: 'danger',
+    chipVariant: 'danger',
+    icon: UserX,
+  },
+];
 
 export const UsersTab = ({ backupId, onRefreshSummary }: UsersTabProps) => {
   const [rbac, setRbac] = useState<RbacConfig>(EMPTY_RBAC);
@@ -97,11 +153,13 @@ export const UsersTab = ({ backupId, onRefreshSummary }: UsersTabProps) => {
 
   const writerOptions = useMemo(
     () =>
-      writers.filter(w => Boolean(w.discord_user_id)).map(w => ({
-        id: String(w.discord_user_id),
-        label: `${w.display_name} (${w.discord_user_id})`,
-        name: w.display_name,
-      })),
+      writers
+        .filter(w => Boolean(w.discord_user_id))
+        .map(w => ({
+          id: String(w.discord_user_id),
+          label: `${w.display_name} (${w.discord_user_id})`,
+          name: w.display_name,
+        })),
     [writers]
   );
 
@@ -169,86 +227,46 @@ export const UsersTab = ({ backupId, onRefreshSummary }: UsersTabProps) => {
     }
   };
 
-  const roleSections: Array<{
-    key: RoleBucketKey;
-    title: string;
-    description: string;
-  }> = [
-    {
-      key: 'adminRoleIds',
-      title: 'Server Admin Roles',
-      description: 'Full control over this backup: pipeline runs, server configuration, logs, and user access rules.',
-    },
-    {
-      key: 'curatorRoleIds',
-      title: 'Curator Roles',
-      description: 'Can manage writers, characters, scenes, events, scene issues, and flagged messages.',
-    },
-    {
-      key: 'participantRoleIds',
-      title: 'Participant Roles',
-      description: 'Can edit their own linked writer profile and manage their own assigned characters.',
-    },
-  ];
-
-  const userSections: Array<{
-    key: UserBucketKey;
-    title: string;
-    description: string;
-    icon: typeof Eye;
-  }> = [
-    {
-      key: 'restrictedUserIds',
-      title: 'Restricted Users (Viewer Lock)',
-      description: 'Forced to read-only Viewer access on this backup regardless of Discord server roles.',
-      icon: Eye,
-    },
-    {
-      key: 'blockedUserIds',
-      title: 'Blocked Users (403 Denied)',
-      description: 'Completely blocked from viewing or modifying this backup.',
-      icon: UserX,
-    },
-  ];
-
   return (
-    <div className="space-y-6">
+    <div className="flex-col gap-xl">
       {errorMsg && (
-        <div className="banner-danger flex items-center gap-2 text-sm">
-          <AlertCircle size={16} />
-          <span>{errorMsg}</span>
+        <div className="banner-danger mb-0" role="alert">
+          <div className="banner-content text-sm">
+            <AlertCircle size={16} className="shrink-0" />
+            <span>{errorMsg}</span>
+          </div>
         </div>
       )}
 
       {successMsg && (
-        <div className="banner-success flex items-center gap-2 text-sm">
-          <CheckCircle size={16} />
-          <span>{successMsg}</span>
+        <div className="banner-success mb-0" role="status">
+          <div className="banner-content text-sm">
+            <CheckCircle size={16} className="shrink-0" />
+            <span>{successMsg}</span>
+          </div>
         </div>
       )}
 
       {/* Card 1: Discord Server Role Mapping */}
-      <PanelSurface className="flex-col gap-md">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="flex items-start gap-2.5">
-            <Shield size={18} className="mt-0.5 shrink-0" style={{ color: 'var(--accent-primary)' }} />
+      <PanelSurface className="flex-col gap-lg">
+        <div className="section-header">
+          <div className="section-header-title-row">
+            <Shield size={18} className="section-header-icon section-header-icon--accent" />
             <div>
-              <h2 style={{ margin: 0, fontSize: '1.15rem', color: 'var(--text-primary)' }}>
-                Discord Server Role Mapping
-              </h2>
-              <p className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)', margin: 0 }}>
+              <h2 className="section-header-title">Discord Server Role Mapping</h2>
+              <p className="section-header-desc">
                 Map Discord server roles to Socrates permission tiers for this backup.
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex-row items-center gap-sm flex-wrap">
             <Button
               variant="secondary"
               size="sm"
               onClick={() => void loadData()}
               disabled={loading || saving}
+              icon={<RefreshCw size={14} className={loading ? 'animate-spin' : ''} />}
             >
-              <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
               Refresh
             </Button>
             <Button
@@ -256,150 +274,71 @@ export const UsersTab = ({ backupId, onRefreshSummary }: UsersTabProps) => {
               size="sm"
               onClick={() => void handleSave()}
               disabled={loading || saving}
+              loading={saving}
             >
               {saving ? 'Saving...' : 'Save Access Rules'}
             </Button>
           </div>
         </div>
+
         {!botAvailable && (
-          <div
-            className="text-xs px-3 py-2 rounded mb-4"
-            style={{
-              backgroundColor: 'var(--bg-elevated)',
-              border: '1px solid var(--border-subtle)',
-              color: 'var(--text-secondary)',
-            }}
-          >
-            Discord Bot role list is currently unavailable. You can still add or remove Discord Role IDs manually below.
+          <div className="banner-info mb-0">
+            <div className="banner-content text-sm">
+              <Info size={16} className="shrink-0" />
+              <span>
+                Discord Bot role list is currently unavailable. You can still add or remove Discord Role IDs manually below.
+              </span>
+            </div>
           </div>
         )}
 
-        <div className="space-y-5">
-          {roleSections.map(section => {
+        <div className="flex-col gap-lg">
+          {ROLE_SECTIONS.map(section => {
             const selectedIds = rbac[section.key];
-            const availableDiscordRoles = discordRoles.filter(
-              role => !selectedIds.includes(String(role.id))
-            );
+            const availableDiscordRoles = discordRoles
+              .filter(role => !selectedIds.includes(String(role.id)))
+              .map(role => ({ id: String(role.id), label: role.name }));
+
             return (
-              <div
+              <RbacBucketCard
                 key={section.key}
-                className="p-4 rounded-lg space-y-3"
-                style={{
-                  backgroundColor: 'var(--bg-elevated)',
-                  border: '1px solid var(--border-subtle)',
+                title={section.title}
+                description={section.description}
+                accent={section.accent}
+                chipVariant={section.chipVariant}
+                chipIcon={<Shield size={12} />}
+                selectedIds={selectedIds}
+                options={availableDiscordRoles}
+                getDisplayLabel={id => {
+                  const label = roleNameById.get(id);
+                  return label ? `${label} (${id})` : id;
                 }}
-              >
-                <div>
-                  <h4 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
-                    {section.title}
-                  </h4>
-                  <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                    {section.description}
-                  </p>
-                </div>
-
-                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                  {discordRoles.length > 0 && (
-                    <select
-                      aria-label={`${section.title} Discord role selector`}
-                      className="form-control text-xs sm:w-64"
-                      value=""
-                      disabled={availableDiscordRoles.length === 0}
-                      onChange={e => {
-                        if (e.target.value) {
-                          addManualId('role', section.key, e.target.value);
-                        }
-                      }}
-                    >
-                      <option value="">
-                        {availableDiscordRoles.length > 0
-                          ? 'Select a Discord server role...'
-                          : 'All server roles selected'}
-                      </option>
-                      {availableDiscordRoles.map(role => (
-                        <option key={`${section.key}-${role.id}`} value={String(role.id)}>
-                          {role.name}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-
-                  <div className="flex items-center gap-2 flex-1">
-                    <input
-                      type="text"
-                      className="form-control text-xs"
-                      placeholder="Add Discord Role ID (15-22 digits)"
-                      value={manualRoleInputs[section.key]}
-                      onChange={e =>
-                        setManualRoleInputs(prev => ({ ...prev, [section.key]: e.target.value }))
-                      }
-                      onKeyDown={e => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          addManualId('role', section.key, manualRoleInputs[section.key]);
-                        }
-                      }}
-                    />
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => addManualId('role', section.key, manualRoleInputs[section.key])}
-                    >
-                      <Plus size={14} />
-                      Add ID
-                    </Button>
-                  </div>
-                </div>
-
-                {selectedIds.length > 0 ? (
-                  <div className="flex flex-wrap gap-2">
-                    {selectedIds.map(id => {
-                      const label = roleNameById.get(id);
-                      return (
-                        <span
-                          key={`${section.key}-selected-${id}`}
-                          className="inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs font-mono"
-                          style={{
-                            backgroundColor: 'var(--bg-surface)',
-                            border: '1px solid var(--border-subtle)',
-                            color: 'var(--text-secondary)',
-                          }}
-                        >
-                          <span>{label ? `${label} (${id})` : id}</span>
-                          <button
-                            type="button"
-                            onClick={() => removeIdFromBucket(section.key, id)}
-                            className="hover:opacity-80"
-                            aria-label={`Remove role ${id}`}
-                            style={{ color: 'var(--danger)' }}
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        </span>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <p className="text-xs italic" style={{ color: 'var(--text-muted)' }}>
-                    No Discord roles assigned to this tier.
-                  </p>
-                )}
-              </div>
+                selectPlaceholder="Select a Discord server role..."
+                selectAriaLabel={`${section.title} Discord role selector`}
+                emptySelectText={discordRoles.length > 0 ? 'All server roles selected' : undefined}
+                manualInputPlaceholder="Add Discord Role ID (15-22 digits)"
+                manualInputValue={manualRoleInputs[section.key]}
+                onManualInputChange={val =>
+                  setManualRoleInputs(prev => ({ ...prev, [section.key]: val }))
+                }
+                onAddId={id => addManualId('role', section.key, id)}
+                onRemoveId={id => removeIdFromBucket(section.key, id)}
+                emptyText="No Discord roles assigned to this tier."
+                removeAriaPrefix="Remove role"
+              />
             );
           })}
         </div>
       </PanelSurface>
 
       {/* Card 2: User Restrictions & Blocks */}
-      <PanelSurface className="flex-col gap-md">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="flex items-start gap-2.5">
-            <UserX size={18} className="mt-0.5 shrink-0" style={{ color: 'var(--warning)' }} />
+      <PanelSurface className="flex-col gap-lg">
+        <div className="section-header">
+          <div className="section-header-title-row">
+            <UserX size={18} className="section-header-icon section-header-icon--warning" />
             <div>
-              <h2 style={{ margin: 0, fontSize: '1.15rem', color: 'var(--text-primary)' }}>
-                User Restrictions &amp; Blocks
-              </h2>
-              <p className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)', margin: 0 }}>
+              <h2 className="section-header-title">User Restrictions &amp; Blocks</h2>
+              <p className="section-header-desc">
                 Restrict specific Discord users to read-only Viewer access or block them completely.
               </p>
             </div>
@@ -409,119 +348,47 @@ export const UsersTab = ({ backupId, onRefreshSummary }: UsersTabProps) => {
             size="sm"
             onClick={() => void handleSave()}
             disabled={loading || saving}
+            loading={saving}
           >
             {saving ? 'Saving...' : 'Save User Rules'}
           </Button>
         </div>
-        <div className="space-y-5">
-          {userSections.map(section => {
+
+        <div className="flex-col gap-lg">
+          {USER_SECTIONS.map(section => {
             const Icon = section.icon;
             const selectedIds = rbac[section.key];
-            const availableWriterOpts = writerOptions.filter(opt => !selectedIds.includes(opt.id));
+            const availableWriterOpts = writerOptions
+              .filter(opt => !selectedIds.includes(opt.id))
+              .map(opt => ({ id: opt.id, label: opt.label }));
+
             return (
-              <div
+              <RbacBucketCard
                 key={section.key}
-                className="p-4 rounded-lg space-y-3"
-                style={{
-                  backgroundColor: 'var(--bg-elevated)',
-                  border: '1px solid var(--border-subtle)',
+                title={section.title}
+                description={section.description}
+                icon={<Icon size={16} />}
+                accent={section.accent}
+                chipVariant={section.chipVariant}
+                chipIcon={<Icon size={12} />}
+                selectedIds={selectedIds}
+                options={availableWriterOpts}
+                getDisplayLabel={id => {
+                  const writerName = writerNameByDiscordId.get(id);
+                  return writerName ? `${writerName} (${id})` : id;
                 }}
-              >
-                <div className="flex items-start gap-2">
-                  <Icon size={16} className="mt-0.5 shrink-0" style={{ color: 'var(--text-secondary)' }} />
-                  <div>
-                    <h4 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
-                      {section.title}
-                    </h4>
-                    <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                      {section.description}
-                    </p>
-                  </div>
-                </div>
-
-                {selectedIds.length > 0 ? (
-                  <div className="flex flex-wrap gap-2">
-                    {selectedIds.map(id => {
-                      const writerName = writerNameByDiscordId.get(id);
-                      return (
-                        <span
-                          key={`${section.key}-${id}`}
-                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs"
-                          style={{
-                            backgroundColor: 'var(--bg-surface)',
-                            border: '1px solid var(--border-subtle)',
-                            color: 'var(--text-primary)',
-                          }}
-                        >
-                          <span className="font-mono">
-                            {writerName ? `${writerName} (${id})` : id}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => removeIdFromBucket(section.key, id)}
-                            className="hover:opacity-80"
-                            aria-label={`Remove user ${id}`}
-                            style={{ color: 'var(--danger)' }}
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        </span>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <p className="text-xs italic" style={{ color: 'var(--text-muted)' }}>
-                    No users in this list.
-                  </p>
-                )}
-
-                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                  {availableWriterOpts.length > 0 && (
-                    <select
-                      className="form-control text-xs"
-                      value=""
-                      onChange={e => {
-                        if (e.target.value) {
-                          addManualId('user', section.key, e.target.value);
-                        }
-                      }}
-                    >
-                      <option value="">Quick-add linked writer...</option>
-                      {availableWriterOpts.map(opt => (
-                        <option key={`${section.key}-opt-${opt.id}`} value={opt.id}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-
-                  <div className="flex items-center gap-2 flex-1">
-                    <input
-                      type="text"
-                      className="form-control text-xs"
-                      placeholder="Add Discord User ID (15-22 digits)"
-                      value={manualUserInputs[section.key]}
-                      onChange={e =>
-                        setManualUserInputs(prev => ({ ...prev, [section.key]: e.target.value }))
-                      }
-                      onKeyDown={e => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          addManualId('user', section.key, manualUserInputs[section.key]);
-                        }
-                      }}
-                    />
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => addManualId('user', section.key, manualUserInputs[section.key])}
-                    >
-                      <Plus size={14} />
-                      Add ID
-                    </Button>
-                  </div>
-                </div>
-              </div>
+                selectPlaceholder="Quick-add linked writer..."
+                selectAriaLabel={`${section.title} linked writer selector`}
+                manualInputPlaceholder="Add Discord User ID (15-22 digits)"
+                manualInputValue={manualUserInputs[section.key]}
+                onManualInputChange={val =>
+                  setManualUserInputs(prev => ({ ...prev, [section.key]: val }))
+                }
+                onAddId={id => addManualId('user', section.key, id)}
+                onRemoveId={id => removeIdFromBucket(section.key, id)}
+                emptyText="No users in this list."
+                removeAriaPrefix="Remove user"
+              />
             );
           })}
         </div>

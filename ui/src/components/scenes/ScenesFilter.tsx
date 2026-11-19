@@ -1,20 +1,29 @@
-import React, { useState } from 'react';
-import { User, UserCheck, Folder, Hash } from 'lucide-react';
-import { CollapsibleFilterBar, SegmentedControl, FilterChip, Badge } from '../ui';
-import { resolveCharacterName } from '../../utils/characters';
-import type { Character } from '../../types';
+import React, { useMemo } from 'react';
+import { User, Users, UserCheck, Search } from 'lucide-react';
+import {
+  CollapsibleFilterBar,
+  SegmentedControl,
+  FilterChip,
+  Badge,
+  CharacterPicker,
+  WriterPicker,
+} from '../ui';
+import { getGroupDisplayName, resolveCharacterName } from '../../utils/characters';
+import type { Character, CharacterGroup, WriterDetailed } from '../../types';
 
 export interface ScenesFilterProps {
+  search: string;
+  setSearch: (v: string) => void;
   charactersFilter: number[];
   setCharactersFilter: (v: number[]) => void;
+  groupsFilter?: number[];
+  setGroupsFilter?: (v: number[]) => void;
   characterLogic: 'AND' | 'OR';
   setCharacterLogic: (v: 'AND' | 'OR') => void;
   writersFilter: string[];
   setWritersFilter: (v: string[]) => void;
   writerLogic: 'AND' | 'OR';
   setWriterLogic: (v: 'AND' | 'OR') => void;
-  categoriesFilter: string[];
-  setCategoriesFilter: (v: string[]) => void;
   typesFilter: string[];
   setTypesFilter: (v: string[]) => void;
   statusesFilter: string[];
@@ -33,19 +42,23 @@ export interface ScenesFilterProps {
   setByMe: (v: boolean) => void;
   mode?: 'scenes' | 'sessions' | 'events';
   allCharacters: Character[];
+  allGroups?: CharacterGroup[];
+  allWriters?: WriterDetailed[];
 }
 
 export const ScenesFilter: React.FC<ScenesFilterProps> = ({
+  search,
+  setSearch,
   charactersFilter,
   setCharactersFilter,
+  groupsFilter = [],
+  setGroupsFilter,
   characterLogic,
   setCharacterLogic,
   writersFilter,
   setWritersFilter,
   writerLogic,
   setWriterLogic,
-  categoriesFilter,
-  setCategoriesFilter,
   typesFilter,
   setTypesFilter,
   statusesFilter,
@@ -64,44 +77,37 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
   setByMe,
   mode = 'scenes',
   allCharacters,
+  allGroups = [],
+  allWriters = [],
 }) => {
-  const [writerInput, setWriterInput] = useState('');
-  const [categoryInput, setCategoryInput] = useState('');
+  const selectedWriterIds = useMemo(() => {
+    if (writersFilter.length === 0 || allWriters.length === 0) return [];
+    const selectedNames = new Set(writersFilter.map(w => w.trim().toLowerCase()).filter(Boolean));
+    return allWriters
+      .filter(
+        w =>
+          selectedNames.has(w.display_name.trim().toLowerCase()) ||
+          (w.aliases || []).some(a => selectedNames.has(a.trim().toLowerCase()))
+      )
+      .map(w => w.id);
+  }, [writersFilter, allWriters]);
 
-  const addCharFilter = (id: number) => {
-    if (!charactersFilter.includes(id)) {
-      setCharactersFilter([...charactersFilter, id]);
-    }
+  const handleWriterIdsChange = (ids: number[]) => {
+    const idSet = new Set(ids);
+    const nextNames = allWriters.filter(w => idSet.has(w.id)).map(w => w.display_name);
+    setWritersFilter(nextNames);
   };
 
   const removeCharFilter = (id: number) => {
     setCharactersFilter(charactersFilter.filter(x => x !== id));
   };
 
-  const addWriterFilter = (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = writerInput.trim();
-    if (trimmed && !writersFilter.includes(trimmed)) {
-      setWritersFilter([...writersFilter, trimmed]);
-    }
-    setWriterInput('');
+  const removeGroupFilter = (gid: number) => {
+    setGroupsFilter?.(groupsFilter.filter(x => x !== gid));
   };
 
   const removeWriterFilter = (w: string) => {
     setWritersFilter(writersFilter.filter(x => x !== w));
-  };
-
-  const addCategoryFilter = (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = categoryInput.trim();
-    if (trimmed && !categoriesFilter.includes(trimmed)) {
-      setCategoriesFilter([...categoriesFilter, trimmed]);
-    }
-    setCategoryInput('');
-  };
-
-  const removeCategoryFilter = (c: string) => {
-    setCategoriesFilter(categoriesFilter.filter(x => x !== c));
   };
 
   const toggleArrayItem = (arr: string[], setArr: (v: string[]) => void, item: string) => {
@@ -114,23 +120,26 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
 
   const isChannelFilterMode = mode === 'sessions' || mode === 'events';
   const statusOptions = mode === 'events' ? ['closed', 'open'] : ['closed', 'open', 'no_end_tag'];
-  const filtersTitle = mode === 'events' ? 'Event Searcher' : mode === 'sessions' ? 'Chat Session Searcher' : 'Scenes Searcher';
+  const filtersTitle = mode === 'events' ? 'Event' : mode === 'sessions' ? 'Chat Sessions' : 'Scenes';
+  const trimmedSearch = search.trim();
 
   const activeCount =
+    (trimmedSearch ? 1 : 0) +
     charactersFilter.length +
+    groupsFilter.length +
     writersFilter.length +
     (byMe ? 1 : 0) +
-    categoriesFilter.length +
     statusesFilter.length +
     typesFilter.length +
     (before ? 1 : 0) +
     (after ? 1 : 0);
 
   const handleClearAll = () => {
+    setSearch('');
     setCharactersFilter([]);
+    setGroupsFilter?.([]);
     setWritersFilter([]);
     setByMe(false);
-    setCategoriesFilter([]);
     setStatusesFilter([]);
     setTypesFilter([]);
     setBefore('');
@@ -143,20 +152,21 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
   // Summary pills shown when the filter bar is collapsed
   const summaryPills = (
     <div className="flex-row items-center gap-xs flex-wrap">
+      {trimmedSearch && <Badge variant="neutral">Search: &quot;{trimmedSearch}&quot;</Badge>}
       {byMe && <Badge variant="accent">★ By Me</Badge>}
       {charactersFilter.length > 0 && (
         <Badge variant="neutral">
           {charactersFilter.length} char{charactersFilter.length > 1 ? 's' : ''}
         </Badge>
       )}
+      {groupsFilter.length > 0 && (
+        <Badge variant="neutral">
+          {groupsFilter.length} group{groupsFilter.length > 1 ? 's' : ''}
+        </Badge>
+      )}
       {writersFilter.length > 0 && (
         <Badge variant="neutral">
           {writersFilter.length} writer{writersFilter.length > 1 ? 's' : ''}
-        </Badge>
-      )}
-      {categoriesFilter.length > 0 && (
-        <Badge variant="neutral">
-          {categoriesFilter.length} {isChannelFilterMode ? 'channels' : 'categories'}
         </Badge>
       )}
       {statusesFilter.length > 0 && (
@@ -178,7 +188,8 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
       summaryPills={summaryPills}
       onClearAll={handleClearAll}
     >
-      <div className='filter-cols-row'> 
+      <div className='filter-cols-row'>
+       
         {/* Characters Filter Block */}
         <div className="filter-col filter-col-md">
           <div className="filter-col-header">
@@ -205,26 +216,20 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
             />
           </div>
 
-          <select
-            value=""
-            onChange={e => addCharFilter(Number(e.target.value))}
-            className="select"
-          >
-            <option value="" disabled>
-              Select character to filter...
-            </option>
-            {allCharacters.flatMap(c => [
-              <option key={c.id} value={c.id}>
-                {c.names?.[0] || c.name}
-              </option>,
-              ...(c.versions || []).map(v => (
-                <option key={v.id} value={v.id}>
-                  {' '}
-                  └ {v.name} ({v.version_type || 'Alt'})
-                </option>
-              )),
-            ])}
-          </select>
+          <CharacterPicker
+            characters={allCharacters}
+            selectedIds={charactersFilter}
+            onChange={setCharactersFilter}
+            groups={allGroups}
+            selectedGroupIds={groupsFilter}
+            onChangeGroups={setGroupsFilter}
+            multiple={true}
+            includeVersions={true}
+            variant="dropdown"
+            showSelectedChips={false}
+            placeholder="Search characters or groups..."
+            maxListHeight={240}
+          />
 
           
 
@@ -283,36 +288,36 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
             </div>
           </div>
 
-          <form onSubmit={addWriterFilter} className="flex-row gap-xs">
+          <WriterPicker
+            writers={allWriters}
+            selectedIds={selectedWriterIds}
+            onChange={handleWriterIdsChange}
+            multiple={true}
+            variant="dropdown"
+            showSelectedChips={false}
+            disabled={byMe}
+            placeholder={byMe ? 'Bound to user session' : 'Search writers...'}
+            maxListHeight={240}
+          />
+        </div>
+        
+        {/* Unified Search Filter Block (custom name, key, channel, category) */}
+        <div className="filter-col filter-col-md">
+          <div className="filter-col-header" style={{paddingTop:'0.5rem'}}>
+            <label className="text-secondary text-sm font-semibold">Search</label>
+          </div>
+          <div className="search-input-wrapper">
+            <Search size={14} />
             <input
               type="text"
-              value={writerInput}
-              onChange={e => setWriterInput(e.target.value)}
-              placeholder={byMe ? 'Bound to user session' : 'Add writer...'}
-              disabled={byMe}
               className="input"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Name, channel, or category..."
             />
-          </form>
+          </div>
         </div>
 
-        {/* Categories / Channels Filter Block */}
-        <div className="filter-col filter-col-md">
-          <div className="filter-col-header">
-            <label className="text-secondary text-sm font-semibold">
-              {isChannelFilterMode ? 'Channel (OR)' : 'Category (OR)'}
-            </label>
-          </div>
-          <form onSubmit={addCategoryFilter} className="flex-row gap-xs">
-            <input
-              type="text"
-              value={categoryInput}
-              onChange={e => setCategoryInput(e.target.value)}
-              placeholder={isChannelFilterMode ? 'Add channel...' : 'Add category...'}
-              className="input"
-            />
-          </form>
-        </div>
-      
         {/* Status & Type Filter Block */}
         <div className="filter-col filter-col-auto">
           <div className="filter-col-header">
@@ -382,10 +387,26 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
         </div>
       </div>
 
-      {/* Inline Active Filter Chips Row (ordered: Characters -> Writers -> Categories/Channels) */}
-      {(charactersFilter.length > 0 || writersFilter.length > 0 || categoriesFilter.length > 0) && (
+      {/* Inline Active Filter Chips Row (ordered: Groups/Characters -> Writers) */}
+      {(groupsFilter.length > 0 || charactersFilter.length > 0 || writersFilter.length > 0) && (
         <div className="filter-active-chips-row">
           <span className="filter-active-chips-label">Filters:</span>
+          {groupsFilter.map(gid => {
+            const grp = allGroups.find(g => g.id === gid);
+            const label = grp ? `${getGroupDisplayName(grp)} (Group)` : `Group #${gid}`;
+            return (
+              <FilterChip
+                key={`group-${gid}`}
+                active
+                variant="accent"
+                icon={<Users size={12} />}
+                onRemove={() => removeGroupFilter(gid)}
+                title="Remove character group filter"
+              >
+                {label}
+              </FilterChip>
+            );
+          })}
           {charactersFilter.map(id => (
             <FilterChip
               key={`char-${id}`}
@@ -408,18 +429,6 @@ export const ScenesFilter: React.FC<ScenesFilterProps> = ({
               title="Remove writer filter"
             >
               {w}
-            </FilterChip>
-          ))}
-          {categoriesFilter.map(c => (
-            <FilterChip
-              key={`cat-${c}`}
-              active
-              variant="success"
-              icon={isChannelFilterMode ? <Hash size={12} /> : <Folder size={12} />}
-              onRemove={() => removeCategoryFilter(c)}
-              title={isChannelFilterMode ? 'Remove channel filter' : 'Remove category filter'}
-            >
-              {c}
             </FilterChip>
           ))}
         </div>

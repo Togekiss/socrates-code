@@ -162,10 +162,10 @@ export const StatusTab = ({
   const numThreads = getCount(info.number_of_threads, info.threads);
 
   return (
-    <div className="status-tab flex-col gap-lg">
-      <PanelSurface className="flex-col gap-lg">
+    <div className="status-tab flex-col gap-xl">
+      <PanelSurface className="flex-col gap-xl">
         {/* Header */}
-        <div className="flex-row items-center justify-between flex-wrap gap-md">
+        <div className="flex-row items-center justify-between flex-wrap gap-lg">
           <div>
             <h2 style={{ fontSize: '1.5rem', margin: 0, color: 'var(--text-primary)' }}>{title}</h2>
             <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>ID: {backupId}</span>

@@ -1,120 +1,143 @@
-import React, { useState, useMemo } from 'react';
-import { Search, Check, X, User } from 'lucide-react';
-import type { Character } from '../../types';
-import { getCharacterDisplayName } from '../../utils/characters';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { Search, Check, X, User, Users } from 'lucide-react';
+import type { Character, CharacterGroup } from '../../types';
+import {
+  buildCharacterPickerOptions,
+  filterCharacterPickerOptions,
+  type CharacterPickerOption,
+} from '../../utils/characters';
 import { FilterChip } from './Badge';
 
 export interface CharacterPickerProps {
   characters: Character[];
   selectedIds: number[];
   onChange: (ids: number[]) => void;
+  groups?: CharacterGroup[];
+  selectedGroupIds?: number[];
+  onChangeGroups?: (groupIds: number[]) => void;
   multiple?: boolean;
-  placeholder?: string;
   includeVersions?: boolean;
+  variant?: 'inline' | 'dropdown';
+  showSelectedChips?: boolean;
+  excludeIds?: number[];
+  fallbackOptions?: Array<{ id: number; name: string; writerName?: string | null }>;
+  onSelectItem?: (item: { kind: 'character' | 'group'; id: number; name: string }) => void;
+  placeholder?: string;
+  loading?: boolean;
   disabled?: boolean;
   className?: string;
   maxListHeight?: number;
-}
-
-interface FlattenedOption {
-  id: number;
-  name: string;
-  writerName?: string | null;
-  isVersion?: boolean;
-  parentName?: string;
 }
 
 export const CharacterPicker: React.FC<CharacterPickerProps> = ({
   characters,
   selectedIds,
   onChange,
+  groups,
+  selectedGroupIds = [],
+  onChangeGroups,
   multiple = false,
-  placeholder,
   includeVersions = false,
+  variant = 'inline',
+  showSelectedChips,
+  excludeIds,
+  fallbackOptions,
+  onSelectItem,
+  placeholder,
+  loading = false,
   disabled = false,
   className = '',
   maxListHeight = 220,
 }) => {
   const [query, setQuery] = useState('');
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
 
-  // Flatten character options, optionally including nested versions
-  const allOptions = useMemo<FlattenedOption[]>(() => {
-    const list: FlattenedOption[] = [];
-    for (const c of characters) {
-      const charName = getCharacterDisplayName(c);
-      const writer = c.writer_name || c.writer?.[0] || null;
+  const shouldShowChips = showSelectedChips ?? (variant === 'inline' && multiple);
 
-      list.push({
-        id: c.id,
-        name: charName,
-        writerName: writer,
-      });
+  useEffect(() => {
+    if (variant !== 'dropdown' || !dropdownOpen) return;
 
-      if (includeVersions) {
-        if (c.versions && Array.isArray(c.versions)) {
-          for (const v of c.versions) {
-            list.push({
-              id: v.id,
-              name: v.name,
-              writerName: writer,
-              isVersion: true,
-              parentName: charName,
-            });
-          }
-        }
-        // Legacy versions check
-        const legacy = (c as unknown as { other_versions?: Array<{ id: number; name?: string; names?: string[] }> }).other_versions;
-        if (legacy && Array.isArray(legacy)) {
-          for (const v of legacy) {
-            const vName = (v.names && v.names.length > 0 && v.names[0]) ? v.names[0] : (v.name || `Version #${v.id}`);
-            list.push({
-              id: v.id,
-              name: vName,
-              writerName: writer,
-              isVersion: true,
-              parentName: charName,
-            });
-          }
-        }
+    const handleMouseDown = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setDropdownOpen(false);
       }
-    }
-    return list;
-  }, [characters, includeVersions]);
+    };
 
-  // Filter options based on search query
-  const filteredOptions = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return allOptions;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setDropdownOpen(false);
+      }
+    };
 
-    return allOptions.filter(
-      opt =>
-        opt.name.toLowerCase().includes(q) ||
-        String(opt.id).includes(q) ||
-        (opt.writerName && opt.writerName.toLowerCase().includes(q)) ||
-        (opt.parentName && opt.parentName.toLowerCase().includes(q))
-    );
-  }, [allOptions, query]);
+    document.addEventListener('mousedown', handleMouseDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleMouseDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [variant, dropdownOpen]);
 
-  // Selected single character option (for single-select mode display)
+  const allOptions = useMemo<CharacterPickerOption[]>(
+    () =>
+      buildCharacterPickerOptions(characters, {
+        includeVersions,
+        groups,
+        excludeIds,
+        fallbackOptions,
+      }),
+    [characters, includeVersions, groups, excludeIds, fallbackOptions]
+  );
+
+  const filteredOptions = useMemo(
+    () => filterCharacterPickerOptions(allOptions, query),
+    [allOptions, query]
+  );
+
   const singleSelectedOption = useMemo(() => {
     if (multiple || selectedIds.length === 0) return null;
     const targetId = selectedIds[0];
-    return allOptions.find(o => o.id === targetId) || null;
+    return allOptions.find(o => o.kind === 'character' && o.id === targetId) || null;
   }, [multiple, selectedIds, allOptions]);
 
-  const handleToggle = (id: number) => {
+  const handleToggleOption = (opt: CharacterPickerOption) => {
     if (disabled) return;
-    if (multiple) {
-      if (selectedIds.includes(id)) {
-        onChange(selectedIds.filter(item => item !== id));
+
+    if (opt.kind === 'group') {
+      if (!onChangeGroups) return;
+      const isSelected = selectedGroupIds.includes(opt.id);
+      if (isSelected) {
+        onChangeGroups(selectedGroupIds.filter(id => id !== opt.id));
       } else {
-        onChange([...selectedIds, id]);
+        onChangeGroups([...selectedGroupIds, opt.id]);
+        onSelectItem?.({ kind: 'group', id: opt.id, name: opt.displayName });
+      }
+      if (!multiple && variant === 'dropdown') {
+        setDropdownOpen(false);
+        setQuery('');
+      }
+      return;
+    }
+
+    const isSelected = selectedIds.includes(opt.id);
+    if (multiple) {
+      if (isSelected) {
+        onChange(selectedIds.filter(item => item !== opt.id));
+      } else {
+        onChange([...selectedIds, opt.id]);
+        onSelectItem?.({ kind: 'character', id: opt.id, name: opt.displayName });
       }
     } else {
-      if (selectedIds.includes(id)) {
+      if (isSelected) {
         onChange([]);
       } else {
-        onChange([id]);
+        onChange([opt.id]);
+        onSelectItem?.({ kind: 'character', id: opt.id, name: opt.displayName });
+      }
+      if (variant === 'dropdown') {
+        setDropdownOpen(false);
+        setQuery('');
       }
     }
   };
@@ -125,21 +148,28 @@ export const CharacterPicker: React.FC<CharacterPickerProps> = ({
     setQuery('');
   };
 
-  const defaultPlaceholder = multiple
-    ? 'Search characters to filter or assign...'
-    : 'Search character by name or ID...';
+  const defaultPlaceholder = loading
+    ? 'Loading characters...'
+    : groups && groups.length > 0
+      ? 'Search characters or groups...'
+      : multiple
+        ? 'Search characters to filter or assign...'
+        : 'Search character by name, alias, or ID...';
 
-  // Single select mode with a selected value: render clean selected view with Change button
-  if (!multiple && singleSelectedOption && !query) {
+  // Inline single-select mode with a selected value: show selected card + Change button
+  if (variant === 'inline' && !multiple && singleSelectedOption && !query) {
     return (
       <div className={['character-picker', className].filter(Boolean).join(' ')}>
         <div className="character-picker-selected-card">
           <div className="character-picker-selected-info">
             <Check size={16} className="text-success" />
             <span className="character-picker-id">#{singleSelectedOption.id}</span>
-            <strong className="character-picker-name">{singleSelectedOption.name}</strong>
+            <strong className="character-picker-name">{singleSelectedOption.displayName}</strong>
             {singleSelectedOption.isVersion && (
-              <span className="badge badge-accent">alt of {singleSelectedOption.parentName}</span>
+              <span className="badge badge-accent">
+                {singleSelectedOption.versionType?.replace('_', ' ') || 'alt'}
+                {singleSelectedOption.parentName ? ` of ${singleSelectedOption.parentName}` : ''}
+              </span>
             )}
             {singleSelectedOption.writerName && (
               <span className="character-picker-writer">
@@ -160,19 +190,143 @@ export const CharacterPicker: React.FC<CharacterPickerProps> = ({
     );
   }
 
+  const listContent = (
+    <div
+      className="character-picker-list"
+      style={{ maxHeight: `${maxListHeight}px` }}
+    >
+      {loading ? (
+        <div className="character-picker-empty">Loading character directory...</div>
+      ) : filteredOptions.length === 0 ? (
+        <div className="character-picker-empty">
+          {query
+            ? `No characters found matching "${query}".`
+            : 'No characters available.'}
+        </div>
+      ) : (
+        filteredOptions.map(opt => {
+          const isSelected =
+            opt.kind === 'group'
+              ? selectedGroupIds.includes(opt.id)
+              : selectedIds.includes(opt.id);
+
+          const aliasTooltip =
+            opt.searchNames.length > 1
+              ? `Aliases: ${opt.searchNames.slice(1).join(', ')}`
+              : undefined;
+
+          return (
+            <div
+              key={opt.key}
+              className={[
+                'character-picker-item',
+                isSelected ? 'is-selected' : '',
+              ]
+                .filter(Boolean)
+                .join(' ')}
+              title={aliasTooltip}
+              onClick={() => handleToggleOption(opt)}
+            >
+              <div className="character-picker-item-main">
+                {multiple && (
+                  <div
+                    className={[
+                      'character-picker-checkbox',
+                      isSelected ? 'is-checked' : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ')}
+                  >
+                    {isSelected && <Check size={12} />}
+                  </div>
+                )}
+
+                {opt.kind === 'group' ? (
+                  <>
+                    <Users size={13} className="text-secondary flex-shrink-0" />
+                    <span className="character-picker-name">
+                      {opt.displayName} (Group)
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="character-picker-name">{opt.displayName}</span>
+                    {opt.isVersion && (
+                      <span className="badge badge-accent">
+                        {opt.versionType?.replace('_', ' ') || 'alt'}
+                        {opt.parentName ? ` of ${opt.parentName}` : ''}
+                      </span>
+                    )}
+                  </>
+                )}
+              </div>
+
+              <div className="character-picker-item-meta">
+                {opt.kind === 'group' ? (
+                  <span className="character-picker-writer">
+                    {opt.memberCount ?? 0} {opt.memberCount === 1 ? 'member' : 'members'}
+                  </span>
+                ) : (
+                  <>
+                    {opt.writerName && (
+                      <span className="character-picker-writer">
+                        <User size={12} /> {opt.writerName}
+                      </span>
+                    )}
+                    <span className="character-picker-id">ID: #{opt.id}</span>
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+
   return (
-    <div className={['character-picker', className].filter(Boolean).join(' ')}>
-      {/* Multi-select active chips summary */}
-      {multiple && selectedIds.length > 0 && (
+    <div
+      ref={containerRef}
+      className={[
+        'character-picker',
+        variant === 'dropdown' ? 'is-dropdown' : '',
+        className,
+      ]
+        .filter(Boolean)
+        .join(' ')}
+    >
+      {/* Inline multi-select active chips summary */}
+      {shouldShowChips && (selectedIds.length > 0 || selectedGroupIds.length > 0) && (
         <div className="character-picker-chips">
-          {selectedIds.map(id => {
-            const opt = allOptions.find(o => o.id === id);
-            const label = opt ? opt.name : `#${id}`;
+          {selectedGroupIds.map(gid => {
+            const opt = allOptions.find(o => o.kind === 'group' && o.id === gid);
+            const label = opt ? `${opt.displayName} (Group)` : `Group #${gid}`;
             return (
               <FilterChip
-                key={id}
+                key={`group-${gid}`}
                 active
-                onRemove={disabled ? undefined : () => handleToggle(id)}
+                onRemove={
+                  disabled || !onChangeGroups
+                    ? undefined
+                    : () => onChangeGroups(selectedGroupIds.filter(id => id !== gid))
+                }
+              >
+                {label}
+              </FilterChip>
+            );
+          })}
+          {selectedIds.map(id => {
+            const opt = allOptions.find(o => o.kind === 'character' && o.id === id);
+            const label = opt ? opt.displayName : `#${id}`;
+            return (
+              <FilterChip
+                key={`char-${id}`}
+                active
+                onRemove={
+                  disabled
+                    ? undefined
+                    : () => onChange(selectedIds.filter(item => item !== id))
+                }
               >
                 {label}
               </FilterChip>
@@ -182,7 +336,10 @@ export const CharacterPicker: React.FC<CharacterPickerProps> = ({
             <button
               type="button"
               className="btn btn-ghost btn-xs"
-              onClick={() => onChange([])}
+              onClick={() => {
+                onChange([]);
+                onChangeGroups?.([]);
+              }}
             >
               Clear all
             </button>
@@ -198,8 +355,16 @@ export const CharacterPicker: React.FC<CharacterPickerProps> = ({
           className="input"
           placeholder={placeholder || defaultPlaceholder}
           value={query}
-          disabled={disabled}
-          onChange={e => setQuery(e.target.value)}
+          disabled={disabled || loading}
+          onFocus={() => {
+            if (variant === 'dropdown') setDropdownOpen(true);
+          }}
+          onChange={e => {
+            setQuery(e.target.value);
+            if (variant === 'dropdown' && !dropdownOpen) {
+              setDropdownOpen(true);
+            }
+          }}
         />
         {query && (
           <button
@@ -213,59 +378,12 @@ export const CharacterPicker: React.FC<CharacterPickerProps> = ({
         )}
       </div>
 
-      {/* Options Dropdown List */}
-      <div
-        className="character-picker-list"
-        style={{ maxHeight: `${maxListHeight}px` }}
-      >
-        {filteredOptions.length === 0 ? (
-          <div className="character-picker-empty">
-            No characters found matching "{query}".
-          </div>
-        ) : (
-          filteredOptions.map(opt => {
-            const isSelected = selectedIds.includes(opt.id);
-            return (
-              <div
-                key={opt.id}
-                className={[
-                  'character-picker-item',
-                  isSelected ? 'is-selected' : '',
-                ]
-                  .filter(Boolean)
-                  .join(' ')}
-                onClick={() => handleToggle(opt.id)}
-              >
-                <div className="flex-row items-center gap-sm">
-                  <div
-                    className={[
-                      'character-picker-checkbox',
-                      isSelected ? 'is-checked' : '',
-                    ]
-                      .filter(Boolean)
-                      .join(' ')}
-                  >
-                    {isSelected && <Check size={12} />}
-                  </div>
-                  <span className="character-picker-id">#{opt.id}</span>
-                  <span className="character-picker-name">{opt.name}</span>
-                  {opt.isVersion && (
-                    <span className="badge badge-accent" style={{ fontSize: '0.65rem' }}>
-                      alt
-                    </span>
-                  )}
-                </div>
-
-                {opt.writerName && (
-                  <span className="character-picker-writer">
-                    <User size={12} /> {opt.writerName}
-                  </span>
-                )}
-              </div>
-            );
-          })
-        )}
-      </div>
+      {/* Options List (inline or floating dropdown) */}
+      {variant === 'inline' ? (
+        listContent
+      ) : (
+        dropdownOpen && <div className="character-picker-dropdown">{listContent}</div>
+      )}
     </div>
   );
 };

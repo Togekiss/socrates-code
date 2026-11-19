@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Check } from 'lucide-react';
-import { Modal, Button } from '../ui';
+import { Modal, Button, CharacterPicker } from '../ui';
 import { api } from '../../api';
 import type { FlaggedMessage, Character } from '../../types';
-import { CharacterSearchPicker } from './CharacterSearchPicker';
+import { resolveCharacterName } from '../../utils/characters';
 
 interface PromoteMessageModalProps {
   backupId: string;
   message: FlaggedMessage | null;
+  allCharacters?: Character[];
   onClose: () => void;
   onPromoted: () => void;
 }
@@ -15,12 +16,13 @@ interface PromoteMessageModalProps {
 export const PromoteMessageModal: React.FC<PromoteMessageModalProps> = ({
   backupId,
   message,
+  allCharacters,
   onClose,
   onPromoted,
 }) => {
   const suggested = message?.suggested_character;
   const [content, setContent] = useState(message?.content || '');
-  const [characters, setCharacters] = useState<Character[]>([]);
+  const [characters, setCharacters] = useState<Character[]>(allCharacters ?? []);
   const [loadingCharacters, setLoadingCharacters] = useState(false);
   const [selectedCharacterId, setSelectedCharacterId] = useState<number | ''>(
     suggested?.char_id ?? ''
@@ -29,6 +31,10 @@ export const PromoteMessageModal: React.FC<PromoteMessageModalProps> = ({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (allCharacters) {
+      setCharacters(allCharacters);
+      return;
+    }
     if (!backupId) return;
     setLoadingCharacters(true);
     api.getCharacters(backupId)
@@ -39,51 +45,23 @@ export const PromoteMessageModal: React.FC<PromoteMessageModalProps> = ({
       })
       .catch(console.error)
       .finally(() => setLoadingCharacters(false));
-  }, [backupId]);
+  }, [backupId, allCharacters]);
 
-  const characterOptions = useMemo(() => {
-    const list: Array<{ id: number; name: string; writerName?: string | null }> = [];
-
-    characters.forEach(char => {
-      const mainName = char.name || char.names?.[0] || `Character #${char.id}`;
-      const writer = char.writer_name || (Array.isArray(char.writer) ? char.writer[0] : null);
-      list.push({ id: char.id, name: mainName, writerName: writer });
-
-      const versions = char.versions || [];
-      versions.forEach((v: { id: number; name?: string }) => {
-        const vName = v.name || `Version #${v.id}`;
-        list.push({
-          id: v.id,
-          name: `${vName} (${mainName})`,
-          writerName: writer,
-        });
-      });
-    });
-
-    const uniqueMap = new Map<number, { id: number; name: string; writerName?: string | null }>();
-    list.forEach(item => {
-      if (!uniqueMap.has(item.id)) {
-        uniqueMap.set(item.id, item);
-      }
-    });
-
-    if (suggested && !uniqueMap.has(suggested.char_id)) {
-      uniqueMap.set(suggested.char_id, {
+  const fallbackOptions = useMemo(() => {
+    if (!suggested) return undefined;
+    return [
+      {
         id: suggested.char_id,
         name: suggested.name,
         writerName: suggested.writer_name,
-      });
-    }
-
-    return Array.from(uniqueMap.values()).sort((a, b) => a.name.localeCompare(b.name));
-  }, [characters, suggested]);
+      },
+    ];
+  }, [suggested]);
 
   if (!message) return null;
 
-  const handleApplySuggestion = () => {
-    if (!suggested) return;
-    setSelectedCharacterId(suggested.char_id);
-    const escapedName = suggested.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const stripCharacterPrefix = (charName: string) => {
+    const escapedName = charName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const prefixRegex = new RegExp(`^\\s*${escapedName}\\s*:\\s*`, 'i');
     const wordPrefixRegex = /^\s*[\w-]+:\s*/;
     if (prefixRegex.test(content)) {
@@ -93,14 +71,23 @@ export const PromoteMessageModal: React.FC<PromoteMessageModalProps> = ({
     }
   };
 
+  const handleApplySuggestion = () => {
+    if (!suggested) return;
+    setSelectedCharacterId(suggested.char_id);
+    stripCharacterPrefix(suggested.name);
+  };
+
   const handlePromote = async () => {
     if (selectedCharacterId === '') {
       setError('Please select a character from the dropdown.');
       return;
     }
 
-    const chosenChar = characterOptions.find(c => c.id === Number(selectedCharacterId));
-    if (!chosenChar) {
+    const resolvedName =
+      resolveCharacterName(Number(selectedCharacterId), characters) ||
+      (suggested && suggested.char_id === Number(selectedCharacterId) ? suggested.name : null);
+
+    if (!resolvedName) {
       setError('Selected character not found.');
       return;
     }
@@ -110,9 +97,9 @@ export const PromoteMessageModal: React.FC<PromoteMessageModalProps> = ({
     try {
       const authorPayload = {
         ...message.author,
-        id: String(chosenChar.id),
-        name: chosenChar.name,
-        nickname: chosenChar.name,
+        id: String(selectedCharacterId),
+        name: resolvedName,
+        nickname: resolvedName,
         isBot: true,
       };
 
@@ -162,7 +149,7 @@ export const PromoteMessageModal: React.FC<PromoteMessageModalProps> = ({
       size="lg"
       footer={footer}
     >
-      <div className="flex-col gap-md">
+      <div className="flex-col gap-lg">
         {error && (
           <div className="banner-danger">
             <span className="text-md">{error}</span>
@@ -239,23 +226,18 @@ export const PromoteMessageModal: React.FC<PromoteMessageModalProps> = ({
           <label className="text-secondary text-sm font-semibold">
             Assign to Character {loadingCharacters && <span className="text-muted font-normal">(loading...)</span>}
           </label>
-          <CharacterSearchPicker
-            options={characterOptions}
-            selectedId={selectedCharacterId}
+          <CharacterPicker
+            characters={characters}
+            selectedIds={selectedCharacterId !== '' ? [Number(selectedCharacterId)] : []}
+            onChange={ids => setSelectedCharacterId(ids[0] ?? '')}
+            multiple={false}
+            includeVersions={true}
+            variant="inline"
+            fallbackOptions={fallbackOptions}
             loading={loadingCharacters}
             disabled={saving}
-            onSelect={opt => {
-              setSelectedCharacterId(opt.id);
-              const escapedName = opt.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-              const prefixRegex = new RegExp(`^\\s*${escapedName}\\s*:\\s*`, 'i');
-              const wordPrefixRegex = /^\s*[\w-]+:\s*/;
-              if (prefixRegex.test(content)) {
-                setContent(prev => prev.replace(prefixRegex, ''));
-              } else if (wordPrefixRegex.test(content)) {
-                setContent(prev => prev.replace(wordPrefixRegex, ''));
-              }
-            }}
-            onClear={() => setSelectedCharacterId('')}
+            maxListHeight={160}
+            onSelectItem={item => stripCharacterPrefix(item.name)}
           />
         </div>
 

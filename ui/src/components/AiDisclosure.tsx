@@ -6,7 +6,7 @@ export const AiDisclosure = () => {
   const [collapsed, setCollapsed] = useState(true);
 
   return (
-    <PanelSurface style={{ margin: '2rem auto', maxWidth: '750px', width: '100%' }}>
+    <PanelSurface style={{ margin: '0.5rem auto', maxWidth: '750px', width: '100%' }}>
       <div
         onClick={() => setCollapsed(prev => !prev)}
         role="button"

@@ -9,6 +9,7 @@ import { GroupEditModal } from './characters/GroupEditModal';
 import { AssignWriterModal } from './curation/AssignWriterModal';
 import { UnlinkedWriterBanner } from './layout/UnlinkedWriterBanner';
 import { BackupStatusGuard } from './layout/BackupStatusGuard';
+import { ListPageLayout } from './layout/ListPageLayout';
 import { useBackupStatusGuard } from '../hooks/useBackupStatusGuard';
 import { Button, PanelSurface, ResponsiveText } from './ui';
 import type { BackupInfo, Character, CharacterGroup, MyWriter, User, WriterDetailed } from '../types';
@@ -87,6 +88,10 @@ export const CharactersTab = ({
     backupLoading,
   });
 
+  useEffect(() => {
+    setMyWriter(initialMyWriter || null);
+  }, [initialMyWriter]);
+
   const fetchCharacters = useCallback(() => {
     if (!backupId || !statusGuard.isReady) return;
     setLoading(true);
@@ -96,13 +101,11 @@ export const CharactersTab = ({
     Promise.all([
       api.getCharacters(backupId, byMe),
       api.getGroups(backupId),
-      api.getMyWriter(backupId).catch(() => null),
       api.getWritersDetailed(backupId).catch(() => []),
     ])
-      .then(([charsRes, groupsRes, writerRes, writersRes]) => {
+      .then(([charsRes, groupsRes, writersRes]) => {
         setCharacters(Array.isArray(charsRes) ? charsRes : []);
         setGroups(Array.isArray(groupsRes) ? groupsRes : []);
-        if (writerRes !== undefined) setMyWriter(writerRes);
         if (Array.isArray(writersRes)) setWriters(writersRes);
       })
       .catch(err => setError(getErrorMessage(err, 'Failed to load characters.')))
@@ -315,56 +318,121 @@ export const CharactersTab = ({
   }
 
   return (
-    <div className="flex-col gap-md">
-      {/* Filter Bar */}
-      <CharactersFilter
-        nameFilter={nameFilter}
-        setNameFilter={setNameFilter}
-        writerFilter={writerFilter}
-        setWriterFilter={setWriterFilter}
-        tagsFilter={tagsFilter}
-        setTagsFilter={setTagsFilter}
-        availableTags={availableTags}
-        byMe={byMe}
-        setByMe={setByMe}
-        isLoggedIn={true}
-        unassignedOnly={unassignedOnly}
-        setUnassignedOnly={handleSetUnassignedOnly}
-      />
-
-      {/* Unlinked Writer Guidance Banner for "By Me" */}
-      {byMe && !myWriter && (
-        <UnlinkedWriterBanner onNavigateToWriters={onNavigateToWriters} />
-      )}
-
-      {/* Roster Controls */}
-      <div className="flex-row items-center justify-between" style={{ padding: '0 0.25rem' }}>
-        <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
-          Showing <strong>{displayItems.length}</strong> characters and groups
-          {filtersActive && ' (filtered)'}
-        </div>
-        {canCurate && (
+    <ListPageLayout
+      title="Characters"
+      descriptionKey="descCharacters"
+      guideKey="characters"
+      headerAction={
+        canCurate ? (
           <Button
             variant="secondary"
             size="md"
             onClick={() => setIsCreatingGroup(true)}
             icon={<Plus size={14} />}
           >
-            <ResponsiveText textKey='newCharacterGroup' />
+            <ResponsiveText textKey="newCharacterGroup" />
           </Button>
-        )}
-      </div>
+        ) : undefined
+      }
+      filterBar={
+        <CharactersFilter
+          nameFilter={nameFilter}
+          setNameFilter={setNameFilter}
+          writerFilter={writerFilter}
+          setWriterFilter={setWriterFilter}
+          tagsFilter={tagsFilter}
+          setTagsFilter={setTagsFilter}
+          availableTags={availableTags}
+          byMe={byMe}
+          setByMe={setByMe}
+          isLoggedIn={true}
+          unassignedOnly={unassignedOnly}
+          setUnassignedOnly={handleSetUnassignedOnly}
+        />
+      }
+      banners={
+        byMe && !myWriter ? (
+          <UnlinkedWriterBanner onNavigateToWriters={onNavigateToWriters} />
+        ) : undefined
+      }
+      countText={
+        <span>
+          Showing <strong>{displayItems.length}</strong> characters and groups
+          {filtersActive && ' (filtered)'}
+        </span>
+      }
+      modals={
+        <>
+          {/* Edit Character Modal */}
+          {editingChar && canEditCharacter(editingChar.char, editingChar.parent) && (
+            <CharacterEditModal
+              backupId={backupId}
+              character={editingChar.char}
+              parentCharacter={editingChar.parent}
+              allCharacters={characters || []}
+              allGroups={groups || []}
+              allWriters={writers}
+              onWriterCreated={created =>
+                setWriters(prev =>
+                  [...prev.filter(w => w.id !== created.id), created].sort((a, b) =>
+                    a.display_name.localeCompare(b.display_name)
+                  )
+                )
+              }
+              isParticipantMode={!canCurate && isParticipant}
+              selfWriterId={selfWriterId}
+              selfCharacterIds={myWriter?.character_ids || []}
+              onClose={() => setEditingChar(null)}
+              onSaved={fetchCharacters}
+            />
+          )}
 
+          {/* Create / Edit Group Modal */}
+          {canCurate && (isCreatingGroup || editingGroup) && (
+            <GroupEditModal
+              backupId={backupId}
+              group={editingGroup}
+              allCharacters={characters || []}
+              onClose={() => {
+                setIsCreatingGroup(false);
+                setEditingGroup(null);
+              }}
+              onSaved={fetchCharacters}
+            />
+          )}
+
+          {/* Assign Writer Modal */}
+          {canCurate && assigningChar && (
+            <AssignWriterModal
+              backupId={backupId}
+              character={assigningChar}
+              writers={writers}
+              onWriterCreated={created =>
+                setWriters(prev =>
+                  [...prev.filter(w => w.id !== created.id), created].sort((a, b) =>
+                    a.display_name.localeCompare(b.display_name)
+                  )
+                )
+              }
+              onClose={() => setAssigningChar(null)}
+              onAssigned={fetchCharacters}
+            />
+          )}
+        </>
+      }
+    >
       {/* Characters Virtual List (1-character-per-row stack) */}
       {loading ? (
-        <PanelSurface style={{ textAlign: 'center', padding: '3rem' }}>
-          <Loader2 size={32} className="animate-spin" style={{ color: 'var(--accent-secondary)', margin: '0 auto 1rem auto' }} />
-          <p style={{ color: 'var(--text-secondary)' }}>Loading characters...</p>
+        <PanelSurface className="text-center p-xl">
+          <Loader2
+            size={32}
+            className="animate-spin text-accent"
+            style={{ margin: '0 auto 1rem auto' }}
+          />
+          <p className="text-secondary">Loading characters...</p>
         </PanelSurface>
       ) : error ? (
-        <div className="banner-danger">
-          {error}
-        </div>
+        <div className="banner-danger">{error}</div>
       ) : (
         <div className="character-list-stack">
           <VirtualScrollList
@@ -379,46 +447,6 @@ export const CharactersTab = ({
           />
         </div>
       )}
-
-      {/* Edit Character Modal */}
-      {editingChar && canEditCharacter(editingChar.char, editingChar.parent) && (
-        <CharacterEditModal
-          backupId={backupId}
-          character={editingChar.char}
-          parentCharacter={editingChar.parent}
-          allCharacters={characters || []}
-          isParticipantMode={!canCurate && isParticipant}
-          selfWriterId={selfWriterId}
-          selfCharacterIds={myWriter?.character_ids || []}
-          onClose={() => setEditingChar(null)}
-          onSaved={fetchCharacters}
-        />
-      )}
-
-      {/* Create / Edit Group Modal */}
-      {canCurate && (isCreatingGroup || editingGroup) && (
-        <GroupEditModal
-          backupId={backupId}
-          group={editingGroup}
-          allCharacters={characters || []}
-          onClose={() => {
-            setIsCreatingGroup(false);
-            setEditingGroup(null);
-          }}
-          onSaved={fetchCharacters}
-        />
-      )}
-
-      {/* Assign Writer Modal */}
-      {canCurate && assigningChar && (
-        <AssignWriterModal
-          backupId={backupId}
-          character={assigningChar}
-          writers={writers}
-          onClose={() => setAssigningChar(null)}
-          onAssigned={fetchCharacters}
-        />
-      )}
-    </div>
+    </ListPageLayout>
   );
 };

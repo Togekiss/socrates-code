@@ -92,7 +92,7 @@ export const SceneEditModal: React.FC<SceneEditModalProps> = ({
       title={modalTitle}
       size="md"
     >
-      <div className="flex-col gap-md">
+      <div className="flex-col gap-lg">
         <div className="text-secondary text-sm">
           {channelDisplay} {scene.thread_name ? `(${scene.thread_name})` : ''} •{' '}
           <span className="font-mono">{scene.scene_key}</span>
@@ -104,7 +104,7 @@ export const SceneEditModal: React.FC<SceneEditModalProps> = ({
           </div>
         )}
 
-        <form onSubmit={handleSave} className="flex-col gap-md">
+        <form onSubmit={handleSave} className="flex-col gap-lg">
           <div className="flex-col gap-xs">
             <label className="text-secondary text-sm font-semibold">Custom Name</label>
             <input

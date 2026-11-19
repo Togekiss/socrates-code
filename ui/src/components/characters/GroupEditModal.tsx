@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Trash2 } from 'lucide-react';
 import { api } from '../../api';
-import type { Character } from '../../types';
+import type { Character, CharacterGroupMember } from '../../types';
 import { Modal, CharacterPicker, Button } from '../ui';
 
 interface GroupEditModalProps {
@@ -9,7 +9,7 @@ interface GroupEditModalProps {
   group?: {
     id?: number;
     names?: string[];
-    members?: Array<{ id: number; name: string }> | number[];
+    members?: Array<CharacterGroupMember | number>;
   } | null;
   allCharacters: Character[];
   onClose: () => void;
@@ -121,7 +121,7 @@ export const GroupEditModal: React.FC<GroupEditModalProps> = ({
       size="lg"
       footer={modalFooter}
     >
-      <div className="flex-col gap-md">
+      <div className="flex-col gap-lg">
         {error && (
           <div className="banner-danger">
             <span>{error}</span>
@@ -156,6 +156,7 @@ export const GroupEditModal: React.FC<GroupEditModalProps> = ({
             selectedIds={memberIds}
             onChange={setMemberIds}
             multiple={true}
+            includeVersions={false}
             placeholder="Search characters to assign to this group..."
             maxListHeight={240}
           />

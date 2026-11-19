@@ -1,6 +1,5 @@
 import React from 'react';
-import { Plus } from 'lucide-react';
-import { CollapsibleFilterBar, SegmentedControl, FilterChip, Badge, Button } from '../ui';
+import { CollapsibleFilterBar, SegmentedControl, FilterChip, Badge } from '../ui';
 
 const KIND_OPTIONS = [
   { value: 'auto_split', label: 'Auto Split' },
@@ -24,7 +23,6 @@ const KIND_TO_REASONS: Record<string, string[]> = {
 };
 
 export interface SceneIssuesFiltersProps {
-  totalItems: number;
   statusFilter: 'unresolved' | 'resolved' | 'all';
   onStatusChange: (status: 'unresolved' | 'resolved' | 'all') => void;
   statusCounts: { unresolved: number; resolved: number; all: number };
@@ -35,11 +33,9 @@ export interface SceneIssuesFiltersProps {
   onSceneTypeChange?: (sceneType: string) => void;
   reasonFilter: string;
   onReasonChange: (reason: string) => void;
-  onOpenManualSplit?: () => void;
 }
 
 export const SceneIssuesFilters: React.FC<SceneIssuesFiltersProps> = ({
-  totalItems,
   statusFilter,
   onStatusChange,
   statusCounts,
@@ -50,7 +46,6 @@ export const SceneIssuesFilters: React.FC<SceneIssuesFiltersProps> = ({
   onSceneTypeChange,
   reasonFilter,
   onReasonChange,
-  onOpenManualSplit,
 }) => {
   const handleKindClick = (value: string) => {
     const nextKind = kindFilter === value ? '' : value;
@@ -137,87 +132,74 @@ export const SceneIssuesFilters: React.FC<SceneIssuesFiltersProps> = ({
 
   return (
     <CollapsibleFilterBar
-      title={`Scene Issues Review Queue (${totalItems})`}
+      title="Scene Issues"
       activeCount={activeCount}
       summaryPills={summaryPills}
       onClearAll={handleClearAll}
-      actions={
-        onOpenManualSplit && (
-          <Button
-            variant="secondary"
-            size="xs"
-            onClick={onOpenManualSplit}
-            icon={<Plus size={13} />}
-            title="Create manual scene split"
-          >
-            Manual Split
-          </Button>
-        )
-      }
-      className="mb-md"
     >
-      <div className="flex-col gap-md pt-xs">
-        {/* Prominent Controls: Status & Archive Scope Segmented Controls */}
-        <div className="flex-row justify-between items-center flex-wrap gap-md">
-          {/* Status Segmented Control */}
-          <div className="flex-col gap-xs">
+      <div className="filter-cols-row">
+        {/* Status Segmented Control */}
+        <div className="filter-col filter-col-auto">
+          <div className="filter-col-header">
             <label className="text-secondary text-sm font-semibold">Status</label>
-            <SegmentedControl<'unresolved' | 'resolved' | 'all'>
-              options={statusOptions}
-              value={statusFilter}
-              onChange={onStatusChange}
-              ariaLabel="Issue Status Filter"
-            />
           </div>
-
-          {/* Archive Scope Segmented Control */}
-          {onSceneTypeChange && (
-            <div className="flex-col gap-xs">
-              <label className="text-secondary text-sm font-semibold">Archive Scope</label>
-              <SegmentedControl<string>
-                options={scopeOptions}
-                value={sceneTypeFilter}
-                onChange={onSceneTypeChange}
-                ariaLabel="Archive Scope Filter"
-              />
-            </div>
-          )}
+          <SegmentedControl<'unresolved' | 'resolved' | 'all'>
+            options={statusOptions}
+            value={statusFilter}
+            onChange={onStatusChange}
+            ariaLabel="Issue Status Filter"
+          />
         </div>
 
-        {/* Independent Kind & Reason Toggles */}
-        <div className="flex-row items-center justify-between flex-wrap gap-md pt-xs border-t border-color">
-          {/* Issue Kind Chips */}
-          <div className="flex-col gap-xs">
-            <label className="text-secondary text-sm font-semibold">Issue Kind</label>
-            <div className="flex-row items-center gap-xs flex-wrap">
-              {KIND_OPTIONS.map(opt => (
-                <FilterChip
-                  key={opt.value}
-                  active={kindFilter === opt.value}
-                  onClick={() => handleKindClick(opt.value)}
-                >
-                  {opt.label}
-                </FilterChip>
-              ))}
+        {/* Archive Scope Segmented Control */}
+        {onSceneTypeChange && (
+          <div className="filter-col filter-col-auto">
+            <div className="filter-col-header">
+              <label className="text-secondary text-sm font-semibold">Archive Scope</label>
             </div>
+            <SegmentedControl<string>
+              options={scopeOptions}
+              value={sceneTypeFilter}
+              onChange={onSceneTypeChange}
+              ariaLabel="Archive Scope Filter"
+            />
           </div>
+        )}
 
-          {/* Reason Filter Dropdown */}
-          <div className="flex-col gap-xs" style={{ minWidth: '220px' }}>
-            <label className="text-secondary text-sm font-semibold">Trigger Reason</label>
-            <select
-              value={reasonFilter}
-              onChange={e => onReasonChange(e.target.value)}
-              className="select"
-              style={{ padding: '0.35rem 0.6rem', fontSize: '0.82rem' }}
-            >
-              {visibleReasonOptions.map(opt => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
+        {/* Issue Kind Chips */}
+        <div className="filter-col filter-col-auto">
+          <div className="filter-col-header">
+            <label className="text-secondary text-sm font-semibold">Issue Kind</label>
           </div>
+          <div className="flex-row flex-wrap gap-xs">
+            {KIND_OPTIONS.map(opt => (
+              <FilterChip
+                key={opt.value}
+                active={kindFilter === opt.value}
+                onClick={() => handleKindClick(opt.value)}
+              >
+                {opt.label}
+              </FilterChip>
+            ))}
+          </div>
+        </div>
+
+        {/* Reason Filter Dropdown */}
+        <div className="filter-col filter-col-sm">
+          <div className="filter-col-header">
+            <label className="text-secondary text-sm font-semibold">Trigger Reason</label>
+          </div>
+          <select
+            value={reasonFilter}
+            onChange={e => onReasonChange(e.target.value)}
+            className="select"
+          >
+            {visibleReasonOptions.map(opt => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
         </div>
       </div>
     </CollapsibleFilterBar>

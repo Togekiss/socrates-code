@@ -23,7 +23,7 @@ export const WriterCard: React.FC<WriterCardProps> = ({
       <div className="flex-col gap-xs">
         <div className="flex-row items-start justify-between gap-sm">
           <div>
-            <h3 style={{ margin: 0, fontSize: '1.05rem', color: 'var(--text-primary)' }}>
+            <h3 style={{ margin: 0, fontSize: '1.1rem', color: 'var(--text-primary)' }}>
               {writer.display_name}
             </h3>
 
@@ -31,10 +31,10 @@ export const WriterCard: React.FC<WriterCardProps> = ({
               <div style={{ marginTop: '0.25rem' }}>
                 {writer.discord_user_id ? (
                   <Badge variant="success">
-                    <Check size={11} /> Discord: <code>{writer.discord_user_id}</code>
+                    <Check size={11} /> Discord: {writer.discord_user_id}
                   </Badge>
                 ) : (
-                  <span className="form-hint" style={{ fontStyle: 'italic' }}>
+                  <span className="form-hint" style={{ fontStyle: 'italic'}}>
                     No Discord account linked
                   </span>
                 )}
@@ -49,19 +49,19 @@ export const WriterCard: React.FC<WriterCardProps> = ({
               onClick={() => onEdit(writer)}
               icon={<Edit2 size={12} />}
             >
-              Edit
+              <span className="hide-in-mobile">Edit</span>
             </Button>
           )}
         </div>
 
         {writer.aliases && writer.aliases.length > 0 && (
-          <div className="text-secondary" style={{ fontSize: '0.8rem', marginTop: '0.25rem' }}>
+          <div className="text-secondary" style={{ fontSize: '0.8rem'}}>
             <span style={{ color: 'var(--text-muted)' }}>Aliases: </span>
             {writer.aliases.join(', ')}
           </div>
         )}
 
-        <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
+        <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)'}}>
           <strong style={{ color: 'var(--text-primary)' }}>
             {writer.characters?.length || 0}
           </strong>{' '}
@@ -76,8 +76,8 @@ export const WriterCard: React.FC<WriterCardProps> = ({
             maxHeight: '75px',
             overflowY: 'auto',
             padding: '0.35rem',
-            background: 'var(--bg-tertiary)',
-            borderRadius: 'var(--radius-xs)',
+            background: 'var(--bg-elevated)',
+            borderRadius: 'var(--radius-sm)',
           }}
         >
           {writer.characters.map(c => (

@@ -1,9 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   CheckCircle,
   Loader2,
-  Info,
-  ChevronDown,
+  Plus,
 } from 'lucide-react';
 import { api, getErrorMessage } from '../api';
 import { ResolveIssueModal } from './curation/ResolveIssueModal';
@@ -12,8 +11,9 @@ import { ManualSplitModal } from './curation/ManualSplitModal';
 import { SceneIssueCard } from './curation/SceneIssueCard';
 import { SceneIssuesFilters } from './curation/SceneIssuesFilters';
 import { BackupStatusGuard } from './layout/BackupStatusGuard';
+import { ListPageLayout } from './layout/ListPageLayout';
 import { useBackupStatusGuard } from '../hooks/useBackupStatusGuard';
-import { Pagination } from './ui';
+import { Button, Pagination } from './ui';
 import type { BackupInfo, SceneIssue, SceneIssuesResponse } from '../types';
 import { getRoleLevel, ROLE_LEVELS } from '../utils/rbac';
 
@@ -59,9 +59,7 @@ export const SceneIssuesTab = ({
   const [oppositeAction, setOppositeAction] = useState<{ action: 'merge' | 'split'; issue: SceneIssue } | null>(null);
   const [reopeningId, setReopeningId] = useState<number | null>(null);
   const [isManualSplitOpen, setIsManualSplitOpen] = useState(false);
-  const [guideCollapsed, setGuideCollapsed] = useState(() => {
-    return localStorage.getItem('socrates_scene_guide_collapsed') === 'true';
-  });
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   const statusGuard = useBackupStatusGuard({
     backupId,
@@ -71,12 +69,9 @@ export const SceneIssuesTab = ({
     backupLoading,
   });
 
-  const toggleGuide = () => {
-    setGuideCollapsed(prev => {
-      const next = !prev;
-      localStorage.setItem('socrates_scene_guide_collapsed', String(next));
-      return next;
-    });
+  const handlePageChange = (nextPage: number) => {
+    setPage(nextPage);
+    scrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   useEffect(() => {
@@ -182,116 +177,121 @@ export const SceneIssuesTab = ({
     return <BackupStatusGuard title="Scene Issues" guard={statusGuard} />;
   }
 
-  return (
-    <div className="flex-col gap-md">
-      {/* Header & Filter Controls */}
-      <SceneIssuesFilters
-        totalItems={data.total_items}
-        statusFilter={statusFilter}
-        onStatusChange={st => {
-          setStatusFilter(st);
-          setPage(1);
-        }}
-        statusCounts={statusCounts}
-        scopeCounts={data.scope_counts}
-        kindFilter={kindFilter}
-        onKindChange={k => {
-          setKindFilter(k);
-          setPage(1);
-        }}
-        sceneTypeFilter={sceneTypeFilter}
-        onSceneTypeChange={t => {
-          setSceneTypeFilter(t);
-          setPage(1);
-        }}
-        reasonFilter={reasonFilter}
-        onReasonChange={r => {
-          setReasonFilter(r);
-          setPage(1);
-        }}
-        onOpenManualSplit={() => setIsManualSplitOpen(true)}
-      />
+  const filtersActive = Boolean(
+    statusFilter !== 'all' ||
+      sceneTypeFilter ||
+      kindFilter ||
+      reasonFilter
+  );
 
-      {/* Informational Guide */}
-      <div
-        style={{
-          background: 'var(--bg-secondary)',
-          borderRadius: '8px',
-          border: '1px solid var(--border-color)',
-        }}
-      >
-        <div
-          onClick={toggleGuide}
-          style={{
-            padding: '0.65rem 1rem',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            cursor: 'pointer',
-            userSelect: 'none',
-          }}
+  return (
+    <ListPageLayout
+      title="Scene Issues"
+      descriptionKey="descSceneIssues"
+      guideKey="sceneIssues"
+      headerAction={
+        <Button
+          variant="secondary"
+          size="md"
+          onClick={() => setIsManualSplitOpen(true)}
+          icon={<Plus size={14} />}
+          title="Create manual scene split"
         >
-          <div className="flex-row items-center gap-xs">
-            <Info size={16} className="text-accent" />
-            <strong className="text-secondary text-md">
-              How &quot;Scene Issues&quot; Work
-            </strong>
-          </div>
-          <div className="flex-row items-center gap-xs text-muted text-sm">
-            <span>{guideCollapsed ? 'Show' : 'Hide'}</span>
-            <ChevronDown
-              size={14}
-              style={{
-                transform: guideCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
-                transition: 'transform var(--transition-fast)',
+          Manual Split
+        </Button>
+      }
+      filterBar={
+        <SceneIssuesFilters
+          statusFilter={statusFilter}
+          onStatusChange={st => {
+            setStatusFilter(st);
+            setPage(1);
+          }}
+          statusCounts={statusCounts}
+          scopeCounts={data.scope_counts}
+          kindFilter={kindFilter}
+          onKindChange={k => {
+            setKindFilter(k);
+            setPage(1);
+          }}
+          sceneTypeFilter={sceneTypeFilter}
+          onSceneTypeChange={t => {
+            setSceneTypeFilter(t);
+            setPage(1);
+          }}
+          reasonFilter={reasonFilter}
+          onReasonChange={r => {
+            setReasonFilter(r);
+            setPage(1);
+          }}
+        />
+      }
+      countText={
+        !error ? (
+          <span>
+            Showing{' '}
+            <strong>
+              {data.total_items > data.issues.length
+                ? `${data.issues.length} of ${data.total_items}`
+                : data.total_items}
+            </strong>{' '}
+            scene {data.total_items === 1 ? 'issue' : 'issues'}
+            {filtersActive && ' (filtered)'}
+          </span>
+        ) : undefined
+      }
+      scrollRef={scrollRef}
+      modals={
+        <>
+          {/* Resolve Issue Modal */}
+          {resolvingIssue && (
+            <ResolveIssueModal
+              backupId={backupId}
+              issue={resolvingIssue}
+              onClose={() => setResolvingIssue(null)}
+              onResolved={() => {
+                fetchIssues();
+                if (onRefreshSummary) onRefreshSummary();
               }}
             />
-          </div>
-        </div>
+          )}
 
-        {!guideCollapsed && (
-          <div
-            style={{
-              padding: '0.85rem 1rem',
-              borderTop: '1px solid var(--border-color)',
-              fontSize: '0.825rem',
-              lineHeight: '1.5',
-              color: 'var(--text-secondary)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '0.45rem',
-            }}
-          >
-            <div>
-              Socrates detects scenes using pattern recognition. When{' '}
-              <code style={{ color: 'var(--accent-secondary)' }}>[END]</code> tags aren&apos;t clear, it makes a decision and leaves it here for human review.
-            </div>
-            <div className="flex-col gap-xs mt-xs">
-              <div className="flex-row items-baseline gap-xs">
-                <span className="badge badge-warning text-sm" style={{ fontSize: '0.7rem', padding: '0.1rem 0.4rem', flexShrink: 0 }}>
-                  AUTO SPLIT
-                </span>
-                <span className="text-muted text-sm">
-                  Socrates registered this as the start of a new scene. If this is a mistake, you can merge the two scenes.
-                </span>
-              </div>
-              <div className="flex-row items-baseline gap-xs">
-                <span className="badge badge-accent text-sm" style={{ fontSize: '0.7rem', padding: '0.1rem 0.4rem', flexShrink: 0 }}>
-                  SOFT BOUNDARY
-                </span>
-                <span className="text-muted text-sm">
-                  Socrates doubted, but didn&apos;t start a new scene. If this is a mistake, you can register this as a new scene.
-                </span>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
+          {/* Opposite Action Confirmation Modal */}
+          {oppositeAction && (
+            <ActionConfirmationModal
+              backupId={backupId}
+              issue={oppositeAction.issue}
+              action={oppositeAction.action}
+              onClose={handleCloseOppositeAction}
+              onResolved={() => {
+                fetchIssues();
+                if (onRefreshSummary) onRefreshSummary();
+              }}
+            />
+          )}
 
+          {/* Manual Split Modal */}
+          {isManualSplitOpen && (
+            <ManualSplitModal
+              backupId={backupId}
+              onClose={() => setIsManualSplitOpen(false)}
+              onSuccess={() => {
+                fetchIssues();
+                if (onRefreshSummary) onRefreshSummary();
+              }}
+            />
+          )}
+        </>
+      }
+    >
       {/* Issues List */}
       {loading ? (
         <div className="glass-panel text-center p-xl">
-          <Loader2 size={32} className="animate-spin text-accent" style={{ margin: '0 auto 1rem auto' }} />
+          <Loader2
+            size={32}
+            className="animate-spin text-accent"
+            style={{ margin: '0 auto 1rem auto' }}
+          />
           <p className="text-secondary">Loading scene issues...</p>
         </div>
       ) : error ? (
@@ -301,9 +301,7 @@ export const SceneIssuesTab = ({
       ) : data.issues.length === 0 ? (
         <div className="glass-panel text-center p-xl">
           <CheckCircle size={36} className="text-success mb-xs" style={{ margin: '0 auto' }} />
-          <h3 className="text-primary mt-xs mb-xs">
-            No scene issues found
-          </h3>
+          <h3 className="text-primary mt-xs mb-xs">No scene issues found</h3>
           <p className="text-secondary text-md">
             {statusFilter === 'unresolved'
               ? 'All scene issues for this backup have been resolved!'
@@ -319,58 +317,23 @@ export const SceneIssuesTab = ({
               isReopening={reopeningId === iss.id}
               onResolve={setResolvingIssue}
               onReopen={handleReopen}
-              onOppositeAction={(action, targetIssue) => handleOpenOppositeAction(action, targetIssue)}
+              onOppositeAction={(action, targetIssue) =>
+                handleOpenOppositeAction(action, targetIssue)
+              }
             />
           ))}
         </div>
       )}
 
       {/* Pagination */}
-      <Pagination
-        currentPage={data.current_page}
-        totalPages={data.total_pages}
-        totalItems={data.total_items}
-        onPageChange={setPage}
-      />
-
-      {/* Resolve Issue Modal */}
-      {resolvingIssue && (
-        <ResolveIssueModal
-          backupId={backupId}
-          issue={resolvingIssue}
-          onClose={() => setResolvingIssue(null)}
-          onResolved={() => {
-            fetchIssues();
-            if (onRefreshSummary) onRefreshSummary();
-          }}
+      {!loading && !error && data.total_pages > 1 && (
+        <Pagination
+          currentPage={data.current_page}
+          totalPages={data.total_pages}
+          totalItems={data.total_items}
+          onPageChange={handlePageChange}
         />
       )}
-
-      {/* Opposite Action Confirmation Modal */}
-      {oppositeAction && (
-        <ActionConfirmationModal
-          backupId={backupId}
-          issue={oppositeAction.issue}
-          action={oppositeAction.action}
-          onClose={handleCloseOppositeAction}
-          onResolved={() => {
-            fetchIssues();
-            if (onRefreshSummary) onRefreshSummary();
-          }}
-        />
-      )}
-
-      {/* Manual Split Modal */}
-      {isManualSplitOpen && (
-        <ManualSplitModal
-          backupId={backupId}
-          onClose={() => setIsManualSplitOpen(false)}
-          onSuccess={() => {
-            fetchIssues();
-            if (onRefreshSummary) onRefreshSummary();
-          }}
-        />
-      )}
-    </div>
+    </ListPageLayout>
   );
 };

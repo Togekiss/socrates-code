@@ -297,10 +297,10 @@ export const RunTab = ({
   const title = backupInfo.name || backupInfo.server_name || backupId;
 
   return (
-    <div className="flex-col gap-lg">
-      <PanelSurface className="flex-col gap-md">
+    <div className="flex-col gap-xl">
+      <PanelSurface className="flex-col gap-lg">
         {/* Header */}
-        <div className="flex-row items-center justify-between flex-wrap gap-md">
+        <div className="flex-row items-center justify-between flex-wrap gap-lg">
           <div>
             <h2 style={{ margin: 0, fontSize: '1.35rem', color: 'var(--text-primary)' }}>{title}</h2>
             <div className="flex-row items-center gap-xs" style={{ marginTop: '0.25rem' }}>

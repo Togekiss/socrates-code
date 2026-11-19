@@ -281,6 +281,24 @@ class TestScenesEndpoint(unittest.TestCase):
         for key in ("category", "channel", "type", "status", "start", "end", "characters", "issues"):
             self.assertIn(key, first_scene)
 
+    def test_get_scenes_search_matches_category_and_channel(self):
+        all_res = get_scenes("1791895360", per_page=50)
+        self.assertGreater(len(all_res["scenes"]), 0)
+        sample_scene = all_res["scenes"][0]
+        category_name = sample_scene["category"]
+        self.assertTrue(category_name)
+
+        cat_res = get_scenes("1791895360", search=category_name, per_page=50)
+        self.assertGreater(cat_res["total_items"], 0)
+        for s in cat_res["scenes"]:
+            haystack = " ".join([
+                s.get("custom_name") or "",
+                s.get("scene_key") or "",
+                s.get("channel") or "",
+                s.get("category") or "",
+            ]).lower()
+            self.assertIn(category_name.lower(), haystack)
+
     def test_get_scenes_writer_filter(self):
         writers = get_writers("1791895360")
         self.assertGreater(len(writers), 2)
@@ -290,6 +308,47 @@ class TestScenesEndpoint(unittest.TestCase):
         self.assertIsInstance(filtered, dict)
         self.assertGreater(filtered["total_items"], 0)
         self.assertLessEqual(filtered["total_items"], 12)
+
+    def test_get_scenes_character_group_filter(self):
+        all_scenes = get_scenes("1791895360", per_page=50)["scenes"]
+        scene_chars = []
+        for s in all_scenes:
+            for cid in (s.get("characters") or []):
+                if cid not in scene_chars:
+                    scene_chars.append(cid)
+                if len(scene_chars) >= 2:
+                    break
+            if len(scene_chars) >= 2:
+                break
+        self.assertGreaterEqual(len(scene_chars), 2)
+
+        member_ids = set(scene_chars[:2])
+        expected_keys = {
+            s["scene_key"] for s in all_scenes if set(s.get("characters") or []) & member_ids
+        }
+        new_group = create_group(
+            "1791895360",
+            CreateGroupRequest(names=["TestSuite Scene Filter Group"], member_ids=list(member_ids)),
+        )
+        gid = new_group["id"]
+        try:
+            filtered = get_scenes(
+                "1791895360",
+                character_groups=[gid],
+                character_logic="AND",
+            )
+            self.assertIsInstance(filtered, dict)
+            self.assertEqual(filtered["total_items"], len(expected_keys))
+            returned_keys = {s["scene_key"] for s in filtered["scenes"]}
+            self.assertEqual(returned_keys, expected_keys)
+        finally:
+            backup_path = t.get_backup_path("1791895360")
+            with db_session(backup_id="1791895360", backup_path=backup_path) as session:
+                session.query(CharacterModel).filter(CharacterModel.group_pk == gid).update({"group_pk": None})
+                session.query(GroupNameModel).filter(GroupNameModel.group_pk == gid).delete()
+                session.query(CharacterGroupModel).filter(CharacterGroupModel.pk == gid).delete()
+                session.flush()
+                export_character_list_snapshot(session, "1791895360", write_to_disk=True)
 
 
 @skip_in_production_or_missing_fixture()
@@ -441,6 +500,10 @@ class TestSessionsEndpoint(unittest.TestCase):
             list(reversed([e["id"] for e in desc_res["events"]])),
         )
 
+        # Search by category name ("Events")
+        cat_search = get_events("1791895360", search="Events")
+        self.assertEqual(cat_search["total_items"], all_res["total_items"])
+
 
 @skip_in_production_or_missing_fixture()
 class TestCharacterAndGroupMutations(unittest.TestCase):
@@ -485,6 +548,32 @@ class TestCharacterAndGroupMutations(unittest.TestCase):
         # Verify revert
         reverted_chars = {c["id"]: c for c in get_characters("1791895360")}
         self.assertEqual(reverted_chars[cid]["tags"], orig_tags)
+
+    def test_character_writer_id_update_and_unassign(self):
+        from server import get_writers_detailed
+        chars = get_characters("1791895360")
+        writers_detailed = get_writers_detailed("1791895360")
+        self.assertGreater(len(chars), 0)
+        self.assertGreater(len(writers_detailed), 1)
+
+        target_char = chars[0]
+        cid = target_char["id"]
+        orig_writer_id = target_char.get("writer_id")
+        alt_writer = next((w for w in writers_detailed if w["id"] != orig_writer_id), writers_detailed[0])
+
+        try:
+            # Assign by writer_id
+            assign_res = update_character("1791895360", cid, UpdateCharacterRequest(writer_id=alt_writer["id"]))
+            self.assertEqual(assign_res["status"], "success")
+            self.assertEqual(assign_res["character"]["writer_id"], alt_writer["id"])
+
+            # Unassign via explicit writer_id=None
+            unassign_res = update_character("1791895360", cid, UpdateCharacterRequest(writer_id=None))
+            self.assertEqual(unassign_res["status"], "success")
+            self.assertIsNone(unassign_res["character"]["writer_id"])
+            self.assertEqual(unassign_res["character"]["writer"], [])
+        finally:
+            update_character("1791895360", cid, UpdateCharacterRequest(writer_id=orig_writer_id))
 
     def test_nest_and_unnest_character_roundtrip(self):
         chars = get_characters("1791895360")
