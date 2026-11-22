@@ -409,7 +409,7 @@ function AppContent() {
 
   const isBackupRunning = Boolean(
     backupInfo &&
-      (backupInfo.status === 'pending' ||
+      (backupInfo.sync_status === 'syncing' ||
         backupInfo.status === 'running' ||
         Object.values(backupInfo.steps ?? {}).some(s => s === 'running'))
   );

@@ -15,6 +15,13 @@ export interface BackupStatusGuardState {
   effectiveBackupError: string | null;
   effectiveBackupLoading: boolean;
   isSchemaOutdated: boolean;
+  isSyncing: boolean;
+  isPaused: boolean;
+  isFailed: boolean;
+  hasCommittedData: boolean;
+  syncProgressLabel: string | null;
+  canRead: boolean;
+  canMutate: boolean;
   isRunning: boolean;
   isReady: boolean;
 }
@@ -78,19 +85,57 @@ export function useBackupStatusGuard({
   const hasRunningStep = Boolean(
     effectiveBackupInfo?.steps && Object.values(effectiveBackupInfo.steps).some(step => step === 'running')
   );
-  const isRunning = fetchedStatus === 'pending' || fetchedStatus === 'running' || hasRunningStep;
-  const isReady =
-    !effectiveBackupError &&
-    !isSchemaOutdated &&
-    !isRunning &&
-    (fetchedStatus === 'success' || fetchedStatus === 'ready' || fetchedStatus === 'READY');
+  const syncStatus = effectiveBackupInfo?.sync_status;
+  const isSyncing =
+    syncStatus === 'syncing' || fetchedStatus === 'running' || hasRunningStep;
+  const isPaused = syncStatus === 'paused';
+  const isFailed = !isSyncing && !isPaused && (syncStatus === 'failed' || fetchedStatus === 'failed');
+
+  const channelsDone = effectiveBackupInfo?.channels_done ?? 0;
+  const channelsTotal = effectiveBackupInfo?.channels_total ?? 0;
+  const hasCommittedData = Boolean(
+    effectiveBackupInfo &&
+      (channelsDone > 0 ||
+        (effectiveBackupInfo.number_of_scenes ?? 0) > 0 ||
+        (effectiveBackupInfo.number_of_sessions ?? 0) > 0 ||
+        (effectiveBackupInfo.number_of_events ?? 0) > 0 ||
+        (effectiveBackupInfo.number_of_channels ?? 0) > 0 ||
+        (syncStatus === 'idle' && Boolean(effectiveBackupInfo.last_synced_at)) ||
+        fetchedStatus === 'success' ||
+        fetchedStatus === 'ready' ||
+        fetchedStatus === 'READY')
+  );
+
+  const syncProgressLabel = isSyncing
+    ? channelsTotal > 0
+      ? `Syncing ${channelsDone}/${channelsTotal} channels — displaying committed data`
+      : 'Sync in progress — displaying committed data'
+    : isPaused
+    ? channelsTotal > 0
+      ? `Sync paused (${channelsDone}/${channelsTotal} channels committed)`
+      : 'Sync paused — displaying committed data'
+    : isFailed
+    ? channelsTotal > 0
+      ? `Last sync failed (${channelsDone}/${channelsTotal} channels committed)`
+      : 'Last sync failed — displaying committed data'
+    : null;
+
+  const canRead = Boolean(!effectiveBackupError && !isSchemaOutdated && hasCommittedData);
+  const canMutate = Boolean(canRead && !isSyncing);
 
   return {
     effectiveBackupInfo,
     effectiveBackupError,
     effectiveBackupLoading,
     isSchemaOutdated,
-    isRunning,
-    isReady,
+    isSyncing,
+    isPaused,
+    isFailed,
+    hasCommittedData,
+    syncProgressLabel,
+    canRead,
+    canMutate,
+    isRunning: isSyncing,
+    isReady: canRead,
   };
 }

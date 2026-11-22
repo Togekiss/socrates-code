@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { Check } from 'lucide-react';
-import { Modal, Button, CharacterPicker } from '../ui';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { Check, Loader2, AlertTriangle } from 'lucide-react';
+import { Modal, Button, Badge, CharacterPicker } from '../ui';
 import { api } from '../../api';
 import type { FlaggedMessage, Character } from '../../types';
 import { resolveCharacterName } from '../../utils/characters';
@@ -22,6 +22,11 @@ export const PromoteMessageModal: React.FC<PromoteMessageModalProps> = ({
 }) => {
   const suggested = message?.suggested_character;
   const [content, setContent] = useState(message?.content || '');
+  const [baselineContent, setBaselineContent] = useState(message?.content || '');
+  const [hydratingContent, setHydratingContent] = useState(false);
+  const [isHydrated, setIsHydrated] = useState(false);
+  const [isDeletedOnDiscord, setIsDeletedOnDiscord] = useState(Boolean(message?.is_deleted));
+  const userEditedRef = useRef(false);
   const [characters, setCharacters] = useState<Character[]>(allCharacters ?? []);
   const [loadingCharacters, setLoadingCharacters] = useState(false);
   const [selectedCharacterId, setSelectedCharacterId] = useState<number | ''>(
@@ -29,6 +34,51 @@ export const PromoteMessageModal: React.FC<PromoteMessageModalProps> = ({
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!message) return;
+    const initial = message.content || '';
+    setContent(initial);
+    setBaselineContent(initial);
+    setIsDeletedOnDiscord(Boolean(message.is_deleted));
+    setIsHydrated(!message.is_excerpt_truncated);
+    userEditedRef.current = false;
+
+    if (!backupId || !message.is_excerpt_truncated) {
+      setHydratingContent(false);
+      return;
+    }
+
+    let cancelled = false;
+    setHydratingContent(true);
+    api
+      .getFlaggedMessageFullContent(backupId, message.message_id)
+      .then(res => {
+        if (cancelled) return;
+        if (res.is_deleted) {
+          setIsDeletedOnDiscord(true);
+        }
+        if (res.hydrated) {
+          setIsHydrated(true);
+          setBaselineContent(res.content);
+          if (!userEditedRef.current) {
+            setContent(res.content);
+          }
+        }
+      })
+      .catch(err => {
+        if (!cancelled) {
+          console.warn('Failed to hydrate full message content:', err);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setHydratingContent(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [backupId, message]);
 
   useEffect(() => {
     if (allCharacters) {
@@ -65,8 +115,10 @@ export const PromoteMessageModal: React.FC<PromoteMessageModalProps> = ({
     const prefixRegex = new RegExp(`^\\s*${escapedName}\\s*:\\s*`, 'i');
     const wordPrefixRegex = /^\s*[\w-]+:\s*/;
     if (prefixRegex.test(content)) {
+      userEditedRef.current = true;
       setContent(prev => prev.replace(prefixRegex, ''));
     } else if (wordPrefixRegex.test(content)) {
+      userEditedRef.current = true;
       setContent(prev => prev.replace(wordPrefixRegex, ''));
     }
   };
@@ -103,9 +155,10 @@ export const PromoteMessageModal: React.FC<PromoteMessageModalProps> = ({
         isBot: true,
       };
 
+      const isContentEdited = content.trim() !== baselineContent.trim();
       await api.resolveFlaggedMessage(backupId, message.message_id, {
         resolution: 'override',
-        override_content: content.trim(),
+        override_content: isContentEdited ? content.trim() : null,
         override_author: authorPayload,
       });
       onPromoted();
@@ -243,13 +296,43 @@ export const PromoteMessageModal: React.FC<PromoteMessageModalProps> = ({
 
         {/* Message Content Textarea */}
         <div className="flex-col gap-xs">
-          <label className="text-secondary text-sm font-semibold">
-            Message Content
-          </label>
+          <div className="flex-row items-center justify-between flex-wrap gap-xs">
+            <label className="text-secondary text-sm font-semibold">
+              Message Content
+            </label>
+            <div className="flex-row items-center gap-xs">
+              {hydratingContent && (
+                <span className="flex-row items-center gap-xs text-accent text-sm">
+                  <Loader2 size={13} className="animate-spin" />
+                  Loading full message...
+                </span>
+              )}
+              {isDeletedOnDiscord && (
+                <Badge variant="danger" className="text-sm font-semibold">
+                  <AlertTriangle size={12} />
+                  Deleted on Discord
+                </Badge>
+              )}
+            </div>
+          </div>
+          {isDeletedOnDiscord && (
+            <div className="banner-warning" style={{ padding: '0.4rem 0.65rem', fontSize: '0.8rem' }}>
+              This message or channel was deleted on Discord. {message.is_excerpt_truncated && !isHydrated ? 'Showing stored 250-character excerpt.' : ''}
+            </div>
+          )}
+          {!isDeletedOnDiscord && message.is_excerpt_truncated && !hydratingContent && !isHydrated && (
+            <div className="banner-info" style={{ padding: '0.4rem 0.65rem', fontSize: '0.8rem' }}>
+              Full message could not be fetched; showing stored excerpt. Leave content unchanged to override author only.
+            </div>
+          )}
           <textarea
             rows={4}
             value={content}
-            onChange={e => setContent(e.target.value)}
+            disabled={hydratingContent || saving}
+            onChange={e => {
+              userEditedRef.current = true;
+              setContent(e.target.value);
+            }}
             className="textarea"
           />
         </div>

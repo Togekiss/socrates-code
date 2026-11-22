@@ -15,7 +15,7 @@ import time
 import traceback
 import uuid
 import weakref
-from collections import deque
+from collections import OrderedDict, deque
 from contextlib import asynccontextmanager
 
 ################ File summary #################
@@ -40,8 +40,8 @@ from fastapi.params import Depends as DependsParam
 from fastapi.responses import StreamingResponse, FileResponse, RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from pydantic import BaseModel
-from typing import Dict, Any, List, Optional, Set, Tuple
+from pydantic import BaseModel, ConfigDict
+from typing import Dict, Any, List, Literal, Optional, Set, Tuple
 import httpx
 import jwt
 from pathlib import Path
@@ -64,6 +64,7 @@ from utils.path_safety import (
 )
 from models.config_schemas import BackupConfigSchema, GlobalConfigSchema
 from db import audit_service, character_service, curation_service, status_service
+from db.serializers import clear_runtime_step_overrides
 from db.models import Step, Status, IssueResolution
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -76,8 +77,9 @@ def get_data_root():
     return Path(os.environ.get("SOCRATES_DATA_DIR", get_project_root())).as_posix()
 
 
-# Load .env before reading SOCRATES_ENV, JWT_SECRET, CORS, or FastAPI settings
-load_dotenv((Path(get_project_root()) / '.env').as_posix())
+# Load .env before reading SOCRATES_ENV, JWT_SECRET, CORS, or FastAPI settings (never during unittest runs)
+if "unittest" not in sys.modules and os.environ.get("SOCRATES_TEST_SUITE", "").strip() != "1":
+    load_dotenv((Path(get_project_root()) / '.env').as_posix())
 
 VALID_DEV_ROLES = {"instance_admin", "server_admin", "curator", "participant", "viewer"}
 KNOWN_WEAK_JWT_SECRETS = {
@@ -236,6 +238,19 @@ class SplitEventRequest(BaseModel):
     channel_ids: Optional[List[Any]] = None
     new_name: Optional[str] = None
     new_event_name: Optional[str] = None
+
+
+class SyncBackupRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["incremental", "resume", "rescan_discord", "rescan_local_json"] = "incremental"
+    config: Optional[BackupConfigSchema] = None
+
+
+class ReindexBackupRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rescan_json: bool = False
 
 
 class AuthCallback(BaseModel):
@@ -1514,7 +1529,7 @@ def get_server_categories(server_id: str, user = Depends(get_current_user)):
         safe_server_id = validate_snowflake(server_id, "server_id")
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid server_id")
-    from get_server_info import get_categories
+    from discord_extractor import get_categories
     try:
         categories = get_categories(safe_server_id)
         return categories
@@ -1706,6 +1721,8 @@ def get_backup_info(backup_id: str, user = Depends(get_current_user)):
     data["is_schema_outdated"] = is_schema_outdated
     data["effective_role"] = role_name
     data["role_level"] = role_level
+    data_dir = Path(base_path) / "Data"
+    data["has_data_files"] = bool(data_dir.is_dir() and next(data_dir.rglob("*.json"), None) is not None)
     if is_instance_admin_user(actor):
         raw_live = get_live_bot_guilds()
         effective_live = raw_live if raw_live is not None else set()
@@ -1812,6 +1829,20 @@ def _save_backup_config_preserving_rbac(base_path: str, config: Dict[str, Any]) 
     t.save_json_atomic(cfg_to_save, config_path)
 
 
+def _extract_storage_mode(payload: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not isinstance(payload, dict):
+        return None
+    admin_sec = payload.get("admin")
+    raw_mode = None
+    if isinstance(admin_sec, dict) and admin_sec.get("storageMode"):
+        raw_mode = admin_sec.get("storageMode")
+    elif payload.get("storageMode"):
+        raw_mode = payload.get("storageMode")
+    if raw_mode in ("backupless", "full"):
+        return str(raw_mode)
+    return None
+
+
 @app.put("/api/backups/{backup_id}/config")
 def update_backup_config(backup_id: str, config: BackupConfigSchema, user = Depends(get_current_user)):
     base_path, actor, role_name, _, _ = resolve_authorized_backup(backup_id, user, min_role="server_admin")
@@ -1826,6 +1857,9 @@ def update_backup_config(backup_id: str, config: BackupConfigSchema, user = Depe
             before_cfg = None
     try:
         _save_backup_config_preserving_rbac(base_path, payload)
+        new_mode = _extract_storage_mode(payload)
+        if new_mode:
+            status_service.update_backup_storage_mode(backup_id, base_path, new_mode)
         _audit(
             action="config.update",
             target_type="config",
@@ -1843,16 +1877,25 @@ def update_backup_config(backup_id: str, config: BackupConfigSchema, user = Depe
 
 
 ALLOWED_STEPS: Dict[str, Dict[str, Any]] = {
-    "backup_server.py": {"keep_discord_token": True},
-    "assign_ids.py": {"keep_discord_token": False},
-    "fix_bad_messages.py": {"keep_discord_token": False},
-    "index_scenes.py": {"keep_discord_token": False},
+    "backup_server.py": {
+        "keep_discord_token": True,
+        "allowed_flags": frozenset({"--resume", "--rescan", "--rescan-discord"}),
+    },
+    "index_scenes.py": {
+        "keep_discord_token": False,
+        "allowed_flags": frozenset({"--rescan-json"}),
+    },
 }
 active_processes_lock = threading.Lock()
 active_processes: Dict[str, subprocess.Popen] = {}
 
 
-def run_script_in_background(script_name: str, backup_id: str, step_name: Optional[str] = None):
+def run_script_in_background(
+    script_name: str,
+    backup_id: str,
+    step_name: Optional[str] = None,
+    extra_flags: Optional[List[str]] = None,
+):
     if script_name not in ALLOWED_STEPS:
         t.global_log("error", f"API: Disallowed background script requested: {script_name}")
         return
@@ -1861,6 +1904,16 @@ def run_script_in_background(script_name: str, backup_id: str, step_name: Option
     except ValueError as e:
         t.global_log("error", f"API: Invalid backup_id for background script: {e}")
         return
+
+    step_meta = ALLOWED_STEPS[script_name]
+    allowed_flags = step_meta.get("allowed_flags", frozenset())
+    validated_flags: List[str] = []
+    if extra_flags:
+        for flag in extra_flags:
+            if flag not in allowed_flags:
+                t.global_log("error", f"API: Disallowed CLI flag '{flag}' for {script_name}")
+                return
+            validated_flags.append(flag)
 
     python_exec = sys.executable
     project_root = get_project_root()
@@ -1877,7 +1930,6 @@ def run_script_in_background(script_name: str, backup_id: str, step_name: Option
     if os.name == 'nt':
         kwargs['creationflags'] = getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 512)
 
-    step_meta = ALLOWED_STEPS[script_name]
     env = scrub_sensitive_env(os.environ, keep_discord_token=bool(step_meta.get("keep_discord_token", False)))
     existing_pythonpath = env.get("PYTHONPATH", "")
     paths = [src_dir, project_root]
@@ -1885,13 +1937,15 @@ def run_script_in_background(script_name: str, backup_id: str, step_name: Option
         paths.append(existing_pythonpath)
     env["PYTHONPATH"] = os.pathsep.join(paths)
 
+    cmd = [python_exec, script_path, '--backup-id', safe_backup_id, *validated_flags]
     stderr_lines: List[str] = []
+    process: Optional[subprocess.Popen] = None
     try:
         from db.session import is_sqlite_tmp_cache_enabled, sync_dirty_sqlite_dbs
         if is_sqlite_tmp_cache_enabled():
             sync_dirty_sqlite_dbs(force=True)
         process = subprocess.Popen(
-            [python_exec, script_path, '--backup-id', safe_backup_id],
+            cmd,
             cwd=project_root,
             env=env,
             stderr=subprocess.PIPE,
@@ -1921,6 +1975,8 @@ def run_script_in_background(script_name: str, backup_id: str, step_name: Option
     finally:
         with active_processes_lock:
             active_processes.pop(safe_backup_id, None)
+        if process is not None and process.returncode == 0:
+            clear_runtime_step_overrides(safe_backup_id)
         try:
             from db.session import is_sqlite_tmp_cache_enabled, sync_dirty_sqlite_dbs
             if is_sqlite_tmp_cache_enabled():
@@ -1931,16 +1987,48 @@ def run_script_in_background(script_name: str, backup_id: str, step_name: Option
 
     if process.returncode != 0:
         err_msg = "\n".join(stderr_lines[-5:]) if stderr_lines else f"Process exited with code {process.returncode}"
-        api_log(backup_id, "error", f"Execution of {script_name} failed (exit code {process.returncode})")
+        api_log(safe_backup_id, "error", f"Execution of {script_name} failed (exit code {process.returncode})")
         if step_name:
-            status_service.update_step_status(backup_id, base_path, step_name, Status.FAILED.value, error=err_msg)
+            status_service.update_step_status(safe_backup_id, base_path, step_name, Status.FAILED.value, error=err_msg)
         else:
-            status_service.fail_running_steps(backup_id, base_path, error=err_msg)
+            status_service.fail_running_steps(safe_backup_id, base_path, error=err_msg)
     else:
         if step_name:
-            step_statuses = status_service.get_step_statuses(backup_id, base_path)
-            if step_statuses.get(step_name) == Status.RUNNING.value:
-                status_service.update_step_status(backup_id, base_path, step_name, Status.SUCCESS.value)
+            status_service.update_step_status(safe_backup_id, base_path, step_name, Status.SUCCESS.value)
+
+
+def _validate_full_mode_json_files(backup_id: str, base_path: str) -> None:
+    from db.models import BackupModel, StorageMode
+    from db.session import db_session, has_db
+
+    storage_mode = None
+    if has_db(base_path, backup_id=backup_id):
+        try:
+            with db_session(backup_id=backup_id, backup_path=base_path) as session:
+                row = session.query(BackupModel.storage_mode).filter(
+                    BackupModel.backup_id == str(backup_id)
+                ).first()
+                if row:
+                    storage_mode = row[0]
+        except Exception:
+            storage_mode = None
+
+    if storage_mode is None:
+        cfg_path = safe_join_within(base_path, "backup_config.json")
+        if cfg_path.is_file():
+            try:
+                cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                storage_mode = _extract_storage_mode(cfg)
+            except Exception:
+                storage_mode = None
+
+    data_dir = Path(base_path) / "Data"
+    has_jsons = data_dir.is_dir() and any(data_dir.rglob("*.json"))
+    if storage_mode != StorageMode.FULL.value or not has_jsons:
+        raise HTTPException(
+            status_code=400,
+            detail="Local JSON rescan requires 'full' storage_mode with downloaded Data/*.json files.",
+        )
 
 
 @app.post("/api/backups/{backup_id}/cancel")
@@ -1972,6 +2060,7 @@ def cancel_backup_action(backup_id: str, user = Depends(get_current_user)):
         return {"status": "canceled"}
 
     if base_path:
+        clear_runtime_step_overrides(str(backup_id))
         status_service.fail_running_steps(backup_id, base_path, error="Canceled by user")
         api_log(backup_id, "info", "Cleared stuck running steps via cancel request.")
     _audit(
@@ -1987,6 +2076,81 @@ def cancel_backup_action(backup_id: str, user = Depends(get_current_user)):
     return {"status": "canceled"}
 
 
+@app.post("/api/backups/{backup_id}/sync")
+def sync_backup(
+    backup_id: str,
+    req: Optional[SyncBackupRequest] = Body(default=None),
+    background_tasks: BackgroundTasks = None,
+    user = Depends(get_current_user),
+):
+    base_path, actor, role_name, _, _ = resolve_authorized_backup(backup_id, user, min_role="server_admin")
+    if isinstance(req, dict):
+        req_obj = SyncBackupRequest(**req)
+    else:
+        req_obj = req if req is not None else SyncBackupRequest()
+
+    if status_service.is_backup_syncing(backup_id, base_path):
+        raise HTTPException(status_code=409, detail="Backup sync is already in progress.")
+
+    was_paused = status_service.is_backup_paused(backup_id, base_path)
+
+    payload = _coerce_config_payload(req_obj.config, BackupConfigSchema) if req_obj.config is not None else None
+    if payload:
+        try:
+            _save_backup_config_preserving_rbac(base_path, payload)
+            new_mode = _extract_storage_mode(payload)
+            if new_mode:
+                status_service.update_backup_storage_mode(backup_id, base_path, new_mode)
+        except Exception as e:
+            raise _internal_error(f"Failed to save backup config for {backup_id}", e, backup_id=backup_id)
+
+    mode = req_obj.mode
+    if mode == "rescan_local_json":
+        _validate_full_mode_json_files(backup_id, base_path)
+        status_service.update_step_status(
+            backup_id, base_path, Step.INDEX_SCENES.value, Status.RUNNING.value, write_snapshot=False
+        )
+        t.global_log("info", f"API: Starting local JSON rescan for backup {backup_id}...")
+        if background_tasks:
+            background_tasks.add_task(
+                run_script_in_background,
+                "index_scenes.py",
+                backup_id,
+                Step.INDEX_SCENES.value,
+                ["--rescan-json"],
+            )
+    else:
+        extra_flags = (
+            ["--resume"]
+            if (mode == "resume" or (was_paused and mode == "incremental"))
+            else (["--rescan-discord"] if mode == "rescan_discord" else [])
+        )
+        status_service.update_step_status(
+            backup_id, base_path, Step.UPDATE.value, Status.RUNNING.value, write_snapshot=False
+        )
+        t.global_log("info", f"API: Starting sync ({mode}) for backup {backup_id}...")
+        if background_tasks:
+            background_tasks.add_task(
+                run_script_in_background,
+                "backup_server.py",
+                backup_id,
+                None,
+                extra_flags,
+            )
+
+    _audit(
+        action="pipeline.sync",
+        target_type="backup",
+        target_id=str(backup_id),
+        actor=actor,
+        actor_role=role_name,
+        backup_id=str(backup_id),
+        backup_dir=base_path,
+        after={"mode": mode, "config_updated": bool(payload)},
+    )
+    return {"status": "started", "mode": mode}
+
+
 @app.post("/api/backups/{backup_id}/run")
 def run_backup(
     backup_id: str,
@@ -1995,10 +2159,16 @@ def run_backup(
     user = Depends(get_current_user),
 ):
     base_path, actor, role_name, _, _ = resolve_authorized_backup(backup_id, user, min_role="server_admin")
+    if status_service.is_backup_syncing(backup_id, base_path):
+        raise HTTPException(status_code=409, detail="Backup sync is already in progress.")
+
     payload = _coerce_config_payload(config, BackupConfigSchema) if config is not None else None
     if payload:
         try:
             _save_backup_config_preserving_rbac(base_path, payload)
+            new_mode = _extract_storage_mode(payload)
+            if new_mode:
+                status_service.update_backup_storage_mode(backup_id, base_path, new_mode)
         except Exception as e:
             raise _internal_error(f"Failed to save backup config for {backup_id}", e, backup_id=backup_id)
 
@@ -2018,33 +2188,50 @@ def run_backup(
     return {"status": "started"}
 
 
-@app.post("/api/backups/{backup_id}/rerun/{action}")
-def rerun_backup_step(backup_id: str, action: str, background_tasks: BackgroundTasks, user = Depends(get_current_user)):
+@app.post("/api/backups/{backup_id}/reindex")
+def reindex_backup(
+    backup_id: str,
+    req: Optional[ReindexBackupRequest] = Body(default=None),
+    background_tasks: BackgroundTasks = None,
+    user = Depends(get_current_user),
+):
     base_path, actor, role_name, _, _ = resolve_authorized_backup(backup_id, user, min_role="server_admin")
-    action_map = {
-        "reapply_characters": ("assign_ids.py", Step.ASSIGN_IDS.value),
-        "fix_messages": ("fix_bad_messages.py", Step.FIX_MESSAGES.value),
-        "reindex": ("index_scenes.py", Step.INDEX_SCENES.value)
-    }
-    
-    if action not in action_map:
-        raise HTTPException(status_code=400, detail=f"Invalid action. Allowed actions are: {', '.join(action_map.keys())}")
-        
-    script_name, step_name = action_map[action]
-    status_service.update_step_status(backup_id, base_path, step_name, Status.RUNNING.value)
-    t.global_log("info", f"API: Rerunning {action} for backup {backup_id}...")
-    background_tasks.add_task(run_script_in_background, script_name, backup_id, step_name)
+    if isinstance(req, dict):
+        req_obj = ReindexBackupRequest(**req)
+    else:
+        req_obj = req if req is not None else ReindexBackupRequest()
+
+    if status_service.is_backup_syncing(backup_id, base_path):
+        raise HTTPException(status_code=409, detail="Cannot reindex while sync is in progress.")
+
+    rescan_json = bool(req_obj.rescan_json)
+    if rescan_json:
+        _validate_full_mode_json_files(backup_id, base_path)
+
+    status_service.update_step_status(
+        backup_id, base_path, Step.INDEX_SCENES.value, Status.RUNNING.value, write_snapshot=False
+    )
+    t.global_log("info", f"API: Starting {'JSON rescan + ' if rescan_json else 'offline '}reindex for backup {backup_id}...")
+    extra_flags = ["--rescan-json"] if rescan_json else []
+    if background_tasks:
+        background_tasks.add_task(
+            run_script_in_background,
+            "index_scenes.py",
+            backup_id,
+            Step.INDEX_SCENES.value,
+            extra_flags,
+        )
     _audit(
-        action="pipeline.rerun",
+        action="pipeline.reindex",
         target_type="backup",
         target_id=str(backup_id),
         actor=actor,
         actor_role=role_name,
         backup_id=str(backup_id),
         backup_dir=base_path,
-        metadata={"step": step_name, "action": action},
+        metadata={"rescan_json": rescan_json},
     )
-    return {"status": "started", "action": action}
+    return {"status": "started", "rescan_json": rescan_json}
 
 
 @app.post("/api/backups")
@@ -2490,7 +2677,7 @@ def update_scene(backup_id: str, scene_id: str, req: UpdateSceneMetadataRequest,
     base_path, actor, role_name, _, _ = resolve_authorized_backup(backup_id, user, min_role="curator")
     before_scene = _snapshot_backup_record(backup_id, base_path, "scene", scene_id)
     try:
-        check_not_indexing(backup_id, base_path)
+        check_not_syncing(backup_id, base_path)
         custom_name = req.custom_name if req.custom_name is not None else req.name
         res = curation_service.update_scene_metadata(
             backup_id,
@@ -2534,7 +2721,6 @@ def update_scene(backup_id: str, scene_id: str, req: UpdateSceneMetadataRequest,
 def get_scene_merge_neighbors(backup_id: str, scene_id: str, user = Depends(get_current_user)):
     base_path = get_authorized_backup_path(backup_id, user)
     try:
-        check_not_indexing(backup_id, base_path)
         res = curation_service.get_scene_merge_neighbors(backup_id, base_path, scene_id)
         return res
     except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
@@ -2555,7 +2741,7 @@ def merge_scene(backup_id: str, scene_id: str, req: MergeSceneRequest, user = De
     base_path, actor, role_name, _, _ = resolve_authorized_backup(backup_id, user, min_role="curator")
     before_scene = _snapshot_backup_record(backup_id, base_path, "scene", scene_id)
     try:
-        check_not_indexing(backup_id, base_path)
+        check_not_syncing(backup_id, base_path)
         res = curation_service.merge_adjacent_scene(
             backup_id,
             base_path,
@@ -2809,7 +2995,7 @@ def update_event(backup_id: str, event_pk: int, req: UpdateEventMetadataRequest,
     base_path, actor, role_name, _, _ = resolve_authorized_backup(backup_id, user, min_role="curator")
     before_ev = _snapshot_backup_record(backup_id, base_path, "event", event_pk)
     try:
-        check_not_indexing(backup_id, base_path)
+        check_not_syncing(backup_id, base_path)
         res = curation_service.update_event_metadata(
             backup_id,
             base_path,
@@ -2857,7 +3043,7 @@ def merge_events(backup_id: str, req: MergeEventsRequest, user = Depends(get_cur
     base_path, actor, role_name, _, _ = resolve_authorized_backup(backup_id, user, min_role="curator")
     before_events = [_snapshot_backup_record(backup_id, base_path, "event", pk) for pk in eff_pks]
     try:
-        check_not_indexing(backup_id, base_path)
+        check_not_syncing(backup_id, base_path)
         res = curation_service.merge_events(
             backup_id,
             base_path,
@@ -2903,7 +3089,7 @@ def split_event(backup_id: str, event_pk: int, req: SplitEventRequest, user = De
     base_path, actor, role_name, _, _ = resolve_authorized_backup(backup_id, user, min_role="curator")
     before_ev = _snapshot_backup_record(backup_id, base_path, "event", event_pk)
     try:
-        check_not_indexing(backup_id, base_path)
+        check_not_syncing(backup_id, base_path)
         res = curation_service.split_event(
             backup_id,
             base_path,
@@ -3195,6 +3381,83 @@ def get_writer_link_suggestions(backup_id: str, user = Depends(get_current_user)
         raise _internal_error("endpoint error", e)
 
 
+@app.post("/api/backups/{backup_id}/writers/link-suggestions/accept-all")
+def accept_all_writer_link_suggestions(backup_id: str, user = Depends(get_current_user)):
+    base_path, actor, role_name, _, _ = resolve_authorized_backup(backup_id, user, min_role="curator")
+    try:
+        check_not_syncing(backup_id, base_path)
+        res = curation_service.accept_all_writer_link_suggestions(backup_id, base_path)
+        _audit(
+            action="writer.accept_all_suggestions",
+            target_type="writer",
+            target_id=str(backup_id),
+            actor=actor,
+            actor_role=role_name,
+            backup_id=backup_id,
+            backup_dir=base_path,
+            after=res if isinstance(res, dict) else None,
+            metadata={"linked_count": res.get("linked_count", 0) if isinstance(res, dict) else 0},
+        )
+        linked_cnt = res.get("linked_count", 0) if isinstance(res, dict) else 0
+        api_log(backup_id, "base", f"Linked {linked_cnt} writer(s) from link suggestions.")
+        return res
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
+    except exc.ConflictError as e:
+        api_log(backup_id, "error", f"Accepting all writer link suggestions conflict: {e}")
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        api_log(backup_id, "error", f"Accepting all writer link suggestions failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        api_log(backup_id, "error", f"Accepting all writer link suggestions failed: {e}")
+        raise _internal_error("endpoint error", e)
+
+
+@app.post("/api/backups/{backup_id}/writers/create-from-discord-users")
+def create_writers_from_discord_users(backup_id: str, user = Depends(get_current_user)):
+    base_path, actor, role_name, _, _ = resolve_authorized_backup(backup_id, user, min_role="curator")
+    try:
+        check_not_syncing(backup_id, base_path)
+        res = curation_service.create_writers_from_seen_discord_users(backup_id, base_path)
+        _audit(
+            action="writer.create_from_discord_users",
+            target_type="writer",
+            target_id=str(backup_id),
+            actor=actor,
+            actor_role=role_name,
+            backup_id=backup_id,
+            backup_dir=base_path,
+            after={"created_count": res.get("created_count", 0)} if isinstance(res, dict) else None,
+            metadata={"created_count": res.get("created_count", 0) if isinstance(res, dict) else 0},
+        )
+        created_cnt = res.get("created_count", 0) if isinstance(res, dict) else 0
+        api_log(backup_id, "base", f"Created {created_cnt} writer(s) from seen Discord users.")
+        return res
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
+    except exc.ConflictError as e:
+        api_log(backup_id, "error", f"Creating writers from Discord users conflict: {e}")
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        api_log(backup_id, "error", f"Creating writers from Discord users failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        api_log(backup_id, "error", f"Creating writers from Discord users failed: {e}")
+        raise _internal_error("endpoint error", e)
+
+
+@app.get("/api/backups/{backup_id}/seen-discord-users")
+def get_seen_discord_users(backup_id: str, user = Depends(get_current_user)):
+    base_path = get_authorized_backup_path(backup_id, user, min_role="curator")
+    try:
+        return curation_service.get_seen_discord_users(backup_id, base_path)
+    except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
+        raise
+    except Exception as e:
+        raise _internal_error("endpoint error", e)
+
+
 @app.get("/api/backups/{backup_id}/curation/summary")
 def get_curation_summary(backup_id: str, user = Depends(get_current_user)):
     base_path, _, _, role_level, _ = resolve_authorized_backup(backup_id, user, min_role="viewer")
@@ -3298,15 +3561,9 @@ def get_scene_issues(
         raise _internal_error("endpoint error", e)
 
 
-def check_not_indexing(backup_id: str, base_path: str):
-    try:
-        statuses = status_service.get_step_statuses(backup_id, base_path)
-        if statuses.get(Step.INDEX_SCENES.value) == Status.RUNNING.value:
-            raise exc.ConflictError("Cannot modify scene issues while scene indexing is in progress.")
-    except exc.ConflictError:
-        raise
-    except Exception:
-        pass
+def check_not_syncing(backup_id: str, base_path: str):
+    if status_service.is_backup_syncing(backup_id, base_path):
+        raise exc.ConflictError("Cannot modify scenes or curation decisions while sync is in progress.")
 
 
 @app.put("/api/backups/{backup_id}/scene-issues/{issue_id}/resolve")
@@ -3314,7 +3571,7 @@ def resolve_scene_issue(backup_id: str, issue_id: int, req: ResolveIssueRequest,
     base_path, actor, role_name, _, _ = resolve_authorized_backup(backup_id, user, min_role="curator")
     before_issue = _snapshot_backup_record(backup_id, base_path, "scene_issue", issue_id)
     try:
-        check_not_indexing(backup_id, base_path)
+        check_not_syncing(backup_id, base_path)
         res = curation_service.resolve_scene_issue(
             backup_id, base_path, issue_id=issue_id, note=req.note, resolution=req.resolution
         )
@@ -3353,7 +3610,7 @@ def reopen_scene_issue(backup_id: str, issue_id: int, user = Depends(get_current
     base_path, actor, role_name, _, _ = resolve_authorized_backup(backup_id, user, min_role="curator")
     before_issue = _snapshot_backup_record(backup_id, base_path, "scene_issue", issue_id)
     try:
-        check_not_indexing(backup_id, base_path)
+        check_not_syncing(backup_id, base_path)
         res = curation_service.reopen_scene_issue(backup_id, base_path, issue_id=issue_id)
         after_issue = _snapshot_backup_record(backup_id, base_path, "scene_issue", issue_id) or res
         _audit(
@@ -3389,7 +3646,7 @@ def reopen_scene_issue(backup_id: str, issue_id: int, user = Depends(get_current
 def create_manual_scene_split(backup_id: str, req: ManualSplitRequest, user = Depends(get_current_user)):
     base_path, actor, role_name, _, _ = resolve_authorized_backup(backup_id, user, min_role="curator")
     try:
-        check_not_indexing(backup_id, base_path)
+        check_not_syncing(backup_id, base_path)
         res = curation_service.create_manual_scene_split(
             backup_id, base_path, discord_link=req.discord_link, note=req.note
         )
@@ -3456,11 +3713,261 @@ def get_flagged_messages(
         raise _internal_error("endpoint error", e)
 
 
+class _HydrationTTLCache:
+    """Thread-safe bounded LRU+TTL cache using Python stdlib only."""
+
+    def __init__(self, maxsize: int = 512, ttl_seconds: float = 300.0):
+        self._maxsize = maxsize
+        self._ttl = ttl_seconds
+        self._lock = threading.Lock()
+        self._data: OrderedDict[Tuple[str, str, str, str], Tuple[float, Dict[str, Any]]] = OrderedDict()
+
+    def get(self, key: Tuple[str, str, str, str]) -> Optional[Dict[str, Any]]:
+        now = time.monotonic()
+        with self._lock:
+            entry = self._data.get(key)
+            if entry is None:
+                return None
+            expires_at, value = entry
+            if now >= expires_at:
+                self._data.pop(key, None)
+                return None
+            self._data.move_to_end(key)
+            return dict(value)
+
+    def set(self, key: Tuple[str, str, str, str], value: Dict[str, Any]) -> None:
+        now = time.monotonic()
+        with self._lock:
+            self._data[key] = (now + self._ttl, dict(value))
+            self._data.move_to_end(key)
+            while len(self._data) > self._maxsize:
+                self._data.popitem(last=False)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._data.clear()
+
+
+_FULL_CONTENT_CACHE = _HydrationTTLCache(maxsize=512, ttl_seconds=300.0)
+
+
+def _fetch_flagged_message_from_discord(
+    backup_id: str,
+    base_path: str,
+    channel_discord_id: str,
+    message_id: str,
+    token: str,
+) -> Optional[Dict[str, Any]]:
+    import discord_extractor
+
+    async def _run() -> Optional[Dict[str, Any]]:
+        async with discord_extractor.DiscordExtractor(token=token) as extractor:
+            return await extractor.fetch_message(
+                channel_discord_id,
+                message_id,
+                backup_id=backup_id,
+                base_path=base_path,
+            )
+
+    return discord_extractor._run_coro_sync(_run())
+
+
+def _is_skeleton_deleted(backup_id: str, base_path: str, channel_discord_id: str, message_id: str) -> bool:
+    from db.session import has_skeleton_db, skeleton_db_session
+    from db.skeleton_models import MessageSkeletonModel, SkeletonFlags
+
+    if not (channel_discord_id.isdigit() and message_id.isdigit()):
+        return False
+    if not has_skeleton_db(base_path, backup_id=backup_id):
+        return False
+    try:
+        with skeleton_db_session(backup_id=backup_id, backup_path=base_path) as skel_session:
+            row = (
+                skel_session.query(MessageSkeletonModel.flags)
+                .filter(
+                    MessageSkeletonModel.channel_discord_id == int(channel_discord_id),
+                    MessageSkeletonModel.message_id == int(message_id),
+                )
+                .first()
+            )
+            if row is not None:
+                return bool(int(row[0] or 0) & int(SkeletonFlags.IS_DELETED))
+    except Exception:
+        return False
+    return False
+
+
+@app.get("/api/backups/{backup_id}/flagged-messages/{message_id}/full-content")
+def get_flagged_message_full_content(backup_id: str, message_id: str, user = Depends(get_current_user)):
+    base_path, actor, role_name, _, _ = resolve_authorized_backup(backup_id, user, min_role="curator")
+
+    from sqlalchemy.orm import joinedload
+    from db.models import BackupModel, FlaggedMessageModel, StorageMode
+    from db.session import db_session, require_db
+
+    require_db(base_path, backup_id=backup_id)
+
+    with db_session(backup_id=backup_id, backup_path=base_path) as session:
+        backup_row = session.query(BackupModel).filter(BackupModel.backup_id == str(backup_id)).first()
+        storage_mode = getattr(backup_row, "storage_mode", StorageMode.BACKUPLESS.value) if backup_row else StorageMode.BACKUPLESS.value
+
+        flagged = None
+        msg_str = str(message_id).strip()
+        if msg_str.isdigit():
+            num_val = int(msg_str)
+            if num_val < 10**12:
+                flagged = (
+                    session.query(FlaggedMessageModel)
+                    .options(joinedload(FlaggedMessageModel.channel))
+                    .filter(
+                        FlaggedMessageModel.backup_id == str(backup_id),
+                        FlaggedMessageModel.pk == num_val,
+                    )
+                    .first()
+                )
+        if flagged is None:
+            flagged = (
+                session.query(FlaggedMessageModel)
+                .options(joinedload(FlaggedMessageModel.channel))
+                .filter(
+                    FlaggedMessageModel.backup_id == str(backup_id),
+                    FlaggedMessageModel.message_id == msg_str,
+                )
+                .first()
+            )
+
+        if flagged is None:
+            raise HTTPException(status_code=404, detail=f"Flagged message #{message_id} not found.")
+
+        actual_msg_id = str(flagged.message_id)
+        excerpt_content = str(flagged.content or "")
+        is_truncated = bool(getattr(flagged, "is_excerpt_truncated", False))
+        channel = flagged.channel
+        chan_discord_id = str(channel.discord_id) if channel and channel.discord_id else ""
+        chan_rel_path = str(channel.path) if channel and channel.path else ""
+        channel_is_deleted = bool(channel and channel.is_deleted)
+
+    skel_is_deleted = _is_skeleton_deleted(backup_id, base_path, chan_discord_id, actual_msg_id)
+    is_deleted_flag = bool(channel_is_deleted or skel_is_deleted)
+
+    result: Optional[Dict[str, Any]] = None
+
+    # 1. Local JSON check when in full mode or when local Data/<channel.path> exists on disk
+    if chan_rel_path:
+        candidate_paths: List[Path] = []
+        for root_dir in (Path(base_path) / "Data", Path(base_path)):
+            try:
+                cand = safe_join_within(root_dir, chan_rel_path)
+                candidate_paths.append(cand)
+            except ValueError:
+                pass
+        for cand in candidate_paths:
+            if cand.is_file():
+                try:
+                    payload = t.load_from_json(cand.as_posix())
+                    for msg in payload.get("messages") or []:
+                        if str(msg.get("id")) == actual_msg_id:
+                            result = {
+                                "content": str(msg.get("content") or ""),
+                                "is_deleted": bool(msg.get("is_deleted")) or is_deleted_flag,
+                                "is_truncated": False,
+                                "hydrated": True,
+                                "source": "local_json",
+                            }
+                            break
+                except Exception:
+                    pass
+                if result is not None:
+                    break
+
+    # 2. Backupless / Discord API hydration
+    if result is None:
+        if skel_is_deleted:
+            result = {
+                "content": excerpt_content,
+                "is_deleted": True,
+                "is_truncated": is_truncated,
+                "hydrated": False,
+                "source": "deleted_fallback",
+            }
+        else:
+            token = os.environ.get("DISCORD_TOKEN", "").strip()
+            if not token or not chan_discord_id.isdigit() or not actual_msg_id.isdigit():
+                result = {
+                    "content": excerpt_content,
+                    "is_deleted": is_deleted_flag,
+                    "is_truncated": is_truncated,
+                    "hydrated": False,
+                    "source": "excerpt_fallback",
+                }
+            else:
+                token_fp_24 = hashlib.sha256(token.encode("utf-8")).hexdigest()[:24]
+                cache_key = (str(backup_id), chan_discord_id, actual_msg_id, token_fp_24)
+                cached = _FULL_CONTENT_CACHE.get(cache_key)
+                if cached is not None:
+                    result = cached
+                else:
+                    fetched_msg = None
+                    try:
+                        fetched_msg = _fetch_flagged_message_from_discord(
+                            backup_id, base_path, chan_discord_id, actual_msg_id, token
+                        )
+                    except Exception:
+                        fetched_msg = None
+
+                    if isinstance(fetched_msg, dict):
+                        result = {
+                            "content": str(fetched_msg.get("content") or ""),
+                            "is_deleted": bool(fetched_msg.get("is_deleted")) or is_deleted_flag,
+                            "is_truncated": False,
+                            "hydrated": True,
+                            "source": "discord_api",
+                        }
+                        _FULL_CONTENT_CACHE.set(cache_key, result)
+                    else:
+                        confirmed_deleted = _is_skeleton_deleted(
+                            backup_id, base_path, chan_discord_id, actual_msg_id
+                        )
+                        if confirmed_deleted:
+                            result = {
+                                "content": excerpt_content,
+                                "is_deleted": True,
+                                "is_truncated": is_truncated,
+                                "hydrated": False,
+                                "source": "deleted_fallback",
+                            }
+                        else:
+                            result = {
+                                "content": excerpt_content,
+                                "is_deleted": is_deleted_flag,
+                                "is_truncated": is_truncated,
+                                "hydrated": False,
+                                "source": "excerpt_fallback",
+                            }
+
+    _audit(
+        action="flagged_message.hydrate",
+        target_type="flagged_message",
+        target_id=actual_msg_id,
+        actor=actor,
+        actor_role=role_name,
+        backup_id=str(backup_id),
+        backup_dir=base_path,
+        metadata={
+            "source": result["source"],
+            "hydrated": result["hydrated"],
+            "is_deleted": result["is_deleted"],
+            "storage_mode": storage_mode,
+        },
+    )
+    return result
+
+
 @app.post("/api/backups/{backup_id}/flagged-messages/manual")
 def add_manual_flagged_message(backup_id: str, req: ManualFlaggedMessageRequest, user = Depends(get_current_user)):
     base_path, actor, role_name, _, _ = resolve_authorized_backup(backup_id, user, min_role="curator")
     try:
-        check_not_indexing(backup_id, base_path)
+        check_not_syncing(backup_id, base_path)
         res = curation_service.add_manual_flagged_message(
             backup_id, base_path, discord_link=req.discord_link, note=req.note
         )
@@ -3497,7 +4004,7 @@ def resolve_flagged_message(backup_id: str, message_id: str, req: ResolveFlagged
     base_path, actor, role_name, _, _ = resolve_authorized_backup(backup_id, user, min_role="curator")
     before_fm = _snapshot_backup_record(backup_id, base_path, "flagged_message", message_id)
     try:
-        check_not_indexing(backup_id, base_path)
+        check_not_syncing(backup_id, base_path)
         res = curation_service.resolve_flagged_message(
             backup_id,
             base_path,
@@ -3542,7 +4049,7 @@ def reopen_flagged_message(backup_id: str, message_id: str, user = Depends(get_c
     base_path, actor, role_name, _, _ = resolve_authorized_backup(backup_id, user, min_role="curator")
     before_fm = _snapshot_backup_record(backup_id, base_path, "flagged_message", message_id)
     try:
-        check_not_indexing(backup_id, base_path)
+        check_not_syncing(backup_id, base_path)
         res = curation_service.reopen_flagged_message(backup_id, base_path, message_id=message_id)
         after_fm = _snapshot_backup_record(backup_id, base_path, "flagged_message", message_id) or res
         _audit(
@@ -3581,6 +4088,7 @@ def promote_flagged_message(backup_id: str, message_id: str, req: Optional[Promo
     content = req.content if req else None
     author = req.author if req else None
     try:
+        check_not_syncing(backup_id, base_path)
         res = curation_service.promote_flagged_message(
             backup_id,
             base_path,
@@ -3604,7 +4112,13 @@ def promote_flagged_message(backup_id: str, message_id: str, req: Optional[Promo
         return res
     except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
         raise
-    except ValueError as e:
+    except exc.ConflictError as e:
+        api_log(backup_id, "error", f"Promoting flagged message conflict: {e}")
+        raise HTTPException(status_code=409, detail=str(e))
+    except exc.NotFoundError as e:
+        api_log(backup_id, "error", f"Flagged message not found: {e}")
+        raise HTTPException(status_code=404, detail=str(e))
+    except (exc.ValidationError, ValueError) as e:
         api_log(backup_id, "error", f"Promoting flagged message failed: {e}")
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -3641,6 +4155,7 @@ def delete_message_override(backup_id: str, message_id: str, user = Depends(get_
     base_path, actor, role_name, _, _ = resolve_authorized_backup(backup_id, user, min_role="curator")
     before_fm = _snapshot_backup_record(backup_id, base_path, "flagged_message", message_id)
     try:
+        check_not_syncing(backup_id, base_path)
         res = curation_service.delete_message_override(backup_id, base_path, message_id=message_id)
         after_fm = _snapshot_backup_record(backup_id, base_path, "flagged_message", message_id) or res
         _audit(
@@ -3658,7 +4173,13 @@ def delete_message_override(backup_id: str, message_id: str, user = Depends(get_
         return res
     except (HTTPException, exc.DatabaseConnectionError, exc.DatabaseSchemaMismatchError):
         raise
-    except ValueError as e:
+    except exc.ConflictError as e:
+        api_log(backup_id, "error", f"Deleting message override conflict: {e}")
+        raise HTTPException(status_code=409, detail=str(e))
+    except exc.NotFoundError as e:
+        api_log(backup_id, "error", f"Message override not found: {e}")
+        raise HTTPException(status_code=404, detail=str(e))
+    except (exc.ValidationError, ValueError) as e:
         api_log(backup_id, "error", f"Deleting message override failed: {e}")
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -3856,6 +4377,7 @@ def reset_testing_backup(user = Depends(require_instance_admin)):
     try:
         from tests.reset_test_backup import reset_test_backup
         ok = reset_test_backup()
+        clear_runtime_step_overrides(TEST_BACKUP_ID)
         _release_db_locks()
         if not ok:
             t.global_log("error", "API: Failed to reset testing backup: pristine seed copy (Backups/Elysium-sql-tests-clean) not found.")
@@ -3897,6 +4419,7 @@ def migrate_testing_backup(user = Depends(require_instance_admin)):
         with BackupContext.activate(backup_id=TEST_BACKUP_ID):
             report = migrate_single_backup(backup, dry_run=False, skip_snapshots=False)
 
+        clear_runtime_step_overrides(TEST_BACKUP_ID)
         _release_db_locks()
         msg = (
             f"Successfully migrated '{backup['backup_name']}' to SQLite "
@@ -3939,6 +4462,7 @@ def upgrade_backup_database(backup_id: str, user = Depends(get_current_user)):
 
         from db.upgrade import upgrade_single_backup
         report = upgrade_single_backup(backup, dry_run=False, reindex_scenes=False)
+        clear_runtime_step_overrides(str(backup_id))
         _release_db_locks()
         msg = f"Database upgraded successfully for backup {backup_id}."
         t.global_log("base", f"API: {msg}")

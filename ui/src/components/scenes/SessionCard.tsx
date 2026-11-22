@@ -1,5 +1,5 @@
 import React from 'react';
-import { Check, AlertCircle, Edit3 } from 'lucide-react';
+import { Check, AlertCircle, AlertTriangle, Edit3 } from 'lucide-react';
 import { DataCard, Badge, Button, FilterChip } from '../ui';
 import { MessageExcerptAccordion } from './MessageExcerptAccordion';
 import { resolveCharacterName } from '../../utils/characters';
@@ -12,6 +12,7 @@ interface SessionCardProps {
   charactersFilter: number[];
   setCharactersFilter: (filter: number[]) => void;
   onEdit?: (session: ChatSession | Scene) => void;
+  editDisabled?: boolean;
 }
 
 export const SessionCard: React.FC<SessionCardProps> = ({
@@ -20,6 +21,7 @@ export const SessionCard: React.FC<SessionCardProps> = ({
   charactersFilter,
   setCharactersFilter,
   onEdit,
+  editDisabled = false,
 }) => {
   const hasUnresolvedIssues =
     session.issues &&
@@ -36,10 +38,12 @@ export const SessionCard: React.FC<SessionCardProps> = ({
   const duration = getDurationInfo(session.start?.timestamp, session.end?.timestamp);
 
   const messageCount =
-    session.end &&
-    session.start &&
-    typeof session.end.index === 'number' &&
-    typeof session.start.index === 'number'
+    typeof session.message_count === 'number'
+      ? session.message_count
+      : session.end &&
+        session.start &&
+        typeof session.end.index === 'number' &&
+        typeof session.start.index === 'number'
       ? Math.max(0, session.end.index - session.start.index + 1)
       : 0;
 
@@ -88,6 +92,17 @@ export const SessionCard: React.FC<SessionCardProps> = ({
 
         {/* Right action area */}
         <div className="flex-row items-center gap-xs flex-wrap">
+          {session.is_deleted && (
+            <Badge
+              variant="danger"
+              className="text-sm font-semibold"
+              title="Channel or boundary message was deleted on Discord"
+            >
+              <AlertTriangle size={11} />
+              <span>Deleted on Discord</span>
+            </Badge>
+          )}
+
           <Badge
             variant={session.status === 'no_end_tag' ? 'danger' : 'neutral'}
             className="text-sm uppercase font-semibold"
@@ -131,9 +146,10 @@ export const SessionCard: React.FC<SessionCardProps> = ({
             <Button
               variant="secondary"
               size="xs"
+              disabled={editDisabled}
               onClick={() => onEdit(session)}
               icon={<Edit3 size={12} />}
-              title="Edit custom name"
+              title={editDisabled ? 'Editing is disabled while sync is in progress.' : 'Edit custom name'}
             >
               Edit
             </Button>

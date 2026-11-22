@@ -2,13 +2,14 @@ import { useState, useEffect } from 'react';
 import { api } from '../api';
 import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react';
 import { BackupCategorySelector } from './BackupCategorySelector';
-import { BackupFormModal } from './BackupFormModal';
-import type { BackupConfig, GlobalConfig } from '../types';
+import { BackupFormModal, BackupStorageModeModalSection } from './BackupFormModal';
+import type { BackupConfig, GlobalConfig, StorageMode } from '../types';
 
 export const BackupForm = ({
   backupId,
   initialConfig,
   globalConfig,
+  hasDataFiles = false,
   onStart,
   onCancel,
   onSave,
@@ -17,6 +18,7 @@ export const BackupForm = ({
   backupId: string;
   initialConfig: BackupConfig | null;
   globalConfig: GlobalConfig | null;
+  hasDataFiles?: boolean;
   onStart: () => void;
   onCancel: () => void;
   onSave?: (savedConfig: BackupConfig) => void;
@@ -32,6 +34,8 @@ export const BackupForm = ({
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [showExtra, setShowExtra] = useState(false);
+  const [showConvertWarning, setShowConvertWarning] = useState(false);
+  const [confirmModeConversion, setConfirmModeConversion] = useState(false);
   const [serverCategories, setServerCategories] = useState<{ id: string; name: string }[] | null>(null);
   const [loadingCategories, setLoadingCategories] = useState(true);
   const [categoriesError, setCategoriesError] = useState<string | null>(null);
@@ -46,6 +50,8 @@ export const BackupForm = ({
         cfg.admin = { ...cfg.admin, backupName: cfg.admin.serverName };
       }
       setConfig(cfg);
+      setShowConvertWarning(false);
+      setConfirmModeConversion(false);
     }
   }, [initialConfig]);
 
@@ -79,10 +85,22 @@ export const BackupForm = ({
     api
       .getServerCategories(admin.serverId)
       .then(res => {
+        const stripCatPrefix = (val: string) => val.replace(/^\d+#\s*/, '').trim();
         if (Array.isArray(res)) {
-          setServerCategories(res);
+          setServerCategories(
+            res.map(cat =>
+              typeof cat === 'object' && cat !== null && 'name' in cat
+                ? { ...cat, name: stripCatPrefix(String((cat as { name?: unknown }).name ?? '')) }
+                : cat
+            )
+          );
         } else if (typeof res === 'object' && res !== null) {
-          setServerCategories(Object.entries(res).map(([id, name]) => ({ id, name: String(name) })));
+          setServerCategories(
+            Object.entries(res).map(([id, name]) => ({
+              id,
+              name: stripCatPrefix(String(name)),
+            }))
+          );
         }
       })
       .catch((err: unknown) => {
@@ -113,8 +131,19 @@ export const BackupForm = ({
     setIsSaving(true);
     setSaveError(null);
     try {
-      if (backupId === 'New Backup') await api.createNewBackup(config);
-      else await api.runBackup(backupId, config);
+      if (backupId === 'New Backup') {
+        await api.createNewBackup(config);
+      } else if (isModal && confirmModeConversion) {
+        const currentMode: StorageMode = admin.storageMode === 'full' ? 'full' : 'backupless';
+        const targetMode: StorageMode = currentMode === 'full' ? 'backupless' : 'full';
+        const convertedConfig: BackupConfig = {
+          ...config,
+          admin: { ...admin, storageMode: targetMode },
+        };
+        await api.syncBackup(backupId, { mode: 'rescan_discord', config: convertedConfig });
+      } else {
+        await api.syncBackup(backupId, { mode: 'incremental', config });
+      }
       onStart();
     } catch (err: unknown) {
       console.error('Failed to start backup:', err);
@@ -269,6 +298,62 @@ export const BackupForm = ({
         )}
       </div>
 
+      {isModal ? (
+        <BackupStorageModeModalSection
+          currentMode={admin.storageMode === 'full' ? 'full' : 'backupless'}
+          hasDataFiles={hasDataFiles}
+          showConvertWarning={showConvertWarning}
+          confirmModeConversion={confirmModeConversion}
+          onToggleConvertWarning={() => {
+            setShowConvertWarning(prev => {
+              if (prev) setConfirmModeConversion(false);
+              return !prev;
+            });
+          }}
+          onConfirmChange={setConfirmModeConversion}
+        />
+      ) : (
+        <div>
+          <label style={{ display: 'block', marginBottom: '0.35rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+            Storage Mode
+          </label>
+          <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+            <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.875rem' }}>
+              <input
+                type="radio"
+                name={`storageMode_${backupId}`}
+                checked={(admin.storageMode || 'backupless') === 'backupless'}
+                onChange={() =>
+                  setConfig({
+                    ...config,
+                    admin: { ...admin, storageMode: 'backupless' },
+                  })
+                }
+              />
+              <span>
+                <strong>Backupless</strong> <span className="text-muted">(lightweight SQLite skeletons, on-demand message hydration)</span>
+              </span>
+            </label>
+            <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.875rem' }}>
+              <input
+                type="radio"
+                name={`storageMode_${backupId}`}
+                checked={admin.storageMode === 'full'}
+                onChange={() =>
+                  setConfig({
+                    ...config,
+                    admin: { ...admin, storageMode: 'full' },
+                  })
+                }
+              />
+              <span>
+                <strong>Full Backup</strong> <span className="text-muted">(also stores full DCE-compatible Data/*.json files)</span>
+              </span>
+            </label>
+          </div>
+        </div>
+      )}
+
       <BackupCategorySelector
         backupId={backupId}
         isKeepMode={isKeepMode}
@@ -338,6 +423,7 @@ export const BackupForm = ({
         admin={admin}
         isSaving={isSaving}
         saveError={saveError}
+        disableSaveOnly={confirmModeConversion}
         onCancel={onCancel}
         handleSaveOnly={handleSaveOnly}
         handleSaveAndRun={handleSaveAndRun}

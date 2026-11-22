@@ -14,7 +14,19 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 
-CURRENT_SCHEMA_VERSION = 5  # See docs/database_design.md for full schema changelog
+CURRENT_SCHEMA_VERSION = 6  # See docs/database_design.md for full schema changelog
+
+
+class SyncStatus(StrEnum):
+    IDLE = "idle"
+    SYNCING = "syncing"
+    PAUSED = "paused"
+    FAILED = "failed"
+
+
+class StorageMode(StrEnum):
+    BACKUPLESS = "backupless"
+    FULL = "full"
 
 
 class Scope(StrEnum):
@@ -134,8 +146,16 @@ class BackupModel(Base):
     server_id = Column(String(20), index=True, nullable=True)
     server_name = Column(String(128), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=True)
+    storage_mode = Column(String(16), nullable=False, default=StorageMode.BACKUPLESS.value)
+    sync_status = Column(String(16), nullable=False, default=SyncStatus.IDLE.value)
+    sync_started_at = Column(DateTime(timezone=True), nullable=True)
+    last_synced_at = Column(DateTime(timezone=True), nullable=True)
+    sync_error = Column(Text, nullable=True)
+    channels_total = Column(Integer, nullable=False, default=0)
+    channels_done = Column(Integer, nullable=False, default=0)
 
-    exports = relationship("ExportModel", back_populates="backup", cascade="all, delete-orphan")
+    channels = relationship("ChannelModel", back_populates="backup", cascade="all, delete-orphan")
+    seen_users = relationship("SeenDiscordUserModel", back_populates="backup", cascade="all, delete-orphan")
     writers = relationship("WriterModel", back_populates="backup", cascade="all, delete-orphan")
     character_groups = relationship("CharacterGroupModel", back_populates="backup", cascade="all, delete-orphan")
     characters = relationship("CharacterModel", back_populates="backup", cascade="all, delete-orphan")
@@ -144,49 +164,14 @@ class BackupModel(Base):
     flagged_messages = relationship("FlaggedMessageModel", back_populates="backup", cascade="all, delete-orphan")
 
 
-class ExportModel(Base):
-    __tablename__ = "exports"
+class ChannelModel(Base):
+    __tablename__ = "channels"
     __table_args__ = (
-        UniqueConstraint("backup_id", "scope", name="uq_backup_scope"),
+        UniqueConstraint("backup_id", "discord_id", name="uq_backup_channel_discord"),
     )
 
     pk = Column(Integer, primary_key=True, autoincrement=True)
     backup_id = Column(String(64), ForeignKey("backups.backup_id", ondelete="CASCADE"), nullable=False, index=True)
-    scope = Column(String(16), nullable=False)  # "base" or "update"
-    exported_from = Column(DateTime(timezone=True), nullable=True)
-    exported_at = Column(DateTime(timezone=True), nullable=True)
-    updated_at = Column(DateTime(timezone=True), nullable=True)
-
-    backup = relationship("BackupModel", back_populates="exports")
-    steps = relationship("BackupStepModel", back_populates="export", cascade="all, delete-orphan")
-    channels = relationship("ChannelModel", back_populates="export", cascade="all, delete-orphan")
-
-
-class BackupStepModel(Base):
-    __tablename__ = "backup_steps"
-    __table_args__ = (
-        UniqueConstraint("export_pk", "step", name="uq_export_step"),
-    )
-
-    pk = Column(Integer, primary_key=True, autoincrement=True)
-    export_pk = Column(Integer, ForeignKey("exports.pk", ondelete="CASCADE"), nullable=False, index=True)
-    step = Column(String(32), nullable=False)
-    status = Column(String(16), nullable=False)
-    started_at = Column(DateTime(timezone=True), nullable=True)
-    finished_at = Column(DateTime(timezone=True), nullable=True)
-    error = Column(Text, nullable=True)
-
-    export = relationship("ExportModel", back_populates="steps")
-
-
-class ChannelModel(Base):
-    __tablename__ = "channels"
-    __table_args__ = (
-        UniqueConstraint("export_pk", "discord_id", name="uq_export_channel_discord"),
-    )
-
-    pk = Column(Integer, primary_key=True, autoincrement=True)
-    export_pk = Column(Integer, ForeignKey("exports.pk", ondelete="CASCADE"), nullable=False, index=True)
     discord_id = Column(String(20), nullable=False)
     type = Column(String(32), nullable=False)  # GuildCategory, GuildTextChat, GuildPublicThread
     parent_pk = Column(Integer, ForeignKey("channels.pk", ondelete="CASCADE"), nullable=True, index=True)
@@ -195,8 +180,12 @@ class ChannelModel(Base):
     path = Column(String(255), nullable=False)
     is_deleted = Column(Boolean, default=False, nullable=False)
     message_count = Column(Integer, nullable=True)
+    last_message_id = Column(String(20), nullable=True)
+    last_synced_at = Column(DateTime(timezone=True), nullable=True)
+    sync_status = Column(String(16), nullable=False, default="pending")
+    sync_error = Column(Text, nullable=True)
 
-    export = relationship("ExportModel", back_populates="channels")
+    backup = relationship("BackupModel", back_populates="channels")
     parent = relationship("ChannelModel", remote_side=[pk], back_populates="children")
     children = relationship("ChannelModel", back_populates="parent", cascade="all, delete-orphan")
 
@@ -326,8 +315,9 @@ class SceneModel(Base):
     status = Column(String(32), nullable=False, index=True)  # "open", "closed", "no_end_tag"
     start_message_id = Column(String(20), nullable=False)
     end_message_id = Column(String(20), nullable=False)
-    start_index = Column(Integer, nullable=False)
-    end_index = Column(Integer, nullable=False)
+    start_index = Column(Integer, nullable=True, default=0)
+    end_index = Column(Integer, nullable=True, default=0)
+    message_count = Column(Integer, nullable=False, default=0)
     start_at = Column(DateTime(timezone=True), nullable=False)  # UTC
     end_at = Column(DateTime(timezone=True), nullable=False)    # UTC
     start_author_id = Column(String(20), nullable=False)
@@ -342,12 +332,6 @@ class SceneModel(Base):
     participants = relationship("SceneParticipantModel", back_populates="scene", cascade="all, delete-orphan")
     issues = relationship("SceneIssueModel", foreign_keys="[SceneIssueModel.scene_pk]", back_populates="scene", passive_deletes=True)
 
-    @property
-    def message_count(self) -> int:
-        if self.start_index is not None and self.end_index is not None:
-            return max(0, int(self.end_index) - int(self.start_index) + 1)
-        return 0
-
 
 class SceneParticipantModel(Base):
     __tablename__ = "scene_participants"
@@ -355,6 +339,7 @@ class SceneParticipantModel(Base):
     scene_pk = Column(Integer, ForeignKey("scenes.pk", ondelete="CASCADE"), primary_key=True)
     character_pk = Column(Integer, ForeignKey("characters.pk", ondelete="CASCADE"), primary_key=True, index=True)
     position = Column(Integer, default=0, nullable=False)
+    message_count = Column(Integer, nullable=False, default=1)
     first_message_id = Column(String(20), nullable=True)
     first_at = Column(DateTime(timezone=True), nullable=True)
     last_message_id = Column(String(20), nullable=True)
@@ -399,16 +384,37 @@ class FlaggedMessageModel(Base):
     channel_pk = Column(Integer, ForeignKey("channels.pk", ondelete="SET NULL"), nullable=True, index=True)
     kind = Column(String(32), nullable=False)
     content = Column(Text, nullable=False)
+    is_excerpt_truncated = Column(Boolean, nullable=False, default=False)
     author = Column(JSON, nullable=False)
     flagged_at = Column(DateTime(timezone=True), nullable=False)
     resolution = Column(String(32), nullable=True, index=True)
     override_content = Column(Text, nullable=True)
     override_author = Column(JSON, nullable=True)
+    override_flags = Column(Integer, nullable=True)
     resolved_at = Column(DateTime(timezone=True), nullable=True)
     resolved_note = Column(Text, nullable=True)
 
     backup = relationship("BackupModel", back_populates="flagged_messages")
     channel = relationship("ChannelModel")
+
+
+class SeenDiscordUserModel(Base):
+    __tablename__ = "seen_discord_users"
+    __table_args__ = (
+        UniqueConstraint("backup_id", "discord_user_id", name="uq_backup_seen_user"),
+    )
+
+    pk = Column(Integer, primary_key=True, autoincrement=True)
+    backup_id = Column(String(64), ForeignKey("backups.backup_id", ondelete="CASCADE"), nullable=False, index=True)
+    discord_user_id = Column(String(20), nullable=False)
+    username = Column(String(128), nullable=False)
+    global_name = Column(String(128), nullable=True)
+    nickname = Column(String(128), nullable=True)
+    is_current_member = Column(Boolean, nullable=False, default=False)
+    message_count = Column(Integer, nullable=False, default=0)
+    last_seen_at = Column(DateTime(timezone=True), nullable=True)
+
+    backup = relationship("BackupModel", back_populates="seen_users")
 
 
 class SchemaVersionModel(Base):

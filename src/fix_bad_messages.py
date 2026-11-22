@@ -1,9 +1,9 @@
-import os
-import sys
+from datetime import datetime, timezone
 from pathlib import Path
-import time
 import re
-from typing import Any, Dict, List, Optional, Set
+import sys
+import time
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import utils.tricks as t
 import utils.exceptions as exc
@@ -14,46 +14,44 @@ from find_character_scenes import (
 )
 from models import ServerBackup, Step
 from db.models import FlaggedKind, FlaggedResolution, SceneStatus, IssueKind
+from db.skeleton_models import (
+    EXCERPT_MAX_LEN,
+    MessageSkeletonModel,
+    SkeletonFlags,
+    compute_skeleton_flags,
+)
+from db.scene_service import resolve_effective_skeleton
 from db import curation_service
 
 t.set_path()
 from res import constants as c
 
-################ File summary #################
-
 """
-This module provides non-destructive preprocessing and flagging for Discord chatlog messages.
-Raw JSON files on disk are NEVER mutated or deleted.
-Messages are transformed in memory during pipeline processing according to SQLite curation decisions:
-  - Ignored messages are filtered out.
-  - Overridden messages have their author and content patched in memory.
-  - Unattributed non-tupper messages are flagged and categorized into SQLite review queues.
+Non-destructive preprocessing, skeleton flag computation, and flagging for Discord messages.
+Raw JSON files and `skeletons.sqlite` rows are NEVER mutated by curation overrides:
+  - Ignored messages are filtered out in memory.
+  - Overridden messages have their author/flags/content overlaid in memory.
+  - Unattributed non-tupper messages are flagged into `flagged_messages` with 250-char excerpts.
 """
 
-################ Functions #################
 
 def load_status() -> ServerBackup:
     """Loads backup information and checks if it's ready to work with."""
     try:
         backup = ServerBackup.load(scope="base")
-
         if backup.is_other_step_running(Step.FIX_MESSAGES):
             raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
-
         if not backup.can_fix_messages():
             raise exc.DataNotReadyError(
                 "The data may be corrupted or incomplete. Ensure the download is verified and IDs are assigned and try again."
             )
-
         t.log("debug", f"  The current status of the backup is '{backup.status}'\n")
         backup.start_fix_messages()
         t.log("debug", "  Backup info file is ready.\n")
-
     except (exc.DataNotReadyError, exc.AlreadyRunningError):
         raise
     except Exception as e:
         raise exc.FixMessagesError("The export status file could not be read") from e
-
     return backup
 
 
@@ -62,12 +60,12 @@ def prepare_channel_messages(
     resolved_flags_map: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
     """
-    Prepares channel messages in memory for scene indexing and processing without modifying disk.
+    Prepares raw channel messages in memory for scene indexing without modifying disk:
     - Filters out non-Default messages (ThreadCreated, pins, joins).
     - Filters out messages matching MENTION_ONLY_PAT.
     - Filters out messages marked as 'ignored' in resolved_flags_map.
     - Overlays override_content and override_author in memory for messages marked as 'override'.
-    - Preserves 'raw_index': i on each prepared message for raw channel JSON indexing.
+    - Preserves 'raw_index': i on each prepared message.
     """
     prepared: List[Dict[str, Any]] = []
 
@@ -105,11 +103,59 @@ def prepare_channel_messages(
     return prepared
 
 
+def prepare_channel_skeletons(
+    skeletons: List[Any],
+    resolved_flags_map: Optional[Dict[str, Any]] = None,
+    excerpts_map: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Prepares MessageSkeletonModel rows purely in memory for scene/session/event indexers
+    by applying `resolve_effective_skeleton` overlays (`ignored` excluded, `override` patched)
+    without mutating `skeletons.sqlite`.
+    """
+    flags_map = resolved_flags_map or {}
+    exc_map = excerpts_map or {}
+    prepared: List[Dict[str, Any]] = []
+
+    for raw_idx, sk in enumerate(skeletons):
+        eff = resolve_effective_skeleton(sk, resolved_flags_map=flags_map)
+        if eff is None or not eff["is_valid"]:
+            continue
+
+        mid_str = eff["message_id_str"]
+        flag_info = flags_map.get(mid_str)
+        o_content = None
+        if flag_info:
+            res = flag_info.get("resolution") if isinstance(flag_info, dict) else getattr(flag_info, "resolution", None)
+            if res == FlaggedResolution.OVERRIDE.value:
+                o_content = (
+                    flag_info.get("override_content")
+                    if isinstance(flag_info, dict)
+                    else getattr(flag_info, "override_content", None)
+                )
+
+        if o_content is not None:
+            excerpt = str(o_content)
+        else:
+            excerpt = exc_map.get(mid_str, "")
+
+        ts_dt = eff["timestamp_dt"]
+        eff["raw_index"] = raw_idx
+        eff["id"] = mid_str
+        eff["timestamp"] = ts_dt.isoformat() if ts_dt else ""
+        eff["author"] = {"id": str(eff["author_id"])}
+        eff["content"] = excerpt
+        eff["type"] = "Default"
+        prepared.append(eff)
+
+    return prepared
+
+
 FAILED_TUPPER_PAT = re.compile(r"^\s*[\w\-]+:(?!//)")
 
 
 def is_failed_tupper(content: str) -> bool:
-    """Detects whether a message starts with a word (no spaces) followed by a colon, e.g. 'CharName:', 'AS:', 'eris:'."""
+    """Detects whether a message starts with a word (no spaces) followed by a colon."""
     if not content:
         return False
     return bool(FAILED_TUPPER_PAT.match(content))
@@ -123,9 +169,7 @@ def collect_channel_flagged_messages(
 ) -> List[Dict[str, Any]]:
     """
     Collects unattributed non-tupper messages from a channel into flagged review queue items.
-    Runs after scene segmentation to classify messages into failed_tupper, ooc_boundary, or ooc_message.
-    Skips benign messages (valid scene end tags, start headers, setup attachments).
-    Preserves existing resolved messages and manually added items.
+    Always stores head+tail 250-char excerpt (`t.format_excerpt`) and `is_excerpt_truncated`.
     """
     scene_start_ids: Set[str] = set()
     scene_end_ids: Set[str] = set()
@@ -172,19 +216,15 @@ def collect_channel_flagged_messages(
         if MENTION_ONLY_PAT.match(content.strip()):
             continue
 
-        # Benign check 1: closed [END] tag that cleanly closed a scene
         if msg_id in closed_end_ids:
             continue
 
-        # Benign check 2: start header tag at start of scene
         if msg_id in start_header_ids:
             continue
 
-        # Benign check 3: OOC setup attachments before first scene
         if not seen_first_tupper and len(msg.get("attachments", [])) > 0 and not has_start_tag(content) and not has_end_tag(content):
             continue
 
-        # Classify kind
         if is_failed_tupper(content):
             kind = FlaggedKind.FAILED_TUPPER.value
         elif msg_id in scene_start_ids or msg_id in scene_end_ids or msg_id in auto_split_anchor_ids:
@@ -196,16 +236,107 @@ def collect_channel_flagged_messages(
             "message_id": msg_id,
             "channel_discord_id": str(channel_id),
             "kind": kind,
-            "content": content,
+            "content": t.format_excerpt(content),
+            "is_excerpt_truncated": len(content) > EXCERPT_MAX_LEN,
             "author": msg.get("author", {}),
         })
 
     return flagged_items
 
 
-################# Main function #################
+def build_skeletons_from_messages(
+    messages: List[Dict[str, Any]],
+    channel_discord_id: str,
+) -> List[MessageSkeletonModel]:
+    """
+    Computes immutable 14-bit `MessageSkeletonModel` rows from raw/attributed messages.
+    `flags` ALWAYS reflects the original message (never mutated by curation overrides).
+    """
+    if not str(channel_discord_id).isdigit():
+        return []
+    chan_id_int = int(channel_discord_id)
+    rows: List[MessageSkeletonModel] = []
 
-def fix_bad_messages():
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        mid_str = str(msg.get("id", "")).strip()
+        if not mid_str.isdigit():
+            continue
+        aid = t.get_author_id(msg)
+        resolved_aid = int(aid) if aid is not None else 0
+        dt = t.parse_datetime(msg.get("timestamp"))
+        ts_unix = int(dt.timestamp()) if dt else 0
+        flags = compute_skeleton_flags(msg, author_id=resolved_aid)
+
+        rows.append(
+            MessageSkeletonModel(
+                channel_discord_id=chan_id_int,
+                message_id=int(mid_str),
+                author_id=resolved_aid,
+                timestamp_unix=ts_unix,
+                flags=flags,
+            )
+        )
+
+    rows.sort(key=lambda r: int(r.message_id))
+    return rows
+
+
+def prepare_channel_messages_for_sync(
+    messages: List[Dict[str, Any]],
+    backup_id: str,
+    channel_pk: Optional[int],
+    is_full_mode: bool,
+    existing_flagged_map: Optional[Dict[str, Any]] = None,
+    *,
+    channel_discord_id: str = "",
+    scenes: Optional[List[Dict[str, Any]]] = None,
+    preserved_msg_ids: Optional[Set[str]] = None,
+    is_chatroom: bool = False,
+    is_event: bool = False,
+) -> Tuple[List[MessageSkeletonModel], List[Dict[str, Any]], Dict[str, int]]:
+    """
+    Sync-time message preparation:
+      1. Computes original 14-bit `MessageSkeletonModel` rows (immutable to overrides).
+      2. Detects unattributed non-tupper messages (`failed_tupper`, `ooc_boundary`, `ooc_message`)
+         storing 250-char head+tail excerpts via `format_excerpt` and `is_excerpt_truncated`.
+      3. Computes `override_flags` for any existing overridden messages lacking cached flags.
+    """
+    _ = (backup_id, channel_pk, is_full_mode)  # kept in signature for caller clarity
+    skeletons = build_skeletons_from_messages(messages, channel_discord_id)
+
+    flagged_items: List[Dict[str, Any]] = []
+    if not is_chatroom and not is_event:
+        flagged_items = collect_channel_flagged_messages(
+            raw_messages=messages,
+            channel_id=str(channel_discord_id),
+            scenes=scenes or [],
+            preserved_msg_ids=preserved_msg_ids or set(),
+        )
+
+    override_flags_updates: Dict[str, int] = {}
+    if existing_flagged_map:
+        for mid_str, flag_info in existing_flagged_map.items():
+            res = flag_info.get("resolution") if isinstance(flag_info, dict) else getattr(flag_info, "resolution", None)
+            if res != FlaggedResolution.OVERRIDE.value:
+                continue
+            o_content = flag_info.get("override_content") if isinstance(flag_info, dict) else getattr(flag_info, "override_content", None)
+            o_flags = flag_info.get("override_flags") if isinstance(flag_info, dict) else getattr(flag_info, "override_flags", None)
+            o_author = flag_info.get("override_author") if isinstance(flag_info, dict) else getattr(flag_info, "override_author", None)
+            if o_content is not None and o_flags is None:
+                o_aid = None
+                if isinstance(o_author, dict) and str(o_author.get("id", "")).isdigit():
+                    o_aid = int(o_author["id"])
+                override_flags_updates[str(mid_str)] = compute_skeleton_flags(
+                    {"type": "Default", "content": o_content, "author": o_author or {}},
+                    author_id=o_aid,
+                )
+
+    return skeletons, flagged_items, override_flags_updates
+
+
+def fix_bad_messages() -> None:
     """
     Non-destructive execution of message scanning and SQLite flagged message population.
     Reads channels without modifying files on disk.
@@ -234,6 +365,8 @@ def fix_bad_messages():
 
         for path in backup.get_all_paths():
             file_path = (Path(c.DATA_FOLDER) / path).as_posix()
+            if not Path(file_path).is_file():
+                continue
             t.log("log", f"\t    Analysing {file_path}...")
             raw_channel = t.load_from_json(file_path)
             chan_cat = path_to_cat.get(path) or raw_channel.get("channel", {}).get("category") or ""
@@ -247,8 +380,6 @@ def fix_bad_messages():
             raw_messages = raw_channel.get("messages", [])
             chan_id = raw_channel.get("channel", {}).get("id") or ""
 
-            # In standalone fix_bad_messages, scenes haven't been indexed yet,
-            # so scenes list is empty. Boundary classification happens during index_scenes.
             items = collect_channel_flagged_messages(
                 raw_messages=raw_messages,
                 channel_id=chan_id,
@@ -257,7 +388,6 @@ def fix_bad_messages():
             )
             all_flagged.extend(items)
 
-        # Save flagged messages to SQLite (and optionally snapshots if c.DEBUG_FILES)
         curation_service.save_flagged_messages(
             backup_id=b_id,
             base_path=b_path,
@@ -274,8 +404,7 @@ def fix_bad_messages():
 
     finally:
         t.log("base", f"### Finished scanning messages --- {time.time() - start_time:.2f} seconds --- ###\n")
-
-        if 'e' in locals() and e is not None:
+        if "e" in locals() and e is not None:
             raise e
 
 
@@ -295,7 +424,6 @@ if __name__ == "__main__":
         except Exception:
             pass
         sys.exit(1)
-
     except Exception as e:
         t.log("error", f"\n{exc.unwrap(e)}\n")
         sys.exit(1)

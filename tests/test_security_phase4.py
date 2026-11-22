@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import httpx
 from sqlalchemy.exc import OperationalError
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -20,9 +21,8 @@ for p in (SRC_DIR.as_posix(), PROJECT_ROOT.as_posix()):
 os.environ.setdefault("SOCRATES_ENV", "development")
 os.environ.setdefault("JWT_SECRET", "a_very_strong_test_jwt_secret_key_with_more_than_32_bytes")
 
-import download_channels  # noqa: E402
+import discord_extractor  # noqa: E402
 import find_character_scenes  # noqa: E402
-import get_server_info  # noqa: E402
 import index_sessions  # noqa: E402
 import rbac  # noqa: E402
 import server  # noqa: E402
@@ -30,7 +30,7 @@ import utils.exceptions as exc  # noqa: E402
 import utils.tricks as t  # noqa: E402
 from db import audit_service, curation_service, event_service, scene_service  # noqa: E402
 from db.audit_models import AuditLog  # noqa: E402
-from db.models import BackupModel, ChannelModel, EventModel, ExportModel, SceneModel  # noqa: E402
+from db.models import BackupModel, ChannelModel, EventModel, SceneModel  # noqa: E402
 from db.session import (  # noqa: E402
     checkpoint_wal,
     close_all_engines,
@@ -112,28 +112,36 @@ class TestSubprocessAndCommandHardening(unittest.TestCase):
                 self.assertNotIn("DISCORD_CLIENT_SECRET", child_env)
                 self.assertEqual(child_env.get("DISCORD_TOKEN"), "bot-token-xyz")
 
-    def test_dce_wrappers_pass_argv_lists_and_reject_invalid_ids(self):
+    def test_discord_extractor_validates_snowflakes_and_fetches_categories(self):
         with self.assertRaises(exc.GetChannelListError) as ctx:
-            get_server_info.get_categories("857848490683269161; rm -rf /")
+            discord_extractor.get_categories("857848490683269161; rm -rf /")
         self.assertIsInstance(ctx.exception.__cause__, ValueError)
 
-        with patch.object(t, "run_command", return_value=(0, "111 \\ 1# Cat\n")) as mock_rc:
-            cats = get_server_info.get_categories("857848490683269161")
-            self.assertEqual(cats, {"111": "1# Cat"})
-            argv = mock_rc.call_args.args[0]
-            self.assertIsInstance(argv, list)
-            self.assertIn("channels", argv)
-            self.assertIn("857848490683269161", argv)
+        def _handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/v10/users/@me":
+                return httpx.Response(200, json={"id": "999", "username": "bot", "bot": True})
+            if request.url.path == "/api/v10/guilds/857848490683269161/channels":
+                return httpx.Response(
+                    200,
+                    json=[{"id": "111", "type": 4, "name": "Cat", "position": 0}],
+                )
+            return httpx.Response(404, json={"message": "Not Found"})
 
-        with self.assertRaises(exc.DownloadExportError):
-            download_channels.download_full_category("General", "not-digits && calc", None)
+        from tests.test_env import use_socket_free_asyncio
 
-        with patch.object(t, "run_command", return_value=(0, "done")) as mock_rc:
-            download_channels.download_full_category("General", "857848490683269161", None)
-            argv = mock_rc.call_args.args[0]
-            self.assertIsInstance(argv, list)
-            self.assertIn("export", argv)
-            self.assertIn("857848490683269161", argv)
+        with use_socket_free_asyncio():
+            cats = discord_extractor.get_categories(
+                "857848490683269161",
+                token="test-bot-token",
+                transport=httpx.MockTransport(_handler),
+            )
+        self.assertEqual(cats, {"111": "1# Cat"})
+
+        with self.assertRaises(ValueError):
+            discord_extractor.validate_snowflake("not-digits && calc", "channel_id")
+
+        with self.assertRaises(ValueError):
+            discord_extractor.validate_snowflake("../etc/passwd", "guild_id")
 
     def test_run_script_in_background_allowlist_and_secret_scrubbing(self):
         with patch.object(server.subprocess, "Popen") as mock_popen:
@@ -309,11 +317,8 @@ class TestHttpHardeningPhase4(unittest.TestCase):
                     created_at=datetime.now(timezone.utc),
                 )
             )
-            export = ExportModel(backup_id=TEST_BACKUP_ID, scope="base")
-            session.add(export)
-            session.flush()
             cat = ChannelModel(
-                export_pk=export.pk,
+                backup_id=TEST_BACKUP_ID,
                 discord_id="444555666777888999",
                 name="1# Cat",
                 type="GuildCategory",
@@ -323,7 +328,7 @@ class TestHttpHardeningPhase4(unittest.TestCase):
             session.add(cat)
             session.flush()
             ch = ChannelModel(
-                export_pk=export.pk,
+                backup_id=TEST_BACKUP_ID,
                 discord_id="555666777888999000",
                 name="general_chat",
                 type="GuildTextChat",

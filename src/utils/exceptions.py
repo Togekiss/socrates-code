@@ -17,6 +17,9 @@ def unwrap(exc: Exception):
 class BackupError(Exception):
     pass
 
+class InvalidBotTokenError(BackupError):
+    pass
+
 class ServerBackupClassError(BackupError):
     pass
 

@@ -292,7 +292,7 @@ def verify_files(backup: ServerBackup, folder_or_is_update=False, is_update: boo
         raise e
 
 
-from update_paths import normalize_event_categories
+from deprecated.update_paths import normalize_event_categories
 
 
 ################# Main function #################

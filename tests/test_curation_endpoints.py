@@ -25,6 +25,8 @@ from db.models import (
     FlaggedResolution,
     SceneIssueModel,
     SceneModel,
+    SeenDiscordUserModel,
+    WriterAliasModel,
     WriterModel,
 )
 # pyrefly: ignore [missing-import]
@@ -41,9 +43,11 @@ from server import (
     PromoteFlaggedMessageRequest,
     ResolveIssueRequest,
     UpdateWriterRequest,
+    accept_all_writer_link_suggestions,
     assign_character_writer,
     create_group,
     create_writer,
+    create_writers_from_discord_users,
     delete_group,
     delete_message_override,
     delete_writer,
@@ -54,6 +58,7 @@ from server import (
     get_my_writer,
     get_scene_issues,
     get_scenes,
+    get_seen_discord_users,
     get_unassigned_characters,
     get_writer_link_suggestions,
     get_writers_detailed,
@@ -177,6 +182,148 @@ class TestWritersCuration(unittest.TestCase):
                     WriterModel.backup_id == "1791895360",
                     WriterModel.display_name == target_name,
                 ).update({"discord_user_id": orig_discord_id})
+                session.commit()
+
+    def test_seen_discord_users_accept_all_and_create_writers(self):
+        backup_path = t.get_backup_path("1791895360")
+        synthetic_uids = [
+            "888000111222333001",
+            "888000111222333002",
+            "888000111222333003",
+            "888000111222333004",
+        ]
+        with db_session(backup_id="1791895360", backup_path=backup_path) as session:
+            initial_writer_links = {
+                w.pk: w.discord_user_id
+                for w in session.query(WriterModel).filter(WriterModel.backup_id == "1791895360").all()
+            }
+            target_tera = (
+                session.query(WriterModel)
+                .filter(
+                    WriterModel.backup_id == "1791895360",
+                    WriterModel.display_name == "Tera",
+                )
+                .first()
+            )
+            self.assertIsNotNone(target_tera)
+            target_tera.discord_user_id = None
+
+            sugg_writer = WriterModel(
+                backup_id="1791895360",
+                display_name="SynthSuggestedWriter",
+                discord_user_id=None,
+            )
+            already_linked_writer = WriterModel(
+                backup_id="1791895360",
+                display_name="SynthLinkedWriter",
+                discord_user_id=synthetic_uids[3],
+            )
+            session.add_all([sugg_writer, already_linked_writer])
+            session.flush()
+            session.add(WriterAliasModel(writer_pk=sugg_writer.pk, alias="SynthSuggestedWriter"))
+            session.add(WriterAliasModel(writer_pk=already_linked_writer.pk, alias="SynthLinkedWriter"))
+
+            session.add_all([
+                SeenDiscordUserModel(
+                    backup_id="1791895360",
+                    discord_user_id=synthetic_uids[0],
+                    username="synthsugguser",
+                    global_name="Synth Sugg Global",
+                    nickname="SynthSuggestedWriter",
+                    is_current_member=True,
+                    message_count=5,
+                ),
+                SeenDiscordUserModel(
+                    backup_id="1791895360",
+                    discord_user_id=synthetic_uids[1],
+                    username="brandnewuser",
+                    global_name="Brand New Global",
+                    nickname="Brand New Nick",
+                    is_current_member=True,
+                    message_count=3,
+                ),
+                SeenDiscordUserModel(
+                    backup_id="1791895360",
+                    discord_user_id=synthetic_uids[2],
+                    username="nullnickuser",
+                    global_name="Only Global Name",
+                    nickname=None,
+                    is_current_member=False,
+                    message_count=1,
+                ),
+                SeenDiscordUserModel(
+                    backup_id="1791895360",
+                    discord_user_id=synthetic_uids[3],
+                    username="alreadylinkeduser",
+                    global_name="Linked Global",
+                    nickname=None,
+                    is_current_member=True,
+                    message_count=2,
+                ),
+            ])
+            session.commit()
+
+        try:
+            # 1. Seen Discord users endpoint reports linked and unlinked users
+            seen_list = get_seen_discord_users("1791895360")
+            by_uid = {u["discord_user_id"]: u for u in seen_list}
+            self.assertIn(synthetic_uids[0], by_uid)
+            self.assertIn(synthetic_uids[1], by_uid)
+            self.assertIn(synthetic_uids[3], by_uid)
+            self.assertIsNone(by_uid[synthetic_uids[0]]["linked_writer_id"])
+            self.assertIsNone(by_uid[synthetic_uids[1]]["linked_writer_id"])
+            self.assertEqual(by_uid[synthetic_uids[3]]["linked_writer_name"], "SynthLinkedWriter")
+
+            # Verify suggestions include SynthSuggestedWriter -> synthetic_uids[0] and Tera
+            suggestions_before = get_writer_link_suggestions("1791895360")
+            sugg_writer_names = {s["display_name"] for s in suggestions_before}
+            self.assertIn("Tera", sugg_writer_names)
+            self.assertIn("SynthSuggestedWriter", sugg_writer_names)
+
+            # 2. Create writers from Discord users skips users with active suggestions & linked users
+            create_res = create_writers_from_discord_users("1791895360")
+            self.assertEqual(create_res["status"], "success")
+            created_by_uid = {w["discord_user_id"]: w for w in create_res["writers"]}
+            self.assertNotIn(synthetic_uids[0], created_by_uid)  # has active suggestion
+            self.assertNotIn(synthetic_uids[3], created_by_uid)  # already linked
+            self.assertIn(synthetic_uids[1], created_by_uid)
+            self.assertIn(synthetic_uids[2], created_by_uid)
+
+            w_new = created_by_uid[synthetic_uids[1]]
+            self.assertEqual(w_new["display_name"], "brandnewuser")
+            self.assertIn("brandnewuser", w_new["aliases"])
+            self.assertIn("Brand New Global", w_new["aliases"])
+            self.assertIn("Brand New Nick", w_new["aliases"])
+
+            w_null_nick = created_by_uid[synthetic_uids[2]]
+            self.assertEqual(w_null_nick["display_name"], "nullnickuser")
+            self.assertEqual(sorted(w_null_nick["aliases"]), ["Only Global Name", "nullnickuser"])
+
+            # 3. Accept all suggestions links remaining suggested writers in batch
+            accept_res = accept_all_writer_link_suggestions("1791895360")
+            self.assertEqual(accept_res["status"], "success")
+            self.assertGreaterEqual(accept_res["linked_count"], 2)
+            linked_names = {item["display_name"] for item in accept_res["linked"]}
+            self.assertIn("Tera", linked_names)
+            self.assertIn("SynthSuggestedWriter", linked_names)
+
+            suggestions_after = get_writer_link_suggestions("1791895360")
+            self.assertEqual(suggestions_after, [])
+
+            # Repeating create_writers_from_discord_users creates nothing once all seen users are covered
+            create_again = create_writers_from_discord_users("1791895360")
+            self.assertEqual(create_again["created_count"], 0)
+        finally:
+            with db_session(backup_id="1791895360", backup_path=backup_path) as session:
+                for w in session.query(WriterModel).filter(WriterModel.backup_id == "1791895360").all():
+                    if w.pk not in initial_writer_links:
+                        session.delete(w)
+                    else:
+                        w.discord_user_id = initial_writer_links[w.pk]
+                session.query(SeenDiscordUserModel).filter(
+                    SeenDiscordUserModel.backup_id == "1791895360",
+                    SeenDiscordUserModel.discord_user_id.in_(synthetic_uids),
+                ).delete(synchronize_session=False)
                 session.commit()
 
 
@@ -404,10 +551,20 @@ class TestSceneIssuesReviewQueue(unittest.TestCase):
         self.assertEqual(empty_res["status_counts"]["all"], 0)
 
     def test_resolve_and_reopen_issue_roundtrip(self):
-        issues_res = get_scene_issues("1791895360", status="unresolved", per_page=1)
-        self.assertGreater(len(issues_res["issues"]), 0)
-        target_issue = issues_res["issues"][0]
-        iid = target_issue["id"]
+        backup_path = t.get_backup_path("1791895360")
+        with db_session(backup_id="1791895360", backup_path=backup_path) as session:
+            target_row = (
+                session.query(SceneIssueModel)
+                .filter(
+                    SceneIssueModel.backup_id == "1791895360",
+                    SceneIssueModel.resolved_at.is_(None),
+                    SceneIssueModel.scene_pk.isnot(None),
+                    SceneIssueModel.next_scene_pk.isnot(None),
+                )
+                .first()
+            )
+            self.assertIsNotNone(target_row, "Expected at least one unresolved auto_split issue with both scene refs")
+            iid = target_row.pk
 
         # Resolve issue
         res_res = resolve_scene_issue(
@@ -1031,13 +1188,12 @@ class TestNewSceneIndexingAndSuggestions(unittest.TestCase):
                 sc2_after = session.query(SceneModel).filter_by(backup_id="1791895360", pk=sc2_pk).first()
                 iss_after = session.query(SceneIssueModel).filter_by(pk=iss_pk).first()
 
-                # Boundary shrunk forward: start index must have increased by at least 1
-                self.assertGreater(sc2_after.start_index, orig_s2_idx)
+                # Boundary shrunk forward via Snowflake ordering
+                self.assertGreater(int(sc2_after.start_message_id), int(orig_s2_mid))
                 self.assertNotEqual(sc2_after.start_message_id, orig_s2_mid)
 
                 # Issue anchor must have synchronized to new start without double-shift divergence
                 self.assertEqual(iss_after.candidate_message_id, sc2_after.start_message_id)
-                self.assertEqual(iss_after.candidate_index, sc2_after.start_index)
 
             # 2. Reopen flagged message
             curation_service.reopen_flagged_message("1791895360", backup_path, message_id=orig_s2_mid)
@@ -1048,10 +1204,8 @@ class TestNewSceneIndexingAndSuggestions(unittest.TestCase):
 
                 # Boundary and issue anchor restored!
                 self.assertEqual(sc2_restored.start_message_id, orig_s2_mid)
-                self.assertEqual(sc2_restored.start_index, orig_s2_idx)
                 self.assertEqual(sc2_restored.start_author_id, orig_s2_author)
                 self.assertEqual(iss_restored.candidate_message_id, orig_s2_mid)
-                self.assertEqual(iss_restored.candidate_index, orig_s2_idx)
 
         finally:
             with db_session(backup_id="1791895360", backup_path=backup_path) as session:
@@ -1088,24 +1242,31 @@ class TestNewSceneIndexingAndSuggestions(unittest.TestCase):
                     SceneModel.backup_id == "1791895360",
                     SceneModel.channel_pk == chatroom_chan.pk,
                     SceneModel.kind == SceneKind.SESSION.value,
-                    (SceneModel.end_index - SceneModel.start_index) > 10,
+                    SceneModel.message_count > 10,
                 )
                 .first()
             )
             self.assertIsNotNone(session_to_split)
             target_scene_pk = session_to_split.pk
-            orig_start_idx = session_to_split.start_index
-            orig_end_idx = session_to_split.end_index
+            orig_msg_count = session_to_split.message_count
             orig_start_mid = session_to_split.start_message_id
             orig_end_mid = session_to_split.end_message_id
 
-        # Read chatroom data to get a message ID in the middle
-        chatroom_file = Path(backup_path) / "Data" / "7# Group Chats" / "1# chatroom.json"
-        chatroom_data = t.load_from_json(chatroom_file.as_posix())
-        raw_msgs = chatroom_data.get("messages", [])
-        mid_idx = (orig_start_idx + orig_end_idx) // 2
-        split_msg = raw_msgs[mid_idx]
-        split_mid = str(split_msg["id"])
+        # Pick a middle message from skeletons.sqlite via Snowflake bounds
+        from db.session import skeleton_db_session
+        from db.skeleton_models import MessageSkeletonModel
+        with skeleton_db_session(backup_id="1791895360", backup_path=backup_path) as skel_sess:
+            range_skels = (
+                skel_sess.query(MessageSkeletonModel)
+                .filter(
+                    MessageSkeletonModel.channel_discord_id == int("858215486272962581"),
+                    MessageSkeletonModel.message_id >= int(orig_start_mid),
+                    MessageSkeletonModel.message_id <= int(orig_end_mid),
+                )
+                .order_by(MessageSkeletonModel.message_id.asc())
+                .all()
+            )
+            split_mid = str(range_skels[len(range_skels) // 2].message_id)
 
         link = f"https://discord.com/channels/{server_id}/858215486272962581/{split_mid}"
 
@@ -1122,14 +1283,14 @@ class TestNewSceneIndexingAndSuggestions(unittest.TestCase):
 
                 self.assertIsNotNone(s1)
                 self.assertIsNotNone(s2)
-                # Verify kind propagated
+                # Verify kind and Snowflake bounds propagated
                 self.assertEqual(s1.kind, SceneKind.SESSION.value)
                 self.assertEqual(s2.kind, SceneKind.SESSION.value)
-                self.assertEqual(s1.start_index, orig_start_idx)
-                self.assertEqual(s1.end_index, mid_idx - 1)
-                self.assertEqual(s2.start_index, mid_idx)
-                self.assertEqual(s2.end_index, orig_end_idx)
+                self.assertEqual(s1.start_message_id, orig_start_mid)
+                self.assertLess(int(s1.end_message_id), int(split_mid))
                 self.assertEqual(s2.start_message_id, split_mid)
+                self.assertEqual(s2.end_message_id, orig_end_mid)
+                self.assertEqual(s1.message_count + s2.message_count, orig_msg_count)
 
                 # Verify participants recomputed for both sessions
                 p1 = session.query(SceneParticipantModel).filter_by(scene_pk=s1.pk).all()
@@ -1150,10 +1311,9 @@ class TestNewSceneIndexingAndSuggestions(unittest.TestCase):
                 restored = session.query(SceneModel).filter_by(pk=target_scene_pk).first()
                 self.assertIsNotNone(restored)
                 self.assertEqual(restored.kind, SceneKind.SESSION.value)
-                self.assertEqual(restored.start_index, orig_start_idx)
-                self.assertEqual(restored.end_index, orig_end_idx)
                 self.assertEqual(restored.start_message_id, orig_start_mid)
                 self.assertEqual(restored.end_message_id, orig_end_mid)
+                self.assertEqual(restored.message_count, orig_msg_count)
 
         finally:
             # Clean up test DB
@@ -1527,7 +1687,7 @@ class TestEventsEngineAndCuration(unittest.TestCase):
                     SceneModel.backup_id == "1791895360",
                     SceneModel.kind == "event",
                     SceneModel.event_pk.isnot(None),
-                    (SceneModel.end_index - SceneModel.start_index) >= 2,
+                    SceneModel.message_count >= 2,
                 )
                 .first()
             )
@@ -1535,7 +1695,22 @@ class TestEventsEngineAndCuration(unittest.TestCase):
             orig_ev_pk = ev_scene.event_pk
             orig_ev = session.query(EventModel).filter_by(pk=orig_ev_pk).first()
             orig_key = orig_ev.event_key
-            split_idx = ev_scene.start_index + 1
+
+            from db.session import skeleton_db_session
+            from db.skeleton_models import MessageSkeletonModel
+            with skeleton_db_session(backup_id="1791895360", backup_path=base_path) as skel_sess:
+                skels = (
+                    skel_sess.query(MessageSkeletonModel)
+                    .filter(
+                        MessageSkeletonModel.channel_discord_id == int(ev_scene.channel.discord_id),
+                        MessageSkeletonModel.message_id >= int(ev_scene.start_message_id),
+                        MessageSkeletonModel.message_id <= int(ev_scene.end_message_id),
+                    )
+                    .order_by(MessageSkeletonModel.message_id.asc())
+                    .all()
+                )
+                self.assertGreaterEqual(len(skels), 2)
+                split_mid = str(skels[1].message_id)
 
             # 1. Split scene: scene2 should be assigned to a NEW event (preserving 1 scene per channel)
             s1, s2 = _split_scene_at(
@@ -1543,7 +1718,7 @@ class TestEventsEngineAndCuration(unittest.TestCase):
                 "1791895360",
                 base_path,
                 ev_scene,
-                candidate_index=split_idx,
+                candidate_message_id=split_mid,
             )
 
             self.assertEqual(s1.event_pk, orig_ev_pk)
@@ -1585,13 +1760,9 @@ class TestEventsEngineAndCuration(unittest.TestCase):
         base_path = (DATA_ROOT / "Backups" / "Elysium-sql-tests").as_posix()
 
         with db_session(backup_id="1791895360", backup_path=base_path) as session:
-            from db.models import ExportModel
-            export = session.query(ExportModel).filter_by(backup_id="1791895360").first()
-            export_pk = export.pk if export else None
-
             # Create a dedicated test channel so existing channels do not collide
             channel = ChannelModel(
-                export_pk=export_pk,
+                backup_id="1791895360",
                 discord_id="999888777",
                 name="test-event-channel",
                 type="GuildTextChat",
@@ -1684,8 +1855,8 @@ class TestEventsEngineAndCuration(unittest.TestCase):
 
             surviving_scenes = session.query(SceneModel).filter_by(event_pk=ev1.pk).all()
             self.assertEqual(len(surviving_scenes), 1)
-            self.assertEqual(surviving_scenes[0].start_index, 0)
-            self.assertEqual(surviving_scenes[0].end_index, 8)
+            self.assertEqual(surviving_scenes[0].start_message_id, "1000")
+            self.assertEqual(surviving_scenes[0].end_message_id, "1005")
 
             iss = session.query(SceneIssueModel).filter_by(candidate_message_id="1004").first()
             self.assertIsNotNone(iss)
@@ -1770,8 +1941,8 @@ class TestSceneCustomNameCuration(unittest.TestCase):
             session.commit()
             s_key = scene.scene_key
 
-        # 1. Fetch sessions
-        res = get_sessions("1791895360")
+        # 1. Fetch sessions (use per_page=500 so all seeded sessions + converted scene appear)
+        res = get_sessions("1791895360", per_page=500)
         sessions = res.get("sessions", [])
         self.assertTrue(len(sessions) > 0, "Expected at least one session in test backup")
 
@@ -1786,7 +1957,7 @@ class TestSceneCustomNameCuration(unittest.TestCase):
         self.assertEqual(put_res["custom_name"], "Late Night Banter")
 
         # 3. Verify via get_sessions
-        verify_res = get_sessions("1791895360")
+        verify_res = get_sessions("1791895360", per_page=500)
         matched = [s for s in verify_res["sessions"] if s["scene_key"] == s_key]
         self.assertEqual(len(matched), 1)
         self.assertEqual(matched[0]["custom_name"], "Late Night Banter")
@@ -1846,8 +2017,9 @@ class TestSceneCustomNameCuration(unittest.TestCase):
             session.commit()
 
         sess_desc = get_sessions("1791895360", sort="desc")["sessions"]
-        self.assertEqual(len(sess_desc), 2)
-        self.assertGreaterEqual(sess_desc[0]["start"]["timestamp"], sess_desc[-1]["start"]["timestamp"])
+        self.assertGreaterEqual(len(sess_desc), 2)
+        for i in range(len(sess_desc) - 1):
+            self.assertGreaterEqual(sess_desc[i]["start"]["timestamp"], sess_desc[i + 1]["start"]["timestamp"])
 
     def test_scene_custom_name_preserved_across_reindexing(self):
         from server import get_backup_path
@@ -1939,11 +2111,16 @@ class TestSceneMergeAdjacentCuration(unittest.TestCase):
         base_path = t.get_backup_path("1791895360")
         with db_session(backup_id="1791895360", backup_path=base_path) as session:
             sc1 = session.query(SceneModel).filter_by(backup_id="1791895360", scene_key="14-1-1").first()
-            sc4 = session.query(SceneModel).filter_by(backup_id="1791895360", scene_key="14-1-4").first()
+            last_barside = (
+                session.query(SceneModel)
+                .filter(SceneModel.backup_id == "1791895360", SceneModel.channel_pk == sc1.channel_pk)
+                .order_by(SceneModel.start_index.desc())
+                .first()
+            )
             sc1_id = str(sc1.pk)
-            sc4_id = str(sc4.pk)
+            sc_last_id = str(last_barside.pk)
 
-        # Scene 1 is first in channel 2
+        # Scene 1 is first in channel
         res1 = get_scene_merge_neighbors("1791895360", sc1_id)
         self.assertEqual(res1["status"], "success")
         self.assertFalse(res1["prev"]["exists"])
@@ -1952,14 +2129,14 @@ class TestSceneMergeAdjacentCuration(unittest.TestCase):
         self.assertTrue(res1["next"]["exists"])
         self.assertTrue(res1["next"]["can_merge"])
 
-        # Scene 4 is last in channel 2
-        res4 = get_scene_merge_neighbors("1791895360", sc4_id)
-        self.assertEqual(res4["status"], "success")
-        self.assertTrue(res4["prev"]["exists"])
-        self.assertTrue(res4["prev"]["can_merge"])
-        self.assertFalse(res4["next"]["exists"])
-        self.assertFalse(res4["next"]["can_merge"])
-        self.assertEqual(res4["next"]["disabled_reason"], "Last scene in channel")
+        # Last scene in channel
+        res_last = get_scene_merge_neighbors("1791895360", sc_last_id)
+        self.assertEqual(res_last["status"], "success")
+        self.assertTrue(res_last["prev"]["exists"])
+        self.assertTrue(res_last["prev"]["can_merge"])
+        self.assertFalse(res_last["next"]["exists"])
+        self.assertFalse(res_last["next"]["can_merge"])
+        self.assertEqual(res_last["next"]["disabled_reason"], "Last scene in channel")
 
         # Merging first scene with 'prev' must fail
         from fastapi import HTTPException
@@ -1969,15 +2146,25 @@ class TestSceneMergeAdjacentCuration(unittest.TestCase):
 
         # Merging last scene with 'next' must fail
         with self.assertRaises(HTTPException) as ctx_next:
-            merge_scene("1791895360", sc4_id, MergeSceneRequest(direction="next"))
+            merge_scene("1791895360", sc_last_id, MergeSceneRequest(direction="next"))
         self.assertEqual(ctx_next.exception.status_code, 400)
 
     def test_merge_adjacent_resolves_existing_issue(self):
         base_path = t.get_backup_path("1791895360")
         with db_session(backup_id="1791895360", backup_path=base_path) as session:
             sc1 = session.query(SceneModel).filter_by(backup_id="1791895360", scene_key="14-1-1").first()
+            sc2 = session.query(SceneModel).filter_by(backup_id="1791895360", scene_key="14-1-2").first()
             sc1_id = str(sc1.pk)
-            iss = session.query(SceneIssueModel).filter_by(backup_id="1791895360").first()
+            iss = (
+                session.query(SceneIssueModel)
+                .filter(
+                    SceneIssueModel.backup_id == "1791895360",
+                    SceneIssueModel.scene_pk == sc1.pk,
+                    SceneIssueModel.next_scene_pk == sc2.pk,
+                )
+                .first()
+            )
+            self.assertIsNotNone(iss)
             iss_pk = iss.pk
 
         # Scene 1 and Scene 2 are separated by existing auto_split issue
@@ -1998,6 +2185,13 @@ class TestSceneMergeAdjacentCuration(unittest.TestCase):
         with db_session(backup_id="1791895360", backup_path=base_path) as session:
             sc2 = session.query(SceneModel).filter_by(backup_id="1791895360", scene_key="14-1-2").first()
             sc3 = session.query(SceneModel).filter_by(backup_id="1791895360", scene_key="14-1-3").first()
+            # Clear any auto-detected issue between sc2 and sc3 to test the no-issue manual merge path
+            session.query(SceneIssueModel).filter(
+                SceneIssueModel.backup_id == "1791895360",
+                SceneIssueModel.scene_pk == sc2.pk,
+                SceneIssueModel.next_scene_pk == sc3.pk,
+            ).delete(synchronize_session=False)
+            session.commit()
             sc2_id = str(sc2.pk)
             sc3_start_mid = str(sc3.start_message_id)
 
@@ -2054,8 +2248,18 @@ class TestSceneMergeAdjacentCuration(unittest.TestCase):
         base_path = t.get_backup_path("1791895360")
         with db_session(backup_id="1791895360", backup_path=base_path) as session:
             sc1 = session.query(SceneModel).filter_by(backup_id="1791895360", scene_key="14-1-1").first()
+            sc2 = session.query(SceneModel).filter_by(backup_id="1791895360", scene_key="14-1-2").first()
             sc1_id = str(sc1.pk)
-            iss = session.query(SceneIssueModel).filter_by(backup_id="1791895360").first()
+            iss = (
+                session.query(SceneIssueModel)
+                .filter(
+                    SceneIssueModel.backup_id == "1791895360",
+                    SceneIssueModel.scene_pk == sc1.pk,
+                    SceneIssueModel.next_scene_pk == sc2.pk,
+                )
+                .first()
+            )
+            self.assertIsNotNone(iss)
             iss.reason = "manual"
             iss.resolution = "split"
             iss_pk = iss.pk
@@ -2078,6 +2282,610 @@ class TestSceneMergeAdjacentCuration(unittest.TestCase):
         with db_session(backup_id="1791895360", backup_path=base_path) as session:
             merged_iss = session.query(SceneIssueModel).filter_by(pk=iss_pk).first()
             self.assertEqual(merged_iss.resolution, "merged")
+
+
+@skip_in_production_or_missing_fixture()
+class TestBackuplessCurationWorkflows(unittest.TestCase):
+    """
+    Pure Backupless Curation tests with ZERO .json files in Data/.
+    Verifies Snowflake-ordered splits, manual splits, overrides, ignores, reopens,
+    kept 0-skeleton-read fast path, event merges, excerpt truncation, and SeenDiscordUser links.
+    """
+
+    TEST_BACKUP_ID = "1791895360"
+
+    def tearDown(self):
+        SceneManager.clear_cache()
+        close_all_engines()
+
+    def _create_backupless_tmp_backup(self, tmpdir: str) -> Path:
+        import shutil
+        from tests.seed_test_backup import seed_test_backup
+
+        clean_dir = DATA_ROOT / "Backups" / "Elysium-sql-tests-clean"
+        tmp_backup = Path(tmpdir) / "Elysium-backupless"
+        shutil.copytree(clean_dir, tmp_backup)
+
+        seed_test_backup(
+            backup_id=self.TEST_BACKUP_ID,
+            backup_path=str(tmp_backup),
+            storage_mode="backupless",
+            include_scenes=True,
+            include_skeletons=True,
+        )
+        close_all_engines()
+
+        # Remove Data/ completely so zero channel JSON files exist on disk
+        data_dir = tmp_backup / "Data"
+        if data_dir.exists():
+            shutil.rmtree(data_dir)
+        self.assertEqual(list(tmp_backup.glob("Data/**/*.json")), [])
+        return tmp_backup
+
+    def test_backupless_split_manual_split_override_ignore_reopen_kept_and_event_merge(self):
+        import tempfile
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                tmp_backup = self._create_backupless_tmp_backup(tmpdir)
+                with patch.dict(os.environ, {"DISCORD_TOKEN": ""}, clear=False):
+                    self._run_backupless_checks(str(tmp_backup))
+            finally:
+                SceneManager.clear_cache()
+                close_all_engines()
+
+    def _run_backupless_checks(self, base_path: str):
+        from datetime import datetime, timezone
+        from unittest.mock import patch
+        from db import curation_service, event_service
+        from db.models import BackupModel, ChannelModel, EventModel, SceneKind, SceneParticipantModel, SeenDiscordUserModel
+        from db.session import skeleton_db_session
+        from db.skeleton_models import MessageSkeletonModel
+        from find_writer_links import find_writer_link_suggestions
+        from utils.tricks import format_excerpt
+
+        # Verify storage_mode == "backupless" and Data/ has 0 JSONs
+        with db_session(backup_id=self.TEST_BACKUP_ID, backup_path=base_path) as session:
+            backup = session.query(BackupModel).filter_by(backup_id=self.TEST_BACKUP_ID).first()
+            self.assertEqual(backup.storage_mode, "backupless")
+            server_id = str(backup.server_id or self.TEST_BACKUP_ID)
+
+            # 1. Pick an RP scene with >= 4 messages for _split_scene_at + _merge_scenes
+            rp_scene = (
+                session.query(SceneModel)
+                .filter(
+                    SceneModel.backup_id == self.TEST_BACKUP_ID,
+                    SceneModel.kind == SceneKind.SCENE.value,
+                    SceneModel.message_count >= 4,
+                )
+                .first()
+            )
+            self.assertIsNotNone(rp_scene)
+            orig_count = rp_scene.message_count
+            orig_end = rp_scene.end_message_id
+
+            with skeleton_db_session(backup_id=self.TEST_BACKUP_ID, backup_path=base_path) as skel_sess:
+                skels = (
+                    skel_sess.query(MessageSkeletonModel)
+                    .filter(
+                        MessageSkeletonModel.channel_discord_id == int(rp_scene.channel.discord_id),
+                        MessageSkeletonModel.message_id >= int(rp_scene.start_message_id),
+                        MessageSkeletonModel.message_id <= int(rp_scene.end_message_id),
+                    )
+                    .order_by(MessageSkeletonModel.message_id.asc())
+                    .all()
+                )
+                self.assertGreaterEqual(len(skels), 4)
+                split_mid = str(skels[2].message_id)
+                manual_mid = str(skels[1].message_id)
+
+            s1, s2 = curation_service._split_scene_at(
+                session, self.TEST_BACKUP_ID, base_path, rp_scene, candidate_message_id=split_mid
+            )
+            self.assertEqual(s1.message_count + s2.message_count, orig_count)
+            self.assertEqual(s2.start_message_id, split_mid)
+
+            merged = curation_service._merge_scenes(session, self.TEST_BACKUP_ID, base_path, s1, s2)
+            self.assertEqual(merged.message_count, orig_count)
+            self.assertEqual(merged.end_message_id, orig_end)
+            rp_chan_discord = str(merged.channel.discord_id)
+            rp_chan_pk = merged.channel_pk
+            rp_scene_start_mid = str(merged.start_message_id)
+            rp_scene_pk = merged.pk
+            session.commit()
+
+        # 2. Manual split via Discord link with 0 JSON files
+        link = f"https://discord.com/channels/{server_id}/{rp_chan_discord}/{manual_mid}"
+        manual_res = curation_service.create_manual_scene_split(
+            self.TEST_BACKUP_ID, base_path, discord_link=link, note="Backupless split"
+        )
+        self.assertEqual(manual_res["action"], "split")
+        manual_issue_id = manual_res["issue_id"]
+        with db_session(backup_id=self.TEST_BACKUP_ID, backup_path=base_path) as session:
+            ms1 = session.query(SceneModel).filter_by(pk=manual_res["scene_pk"]).first()
+            ms2 = session.query(SceneModel).filter_by(pk=manual_res["next_scene_pk"]).first()
+            miss = session.query(SceneIssueModel).filter_by(pk=manual_issue_id).first()
+            self.assertEqual(ms1.message_count + ms2.message_count, orig_count)
+            self.assertIsNone(miss.candidate_index)
+            self.assertEqual(miss.candidate_message_id, manual_mid)
+
+        curation_service.reopen_scene_issue(self.TEST_BACKUP_ID, base_path, manual_issue_id)
+
+        # 3. Override resolution (with content & with override_content=None) + skeleton immutability
+        long_text = "x" * 300
+        truncated_excerpt = format_excerpt(long_text)
+        self.assertIn("[...]", truncated_excerpt)
+        self.assertEqual(len(truncated_excerpt), 247)
+
+        with skeleton_db_session(backup_id=self.TEST_BACKUP_ID, backup_path=base_path) as skel_sess:
+            target_skel = (
+                skel_sess.query(MessageSkeletonModel)
+                .filter(
+                    MessageSkeletonModel.channel_discord_id == int(rp_chan_discord),
+                    MessageSkeletonModel.message_id == int(manual_mid),
+                )
+                .first()
+            )
+            boundary_skel = (
+                skel_sess.query(MessageSkeletonModel)
+                .filter(
+                    MessageSkeletonModel.channel_discord_id == int(rp_chan_discord),
+                    MessageSkeletonModel.message_id == int(rp_scene_start_mid),
+                )
+                .first()
+            )
+            orig_target_snapshot = (target_skel.author_id, target_skel.timestamp_unix, target_skel.flags)
+            orig_boundary_snapshot = (boundary_skel.author_id, boundary_skel.timestamp_unix, boundary_skel.flags)
+
+        with db_session(backup_id=self.TEST_BACKUP_ID, backup_path=base_path) as session:
+            session.query(FlaggedMessageModel).filter(
+                FlaggedMessageModel.backup_id == self.TEST_BACKUP_ID,
+                FlaggedMessageModel.message_id.in_([manual_mid, rp_scene_start_mid]),
+            ).delete(synchronize_session=False)
+            session.add_all([
+                FlaggedMessageModel(
+                    backup_id=self.TEST_BACKUP_ID,
+                    message_id=manual_mid,
+                    channel_pk=rp_chan_pk,
+                    kind=FlaggedKind.OOC_MESSAGE.value,
+                    content=truncated_excerpt,
+                    is_excerpt_truncated=(len(long_text) > 250),
+                    author={"id": "555", "name": "Tester"},
+                    flagged_at=datetime.now(timezone.utc),
+                ),
+                FlaggedMessageModel(
+                    backup_id=self.TEST_BACKUP_ID,
+                    message_id=rp_scene_start_mid,
+                    channel_pk=rp_chan_pk,
+                    kind=FlaggedKind.OOC_BOUNDARY.value,
+                    content="Boundary line",
+                    is_excerpt_truncated=False,
+                    author={"id": "555", "name": "Tester"},
+                    flagged_at=datetime.now(timezone.utc),
+                ),
+            ])
+            session.commit()
+
+        # 3a. Resolve override with new content -> sets override_flags
+        curation_service.resolve_flagged_message(
+            self.TEST_BACKUP_ID,
+            base_path,
+            message_id=manual_mid,
+            resolution=FlaggedResolution.OVERRIDE.value,
+            override_content="OOC chatter [ooc]",
+            override_author={"id": "42", "name": "Tester"},
+        )
+        with db_session(backup_id=self.TEST_BACKUP_ID, backup_path=base_path) as session:
+            fm_ov = session.query(FlaggedMessageModel).filter_by(
+                backup_id=self.TEST_BACKUP_ID, message_id=manual_mid
+            ).first()
+            self.assertEqual(fm_ov.resolution, FlaggedResolution.OVERRIDE.value)
+            self.assertIsNotNone(fm_ov.override_flags)
+            self.assertTrue(fm_ov.is_excerpt_truncated)
+
+        # 3b. Resolve override with override_content=None -> author-only override, override_flags stays None
+        curation_service.reopen_flagged_message(self.TEST_BACKUP_ID, base_path, message_id=manual_mid)
+        curation_service.resolve_flagged_message(
+            self.TEST_BACKUP_ID,
+            base_path,
+            message_id=manual_mid,
+            resolution=FlaggedResolution.OVERRIDE.value,
+            override_content=None,
+            override_author={"id": "42", "name": "Tester"},
+        )
+        with db_session(backup_id=self.TEST_BACKUP_ID, backup_path=base_path) as session:
+            fm_auth = session.query(FlaggedMessageModel).filter_by(
+                backup_id=self.TEST_BACKUP_ID, message_id=manual_mid
+            ).first()
+            self.assertIsNone(fm_auth.override_content)
+            self.assertIsNone(fm_auth.override_flags)
+            self.assertEqual((fm_auth.override_author or {}).get("id"), "42")
+
+        # 4. Resolve "kept" -> MUST do 0 skeleton reads
+        with patch("db.session.get_skeleton_engine", side_effect=AssertionError("kept must not read skeletons.sqlite")), \
+             patch("db.session.skeleton_db_session", side_effect=AssertionError("kept must not open skeleton session")):
+            curation_service.resolve_flagged_message(
+                self.TEST_BACKUP_ID,
+                base_path,
+                message_id=manual_mid,
+                resolution=FlaggedResolution.KEPT.value,
+            )
+
+        # 5. Resolve "ignored" on boundary -> shrinks scene via Snowflakes, then reopen restores it
+        curation_service.resolve_flagged_message(
+            self.TEST_BACKUP_ID,
+            base_path,
+            message_id=rp_scene_start_mid,
+            resolution=FlaggedResolution.IGNORED.value,
+        )
+        with db_session(backup_id=self.TEST_BACKUP_ID, backup_path=base_path) as session:
+            shrunk = session.query(SceneModel).filter_by(pk=rp_scene_pk).first()
+            self.assertGreater(int(shrunk.start_message_id), int(rp_scene_start_mid))
+            self.assertEqual(shrunk.message_count, orig_count - 1)
+
+        curation_service.reopen_flagged_message(self.TEST_BACKUP_ID, base_path, message_id=rp_scene_start_mid)
+        with db_session(backup_id=self.TEST_BACKUP_ID, backup_path=base_path) as session:
+            restored_sc = session.query(SceneModel).filter_by(pk=rp_scene_pk).first()
+            self.assertEqual(restored_sc.start_message_id, rp_scene_start_mid)
+            self.assertEqual(restored_sc.message_count, orig_count)
+
+        # Assert message_skeletons rows remained strictly immutable across all curation ops!
+        with skeleton_db_session(backup_id=self.TEST_BACKUP_ID, backup_path=base_path) as skel_sess:
+            target_after = (
+                skel_sess.query(MessageSkeletonModel)
+                .filter(
+                    MessageSkeletonModel.channel_discord_id == int(rp_chan_discord),
+                    MessageSkeletonModel.message_id == int(manual_mid),
+                )
+                .first()
+            )
+            boundary_after = (
+                skel_sess.query(MessageSkeletonModel)
+                .filter(
+                    MessageSkeletonModel.channel_discord_id == int(rp_chan_discord),
+                    MessageSkeletonModel.message_id == int(rp_scene_start_mid),
+                )
+                .first()
+            )
+            self.assertEqual((target_after.author_id, target_after.timestamp_unix, target_after.flags), orig_target_snapshot)
+            self.assertEqual((boundary_after.author_id, boundary_after.timestamp_unix, boundary_after.flags), orig_boundary_snapshot)
+
+        # 6. Event merge in pure backupless mode
+        with db_session(backup_id=self.TEST_BACKUP_ID, backup_path=base_path) as session:
+            ev_chan = ChannelModel(
+                backup_id=self.TEST_BACKUP_ID,
+                discord_id="888777666",
+                name="backupless-ev-chan",
+                type="GuildTextChat",
+                position=888,
+                path="6# Events/888# backupless-ev-chan.json",
+            )
+            session.add(ev_chan)
+            session.flush()
+            ev_a = EventModel(
+                backup_id=self.TEST_BACKUP_ID,
+                event_key="ev-bl-1",
+                start_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+            )
+            ev_b = EventModel(
+                backup_id=self.TEST_BACKUP_ID,
+                event_key="ev-bl-2",
+                start_at=datetime(2024, 1, 3, tzinfo=timezone.utc),
+                end_at=datetime(2024, 1, 4, tzinfo=timezone.utc),
+            )
+            session.add_all([ev_a, ev_b])
+            session.flush()
+            esc1 = SceneModel(
+                backup_id=self.TEST_BACKUP_ID,
+                scene_key="ev-bl-1-1",
+                channel_pk=ev_chan.pk,
+                category_pk=ev_chan.pk,
+                event_pk=ev_a.pk,
+                kind=SceneKind.EVENT.value,
+                status="closed",
+                start_message_id="2000",
+                end_message_id="2001",
+                message_count=2,
+                start_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                end_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+                start_author_id="1",
+                end_author_id="1",
+            )
+            esc2 = SceneModel(
+                backup_id=self.TEST_BACKUP_ID,
+                scene_key="ev-bl-2-1",
+                channel_pk=ev_chan.pk,
+                category_pk=ev_chan.pk,
+                event_pk=ev_b.pk,
+                kind=SceneKind.EVENT.value,
+                status="closed",
+                start_message_id="2002",
+                end_message_id="2003",
+                message_count=2,
+                start_at=datetime(2024, 1, 3, tzinfo=timezone.utc),
+                end_at=datetime(2024, 1, 4, tzinfo=timezone.utc),
+                start_author_id="1",
+                end_author_id="1",
+            )
+            session.add_all([esc1, esc2])
+            session.flush()
+
+            merge_ev_res = event_service._merge_events_in_session(
+                session, self.TEST_BACKUP_ID, [ev_a.pk, ev_b.pk], base_path=base_path
+            )
+            self.assertEqual(merge_ev_res["status"], "success")
+            merged_ev_scene = session.query(SceneModel).filter_by(event_pk=ev_a.pk).one()
+            self.assertEqual(merged_ev_scene.start_message_id, "2000")
+            self.assertEqual(merged_ev_scene.end_message_id, "2003")
+
+            # 7. SeenDiscordUserModel drives writer link suggestions with 0 JSON files
+            seen_count = session.query(SeenDiscordUserModel).filter_by(backup_id=self.TEST_BACKUP_ID).count()
+            self.assertGreater(seen_count, 0)
+            suggestions = find_writer_link_suggestions(self.TEST_BACKUP_ID, base_path)
+            self.assertIsInstance(suggestions, list)
+            if suggestions:
+                self.assertIn("is_current_member", suggestions[0])
+                self.assertIn("message_count", suggestions[0])
+
+
+@skip_in_production_or_missing_fixture()
+class TestPhase3HydrationAndNonBlockingLocks(unittest.TestCase):
+    """Tests Phase 3 full-content hydration API, TTL cache, RBAC/audit, and check_not_syncing locks."""
+
+    TEST_BACKUP_ID = "1791895360"
+
+    def setUp(self):
+        reset_test_backup()
+        close_all_engines()
+        SceneManager.clear_cache()
+        from tests.seed_test_backup import seed_test_backup
+        seed_test_backup(self.TEST_BACKUP_ID)
+        import server as server_mod
+        server_mod._FULL_CONTENT_CACHE.clear()
+
+    def tearDown(self):
+        SceneManager.clear_cache()
+        close_all_engines()
+        reset_test_backup()
+
+    def test_full_content_hydration_full_and_backupless_modes(self):
+        import json
+        import shutil
+        from datetime import datetime, timezone
+        from fastapi import HTTPException
+        from unittest.mock import patch
+        import server as server_mod
+        from db.models import BackupModel, ChannelModel
+        from db.skeleton_models import MessageSkeletonModel, SkeletonFlags
+        from db.session import skeleton_db_session
+        from db.audit_models import AuditLog
+        from db.session import audit_db_session
+        from tests.test_security_phase1 import INSTANCE_ADMIN_DISCORD_ID, STRONG_TEST_SECRET, _make_jwt, _make_test_client
+
+        base_path = t.get_backup_path(self.TEST_BACKUP_ID)
+        with db_session(backup_id=self.TEST_BACKUP_ID, backup_path=base_path) as session:
+            ch = session.query(ChannelModel).filter(
+                ChannelModel.backup_id == self.TEST_BACKUP_ID,
+                ChannelModel.type != "GuildCategory",
+            ).first()
+            self.assertIsNotNone(ch)
+            ch_pk = ch.pk
+            ch_discord_id = str(ch.discord_id)
+            ch_rel_path = str(ch.path)
+
+            fm = FlaggedMessageModel(
+                backup_id=self.TEST_BACKUP_ID,
+                channel_pk=ch_pk,
+                message_id="900000000000000123",
+                kind=FlaggedKind.FAILED_TUPPER.value,
+                content="Head excerpt\n[...]\nTail excerpt",
+                is_excerpt_truncated=True,
+                author={"id": "777", "name": "HumanUser"},
+                flagged_at=datetime.now(timezone.utc),
+            )
+            session.add(fm)
+            session.flush()
+            fm_pk = fm.pk
+            session.commit()
+
+        # Ensure skeleton row exists for 404 IS_DELETED test
+        with skeleton_db_session(backup_id=self.TEST_BACKUP_ID, backup_path=base_path) as skel_sess:
+            skel_sess.add(
+                MessageSkeletonModel(
+                    channel_discord_id=int(ch_discord_id),
+                    message_id=900000000000000123,
+                    author_id=777,
+                    timestamp_unix=1700000000,
+                    flags=int(SkeletonFlags.IS_DEFAULT),
+                )
+            )
+            skel_sess.commit()
+
+        # 1. Full mode: write/update local JSON and verify offline hydration
+        json_file = Path(base_path) / "Data" / ch_rel_path
+        json_file.parent.mkdir(parents=True, exist_ok=True)
+        json_file.write_text(
+            json.dumps(
+                {
+                    "channel": {"id": ch_discord_id, "name": "test"},
+                    "messages": [
+                        {
+                            "id": "900000000000000123",
+                            "content": "Full untruncated message content from local JSON",
+                            "is_deleted": False,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        with db_session(backup_id=self.TEST_BACKUP_ID, backup_path=base_path) as session:
+            b = session.query(BackupModel).filter_by(backup_id=self.TEST_BACKUP_ID).one()
+            b.storage_mode = "full"
+            session.commit()
+
+        res_full_by_pk = server_mod.get_flagged_message_full_content(self.TEST_BACKUP_ID, str(fm_pk))
+        self.assertTrue(res_full_by_pk["hydrated"])
+        self.assertFalse(res_full_by_pk["is_truncated"])
+        self.assertEqual(res_full_by_pk["source"], "local_json")
+        self.assertEqual(res_full_by_pk["content"], "Full untruncated message content from local JSON")
+
+        # Verify audit entry was emitted
+        with audit_db_session(backup_dir=base_path) as a_sess:
+            aud = a_sess.query(AuditLog).filter(AuditLog.action == "flagged_message.hydrate").all()
+            self.assertGreaterEqual(len(aud), 1)
+
+        # 2. Switch to backupless mode and remove Data/ JSONs
+        data_dir = Path(base_path) / "Data"
+        if data_dir.exists():
+            shutil.rmtree(data_dir)
+        with db_session(backup_id=self.TEST_BACKUP_ID, backup_path=base_path) as session:
+            b = session.query(BackupModel).filter_by(backup_id=self.TEST_BACKUP_ID).one()
+            b.storage_mode = "backupless"
+            session.commit()
+
+        # 2a. Missing DISCORD_TOKEN -> excerpt_fallback
+        with patch.dict(os.environ, {"DISCORD_TOKEN": ""}, clear=False):
+            res_no_tok = server_mod.get_flagged_message_full_content(self.TEST_BACKUP_ID, "900000000000000123")
+            self.assertFalse(res_no_tok["hydrated"])
+            self.assertTrue(res_no_tok["is_truncated"])
+            self.assertEqual(res_no_tok["source"], "excerpt_fallback")
+            self.assertEqual(res_no_tok["content"], "Head excerpt\n[...]\nTail excerpt")
+
+        # 2b. With DISCORD_TOKEN -> Discord fetch + 5-min TTL cache hit on 2nd call
+        fetch_calls = []
+
+        def _fake_fetch(b_id, b_path, cid, mid, tok):
+            fetch_calls.append((b_id, cid, mid))
+            return {"id": mid, "content": "Hydrated full text from Discord REST API"}
+
+        with patch.dict(os.environ, {"DISCORD_TOKEN": "bot-secret-token"}, clear=False), patch.object(
+            server_mod, "_fetch_flagged_message_from_discord", side_effect=_fake_fetch
+        ):
+            res_api_1 = server_mod.get_flagged_message_full_content(self.TEST_BACKUP_ID, "900000000000000123")
+            res_api_2 = server_mod.get_flagged_message_full_content(self.TEST_BACKUP_ID, str(fm_pk))
+
+        self.assertEqual(len(fetch_calls), 1, "Second hydration call must be served from 5-min TTL cache")
+        self.assertTrue(res_api_1["hydrated"])
+        self.assertEqual(res_api_1["source"], "discord_api")
+        self.assertEqual(res_api_1["content"], "Hydrated full text from Discord REST API")
+        self.assertEqual(res_api_2["content"], "Hydrated full text from Discord REST API")
+
+        # 2c. Discord 404 -> marks IS_DELETED in skeletons.sqlite and returns deleted_fallback
+        server_mod._FULL_CONTENT_CACHE.clear()
+
+        def _fake_404(b_id, b_path, cid, mid, tok):
+            with skeleton_db_session(backup_id=b_id, backup_path=b_path) as sk_s:
+                row = sk_s.query(MessageSkeletonModel).filter_by(
+                    channel_discord_id=int(cid), message_id=int(mid)
+                ).one()
+                row.flags = int(row.flags or 0) | int(SkeletonFlags.IS_DELETED)
+            return None
+
+        with patch.dict(os.environ, {"DISCORD_TOKEN": "bot-secret-token"}, clear=False), patch.object(
+            server_mod, "_fetch_flagged_message_from_discord", side_effect=_fake_404
+        ):
+            res_404 = server_mod.get_flagged_message_full_content(self.TEST_BACKUP_ID, "900000000000000123")
+
+        self.assertFalse(res_404["hydrated"])
+        self.assertTrue(res_404["is_deleted"])
+        self.assertEqual(res_404["source"], "deleted_fallback")
+
+        # Subsequent call sees IS_DELETED in skeletons.sqlite without calling Discord
+        with patch.dict(os.environ, {"DISCORD_TOKEN": "bot-secret-token"}, clear=False), patch.object(
+            server_mod, "_fetch_flagged_message_from_discord", side_effect=AssertionError("Must not re-fetch deleted message")
+        ):
+            res_404_cached = server_mod.get_flagged_message_full_content(self.TEST_BACKUP_ID, "900000000000000123")
+        self.assertEqual(res_404_cached["source"], "deleted_fallback")
+        self.assertTrue(res_404_cached["is_deleted"])
+
+        # 2d. Missing flagged message -> 404
+        with self.assertRaises(HTTPException) as ctx_404:
+            server_mod.get_flagged_message_full_content(self.TEST_BACKUP_ID, "999999999999999999")
+        self.assertEqual(ctx_404.exception.status_code, 404)
+
+        # 2e. RBAC check via HTTP TestClient: viewer denied (403), instance_admin allowed (200)
+        viewer_tok = _make_jwt({"sub": "888888888888888888", "username": "viewer", "auth_method": "discord", "authorized_guilds": []})
+        admin_tok = _make_jwt({"sub": INSTANCE_ADMIN_DISCORD_ID, "username": "admin", "auth_method": "discord", "authorized_guilds": []})
+        with patch.dict(
+            os.environ,
+            {
+                "JWT_SECRET": STRONG_TEST_SECRET,
+                "SOCRATES_ENV": "test",
+                "SOCRATES_INSTANCE_ADMINS": INSTANCE_ADMIN_DISCORD_ID,
+            },
+            clear=False,
+        ):
+            client = _make_test_client(server_mod.app)
+            client.cookies.set("__session", viewer_tok)
+            r_denied = client.get(f"/api/backups/{self.TEST_BACKUP_ID}/flagged-messages/{fm_pk}/full-content")
+            self.assertIn(r_denied.status_code, (403, 404))
+
+            client.cookies.set("__session", admin_tok)
+            r_ok = client.get(f"/api/backups/{self.TEST_BACKUP_ID}/flagged-messages/{fm_pk}/full-content")
+            self.assertEqual(r_ok.status_code, 200)
+            self.assertEqual(r_ok.json()["source"], "deleted_fallback")
+
+    def test_check_not_syncing_blocks_mutations_but_allows_reads(self):
+        from fastapi import HTTPException
+        import server as server_mod
+        from db.models import BackupModel, SceneIssueModel
+
+        base_path = t.get_backup_path(self.TEST_BACKUP_ID)
+        with db_session(backup_id=self.TEST_BACKUP_ID, backup_path=base_path) as session:
+            backup = session.query(BackupModel).filter_by(backup_id=self.TEST_BACKUP_ID).one()
+            backup.sync_status = "syncing"
+            scene = session.query(SceneModel).filter_by(backup_id=self.TEST_BACKUP_ID).first()
+            issue = session.query(SceneIssueModel).filter_by(backup_id=self.TEST_BACKUP_ID).first()
+            fm = session.query(FlaggedMessageModel).filter_by(backup_id=self.TEST_BACKUP_ID).first()
+            scene_id = str(scene.pk)
+            issue_id = issue.pk
+            fm_mid = str(fm.message_id)
+            session.commit()
+
+        # Read-only merge-neighbors and scene queries MUST succeed while sync_status == 'syncing'
+        neighbors = get_scene_merge_neighbors(self.TEST_BACKUP_ID, scene_id)
+        self.assertEqual(neighbors["status"], "success")
+        scenes_page = get_scenes(self.TEST_BACKUP_ID)
+        self.assertGreater(scenes_page["total_items"], 0)
+        self.assertIn("channel_is_deleted", scenes_page["scenes"][0])
+
+        issues_page = get_scene_issues(self.TEST_BACKUP_ID, status="all")
+        self.assertGreater(issues_page["total_items"], 0)
+        self.assertIn("channel_is_deleted", issues_page["issues"][0])
+        self.assertIn("candidate_is_deleted", issues_page["issues"][0])
+        self.assertIn("is_deleted", issues_page["issues"][0])
+
+        fm_page = get_flagged_messages(self.TEST_BACKUP_ID, status="all")
+        self.assertGreater(fm_page["total_items"], 0)
+        self.assertIn("channel_is_deleted", fm_page["messages"][0])
+        self.assertIn("message_is_deleted", fm_page["messages"][0])
+
+        # Mutating curation endpoints MUST return 409 while sync_status == 'syncing'
+        mutating_calls = [
+            lambda: server_mod.update_scene(self.TEST_BACKUP_ID, scene_id, server_mod.UpdateSceneMetadataRequest(custom_name="Blocked")),
+            lambda: merge_scene(self.TEST_BACKUP_ID, scene_id, MergeSceneRequest(direction="next")),
+            lambda: resolve_scene_issue(self.TEST_BACKUP_ID, issue_id, ResolveIssueRequest(resolution="split")),
+            lambda: reopen_scene_issue(self.TEST_BACKUP_ID, issue_id),
+            lambda: server_mod.create_manual_scene_split(self.TEST_BACKUP_ID, server_mod.ManualSplitRequest(discord_link="https://discord.com/channels/1/2/3")),
+            lambda: server_mod.add_manual_flagged_message(self.TEST_BACKUP_ID, server_mod.ManualFlaggedMessageRequest(discord_link="https://discord.com/channels/1/2/3")),
+            lambda: server_mod.resolve_flagged_message(self.TEST_BACKUP_ID, fm_mid, server_mod.ResolveFlaggedMessageRequest(resolution="kept")),
+            lambda: server_mod.reopen_flagged_message(self.TEST_BACKUP_ID, fm_mid),
+            lambda: promote_flagged_message(self.TEST_BACKUP_ID, fm_mid, PromoteFlaggedMessageRequest(content=None, author={"id": "1", "name": "Test"})),
+            lambda: delete_message_override(self.TEST_BACKUP_ID, fm_mid),
+        ]
+        for call in mutating_calls:
+            with self.assertRaises(HTTPException) as ctx:
+                call()
+            self.assertEqual(ctx.exception.status_code, 409)
+
+        # Restore idle
+        with db_session(backup_id=self.TEST_BACKUP_ID, backup_path=base_path) as session:
+            backup = session.query(BackupModel).filter_by(backup_id=self.TEST_BACKUP_ID).one()
+            backup.sync_status = "idle"
+            session.commit()
 
 
 if __name__ == "__main__":

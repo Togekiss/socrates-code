@@ -123,6 +123,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const isAnyRunning =
+    backupInfo?.sync_status === 'syncing' ||
     backupInfo?.status === 'running' ||
     Object.values(backupInfo?.steps || {}).some(s => s === 'running');
 

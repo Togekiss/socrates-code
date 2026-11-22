@@ -1,7 +1,19 @@
-import re
-import unicodedata
 from typing import Any, Dict, List, Optional, Tuple
 import utils.tricks as t
+from db.skeleton_models import (
+    END_PAT1,
+    END_PAT2,
+    END_TAG_SHORT_MSG_MAX_LEN,
+    EXCERPT_MAX_LEN,
+    SEARCH_CONTENT_PREFIX_LEN,
+    MONTHS,
+    DAYS,
+    TIMES,
+    START_HEADER_PAT,
+    MENTION_ONLY_PAT,
+    has_end_tag,
+    has_start_tag,
+)
 
 ################ File summary #################
 
@@ -15,79 +27,9 @@ Note:
     performed deterministically via index_scenes.py into SQLite.
 """
 
-# Strict pattern at the end of the message (matched against trailing slice)
-END_PAT1 = re.compile(
-    r"(?:```|`)[^`\n]*(?:\n+[^`\n]*)?\b(?:end|hold|close|dropped|offline|moved|moving|continu)[A-Za-z0-9_]{0,20}[^\n`]{0,10}\n*(?:```|`)\s*(?:@[^\n]*|[^\w\n]*)?$",
-    re.I
-)
-# Pattern that looks through the entire message for more flexible closing tags
-END_PAT2 = re.compile(
-    r"(?:moved to #|moving to #|continued in #|DM END|END DM|\[end\]|\[read\])",
-    re.I
-)
-
 # Threshold constants for scene detection and heuristics
-END_TAG_SHORT_MSG_MAX_LEN = 35
-EXCERPT_MAX_LEN = 250
-SEARCH_CONTENT_PREFIX_LEN = 300
 AUTO_SPLIT_MIN_TUPPERS = 2
 ROSTER_CHANGE_MIN_TUPPERS = 4
-
-# Patterns to detect dates and times for the start of a scene
-MONTHS = r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|dezember)"
-DAYS = r"(?:mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)"
-TIMES = r"(?:morning|afternoon|evening|night|midnight|noon|lunchtime|midday|\d{1,2}(?::\d{2})?\s*(?:am|pm))"
-
-# Pattern for the start of a scene (only at the beginning of the message)
-# Includes DM/Call openers and dates with times/days
-START_HEADER_PAT = re.compile(
-    r"^\s*(?:[x—\-=_*]{4,}\s*\n\s*)?(?:@[^`\n\[\*\s]+\s+){0,10}(?:`+|\[|\*\*)\s*(?:"
-    r"dm|direct\s+message|private\s+message|incoming\s+call|outgoing\s+call|video\s+call|call\s+(?:to|from|with)|continu(?:ed|ing)\s+from"
-    rf"|(?:{DAYS}[,.\s]+)?(?:{MONTHS}\s+\d{{1,2}}(?:st|nd|rd|th)?|\d{{1,2}}(?:st|nd|rd|th|\.)?\s+(?:of\s+)?{MONTHS}|(?:\d{{1,2}}[./-]\d{{1,2}})[,.\s]+{TIMES}|{TIMES}[,.\s]+\d{{1,2}}[./-]\d{{1,2}})"
-    r")\b",
-    re.I
-)
-
-# Pattern to detect messages that contain only tag mentions (linear O(n), no nested quantifiers)
-MENTION_ONLY_PAT = re.compile(
-    r"^\s*(?:<@&?[0-9]+>|@(?:deleted-role|unknown-role|[\w.-]+))"
-    r"(?:\s+(?:<@&?[0-9]+>|@?(?:deleted-role|unknown-role|[\w.-]+)))*\s*$"
-)
-
-
-"""
-has_end_tag(message):
-    Checks if a message has an end of scene tag
-
-    Args:
-        message (dict | str): Message info in JSON format or raw string
-    Returns:
-        bool: True if the message has an end of scene tag, False otherwise
-"""
-def has_end_tag(message):
-    # Convert the message content to normalized form
-    content = message.get("content", "") if isinstance(message, dict) else (message or "")
-    message_content = unicodedata.normalize("NFKD", str(content))
-    tail = message_content[-SEARCH_CONTENT_PREFIX_LEN:]
-
-    return bool(END_PAT1.search(tail) or END_PAT2.search(message_content))
-
-
-"""
-has_start_tag(message):
-    Checks if a message has a start of scene tag
-
-    Args:
-        message (dict | str): Message info in JSON format or raw string
-    Returns:
-        bool: True if the message has a start of scene tag, False otherwise
-"""
-def has_start_tag(message):
-    # Convert the first SEARCH_CONTENT_PREFIX_LEN characters of the message to normalized form
-    content = message.get("content", "") if isinstance(message, dict) else (message or "")
-    message_content = unicodedata.normalize("NFKD", str(content)[:SEARCH_CONTENT_PREFIX_LEN])
-
-    return bool(START_HEADER_PAT.search(message_content))
 
 
 """
@@ -196,10 +138,12 @@ def extract_participants_from_messages(
                     "first_at": ts,
                     "last_message_id": msg_id,
                     "last_at": ts,
+                    "message_count": 1,
                 }
             else:
                 tupper_details[aid_int]["last_message_id"] = msg_id
                 tupper_details[aid_int]["last_at"] = ts
+                tupper_details[aid_int]["message_count"] += 1
         else:
             if aid_int not in non_tupper_order:
                 non_tupper_order.append(aid_int)

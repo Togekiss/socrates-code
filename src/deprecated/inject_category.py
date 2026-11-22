@@ -175,7 +175,7 @@ def inject_category(
             backup.categories = [cat for cat in backup.categories if cat.id != cat_discord_id]
             backup.add_new_category(new_cat)
 
-            from update_paths import normalize_event_categories
+            from deprecated.update_paths import normalize_event_categories
             normalize_event_categories(backup, folder=data_dir.as_posix(), is_update=False)
             backup.save(write_snapshot=True)
             print("-> Successfully registered and normalized event category in backup.sqlite!")

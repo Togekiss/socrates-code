@@ -88,3 +88,36 @@ export function getDurationInfo(start?: string | null, end?: string | null): Dur
     return null;
   }
 }
+
+/**
+ * Floors completion percentage to the lower integer so partial progress
+ * never displays 100% before completion (e.g. 223/224 -> 99%).
+ */
+export function calcCompletionPct(done: number, total: number): number {
+  if (total <= 0 || done <= 0) return 0;
+  if (done >= total) return 100;
+  return Math.min(99, Math.floor((done / total) * 100));
+}
+
+/**
+ * Formats a Discord user's primary @username alongside distinct nickname/global_name labels.
+ */
+export function formatDiscordUserDisplayNames(user: {
+  username?: string | null;
+  global_name?: string | null;
+  nickname?: string | null;
+  discord_user_id?: string | null;
+}): string {
+  const username = user.username?.trim() || '';
+  const extras: string[] = [];
+  for (const candidate of [user.nickname, user.global_name]) {
+    const clean = candidate?.trim();
+    if (!clean) continue;
+    if (username && clean.toLowerCase() === username.toLowerCase()) continue;
+    if (!extras.some(e => e.toLowerCase() === clean.toLowerCase())) {
+      extras.push(clean);
+    }
+  }
+  const primary = username ? `@${username}` : user.discord_user_id || '';
+  return extras.length > 0 ? `${primary} (${extras.join(' / ')})` : primary;
+}

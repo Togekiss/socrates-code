@@ -12,8 +12,10 @@ import { api, getErrorMessage } from '../api';
 import type {
   DiscordRole,
   RbacConfig,
+  SeenDiscordUser,
   WriterDetailed,
 } from '../types';
+import { formatDiscordUserDisplayNames } from '../utils/formatters';
 import { AuditLogViewer } from './AuditLogViewer';
 import { RbacBucketCard } from './users/RbacBucketCard';
 import { Button, PanelSurface, type BadgeVariant, type DataCardAccent } from './ui';
@@ -97,6 +99,7 @@ export const UsersTab = ({ backupId, onRefreshSummary }: UsersTabProps) => {
   const [discordRoles, setDiscordRoles] = useState<DiscordRole[]>([]);
   const [botAvailable, setBotAvailable] = useState<boolean>(false);
   const [writers, setWriters] = useState<WriterDetailed[]>([]);
+  const [seenDiscordUsers, setSeenDiscordUsers] = useState<SeenDiscordUser[]>([]);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -117,10 +120,11 @@ export const UsersTab = ({ backupId, onRefreshSummary }: UsersTabProps) => {
     setLoading(true);
     setErrorMsg(null);
     try {
-      const [rbacRes, rolesRes, writersRes] = await Promise.all([
+      const [rbacRes, rolesRes, writersRes, seenUsersRes] = await Promise.all([
         api.getBackupRbac(backupId),
         api.getBackupDiscordRoles(backupId).catch(() => ({ roles: [], bot_available: false })),
         api.getWritersDetailed(backupId).catch(() => [] as WriterDetailed[]),
+        api.getSeenDiscordUsers(backupId).catch(() => [] as SeenDiscordUser[]),
       ]);
       setRbac({
         adminRoleIds: rbacRes.adminRoleIds || [],
@@ -132,6 +136,7 @@ export const UsersTab = ({ backupId, onRefreshSummary }: UsersTabProps) => {
       setDiscordRoles(rolesRes.roles || []);
       setBotAvailable(Boolean(rolesRes.bot_available));
       setWriters(Array.isArray(writersRes) ? writersRes : []);
+      setSeenDiscordUsers(Array.isArray(seenUsersRes) ? seenUsersRes : []);
     } catch (err) {
       setErrorMsg(getErrorMessage(err, 'Failed to load RBAC configuration.'));
     } finally {
@@ -151,25 +156,48 @@ export const UsersTab = ({ backupId, onRefreshSummary }: UsersTabProps) => {
     return map;
   }, [discordRoles]);
 
-  const writerOptions = useMemo(
-    () =>
-      writers
-        .filter(w => Boolean(w.discord_user_id))
-        .map(w => ({
-          id: String(w.discord_user_id),
-          label: `${w.display_name} (${w.discord_user_id})`,
-          name: w.display_name,
-        })),
-    [writers]
-  );
-
-  const writerNameByDiscordId = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const opt of writerOptions) {
-      map.set(opt.id, opt.name);
+  const userDirectory = useMemo(() => {
+    const writerByUid = new Map<string, string>();
+    for (const w of writers) {
+      const uid = w.discord_user_id?.trim();
+      if (uid) writerByUid.set(uid, w.display_name);
     }
-    return map;
-  }, [writerOptions]);
+
+    const optionsMap = new Map<string, { id: string; label: string; chipLabel: string }>();
+
+    for (const u of seenDiscordUsers) {
+      const uid = u.discord_user_id?.trim();
+      if (!uid) continue;
+      const discordNames = formatDiscordUserDisplayNames(u);
+      const writerName = u.linked_writer_name || writerByUid.get(uid);
+      const label = writerName
+        ? `${discordNames} • Writer: ${writerName} (${uid})`
+        : `${discordNames} (${uid})`;
+      const chipLabel = writerName
+        ? `${discordNames} • ${writerName} (${uid})`
+        : `${discordNames} (${uid})`;
+      optionsMap.set(uid, { id: uid, label, chipLabel });
+    }
+
+    for (const [uid, writerName] of writerByUid.entries()) {
+      if (!optionsMap.has(uid)) {
+        optionsMap.set(uid, {
+          id: uid,
+          label: `Writer: ${writerName} (${uid})`,
+          chipLabel: `${writerName} (${uid})`,
+        });
+      }
+    }
+
+    const list = Array.from(optionsMap.values()).sort((a, b) =>
+      a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
+    );
+    const chipMap = new Map<string, string>();
+    for (const item of list) {
+      chipMap.set(item.id, item.chipLabel);
+    }
+    return { list, chipMap };
+  }, [seenDiscordUsers, writers]);
 
   const addManualId = (
     kind: 'role' | 'user',
@@ -358,7 +386,7 @@ export const UsersTab = ({ backupId, onRefreshSummary }: UsersTabProps) => {
           {USER_SECTIONS.map(section => {
             const Icon = section.icon;
             const selectedIds = rbac[section.key];
-            const availableWriterOpts = writerOptions
+            const availableUserOpts = userDirectory.list
               .filter(opt => !selectedIds.includes(opt.id))
               .map(opt => ({ id: opt.id, label: opt.label }));
 
@@ -372,13 +400,11 @@ export const UsersTab = ({ backupId, onRefreshSummary }: UsersTabProps) => {
                 chipVariant={section.chipVariant}
                 chipIcon={<Icon size={12} />}
                 selectedIds={selectedIds}
-                options={availableWriterOpts}
-                getDisplayLabel={id => {
-                  const writerName = writerNameByDiscordId.get(id);
-                  return writerName ? `${writerName} (${id})` : id;
-                }}
-                selectPlaceholder="Quick-add linked writer..."
-                selectAriaLabel={`${section.title} linked writer selector`}
+                options={availableUserOpts}
+                getDisplayLabel={id => userDirectory.chipMap.get(id) ?? id}
+                selectPlaceholder="Select a Discord user..."
+                selectAriaLabel={`${section.title} Discord user selector`}
+                emptySelectText={userDirectory.list.length > 0 ? 'All Discord users selected' : undefined}
                 manualInputPlaceholder="Add Discord User ID (15-22 digits)"
                 manualInputValue={manualUserInputs[section.key]}
                 onManualInputChange={val =>

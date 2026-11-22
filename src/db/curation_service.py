@@ -2,7 +2,7 @@ import math
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
-from sqlalchemy import func, case, and_, or_, select
+from sqlalchemy import BigInteger, func, case, cast, and_, or_, select
 from sqlalchemy.orm import selectinload, joinedload
 
 import re
@@ -13,7 +13,6 @@ from db.models import (
     CharacterNameModel,
     CharacterGroupModel,
     CharacterModel,
-    ExportModel,
     FlaggedMessageModel,
     IssueKind,
     IssueReason,
@@ -25,19 +24,86 @@ from db.models import (
     SceneModel,
     SceneParticipantModel,
     SceneStatus,
-    Scope,
+    SeenDiscordUserModel,
     WriterAliasModel,
     WriterModel,
     get_default_resolution,
     is_action_performed,
 )
-from db.session import db_session, require_db, init_db
+from db.session import db_session, require_db, init_db, skeleton_db_session, has_skeleton_db
+from db.skeleton_models import (
+    MessageSkeletonModel,
+    SkeletonFlags,
+    compute_skeleton_flags,
+)
+from db.scene_service import (
+    snowflake_int,
+    resolve_effective_skeleton,
+    load_channel_skeletons,
+    compute_scene_counts_from_skeletons,
+    fetch_message_excerpt,
+)
 from db.snapshots import export_character_list_snapshot, export_curation_snapshots
 from db.event_service import update_event_metadata, merge_events, split_event
 from db.character_service import get_character_activity_stats
 from find_character_scenes import MENTION_ONLY_PAT, EXCERPT_MAX_LEN, has_end_tag
 from utils import exceptions as exc
 import utils.tricks as t
+
+
+def _load_skeletons_or_json_fallback(
+    backup_id: str,
+    base_path: str,
+    channel: ChannelModel,
+    start_message_id: Optional[Any] = None,
+    end_message_id: Optional[Any] = None,
+) -> List[Any]:
+    """
+    Loads skeletons from skeletons.sqlite; falls back to in-memory skeleton objects
+    constructed from Data/<channel.path> only when skeletons.sqlite has no rows for the channel.
+    """
+    rows = load_channel_skeletons(
+        backup_id,
+        base_path,
+        channel.discord_id,
+        start_message_id=start_message_id,
+        end_message_id=end_message_id,
+    )
+    if rows:
+        return rows
+
+    if channel.path and base_path:
+        c_path = Path(channel.path)
+        for f_path in (Path(base_path) / c_path, Path(base_path) / "Data" / c_path):
+            if f_path.exists():
+                chan_data = t.load_from_json(f_path.as_posix())
+                raw_msgs = chan_data.get("messages", [])
+                start_sf = snowflake_int(start_message_id) if start_message_id is not None else None
+                end_sf = snowflake_int(end_message_id) if end_message_id is not None else None
+                fallback_rows = []
+                for m in raw_msgs:
+                    mid_str = str(m.get("id", ""))
+                    if not mid_str.isdigit():
+                        continue
+                    mid_int = int(mid_str)
+                    if start_sf is not None and mid_int < start_sf:
+                        continue
+                    if end_sf is not None and mid_int > end_sf:
+                        continue
+                    aid = t.get_author_id(m) or 0
+                    dt = t.parse_datetime(m.get("timestamp"))
+                    fallback_rows.append(
+                        MessageSkeletonModel(
+                            channel_discord_id=int(channel.discord_id) if str(channel.discord_id).isdigit() else 0,
+                            message_id=mid_int,
+                            author_id=int(aid),
+                            timestamp_unix=int(dt.timestamp()) if dt else 0,
+                            flags=compute_skeleton_flags(m, author_id=int(aid)),
+                        )
+                    )
+                fallback_rows.sort(key=lambda r: int(r.message_id))
+                return fallback_rows
+    return []
 
 
 _parse_dt = t.parse_datetime
@@ -246,6 +312,225 @@ def get_writer_link_suggestions(backup_id: str, base_path: str) -> List[Dict[str
         return find_writer_link_suggestions(backup_id, base_path)
     except ImportError:
         return []
+
+
+def get_seen_discord_users(backup_id: str, base_path: str) -> List[Dict[str, Any]]:
+    """Returns all recorded Discord users for a backup with any currently linked writer info."""
+    require_db(base_path, backup_id=backup_id)
+    init_db(engine_or_backup_id=backup_id, backup_path=base_path)
+
+    with db_session(backup_id=backup_id, backup_path=base_path) as session:
+        seen_users = (
+            session.query(SeenDiscordUserModel)
+            .filter(SeenDiscordUserModel.backup_id == str(backup_id))
+            .order_by(
+                func.lower(SeenDiscordUserModel.username).asc(),
+                SeenDiscordUserModel.discord_user_id.asc(),
+            )
+            .all()
+        )
+        linked_writers = (
+            session.query(WriterModel.pk, WriterModel.display_name, WriterModel.discord_user_id)
+            .filter(
+                WriterModel.backup_id == str(backup_id),
+                WriterModel.discord_user_id.isnot(None),
+            )
+            .all()
+        )
+        writer_by_uid: Dict[str, Tuple[int, str]] = {
+            str(w.discord_user_id).strip(): (w.pk, w.display_name)
+            for w in linked_writers
+            if w.discord_user_id and str(w.discord_user_id).strip()
+        }
+
+        result: List[Dict[str, Any]] = []
+        for u in seen_users:
+            uid = str(u.discord_user_id).strip()
+            linked_w = writer_by_uid.get(uid)
+            result.append({
+                "discord_user_id": uid,
+                "username": u.username,
+                "global_name": u.global_name,
+                "nickname": u.nickname,
+                "is_current_member": bool(u.is_current_member),
+                "message_count": int(u.message_count or 0),
+                "last_seen_at": u.last_seen_at.isoformat() if u.last_seen_at else None,
+                "linked_writer_id": linked_w[0] if linked_w else None,
+                "linked_writer_name": linked_w[1] if linked_w else None,
+            })
+        return result
+
+
+def accept_all_writer_link_suggestions(backup_id: str, base_path: str) -> Dict[str, Any]:
+    """Accepts all non-conflicting heuristic Discord link suggestions in confidence order."""
+    suggestions = get_writer_link_suggestions(backup_id, base_path)
+    if not suggestions:
+        return {"status": "success", "linked_count": 0, "skipped_count": 0, "linked": []}
+
+    linked: List[Dict[str, Any]] = []
+    skipped_count = 0
+
+    with db_session(backup_id=backup_id, backup_path=base_path) as session:
+        writers = (
+            session.query(WriterModel)
+            .filter(WriterModel.backup_id == str(backup_id))
+            .all()
+        )
+        writers_by_pk = {w.pk: w for w in writers}
+        used_discord_ids: Set[str] = {
+            str(w.discord_user_id).strip()
+            for w in writers
+            if w.discord_user_id and str(w.discord_user_id).strip()
+        }
+
+        for sugg in suggestions:
+            raw_wpk = sugg.get("writer_id") if sugg.get("writer_id") is not None else sugg.get("writer_pk")
+            discord_id = str(
+                sugg.get("suggested_discord_id") or sugg.get("suggested_discord_user_id") or ""
+            ).strip()
+            try:
+                writer_pk = int(raw_wpk) if raw_wpk is not None else None
+            except (TypeError, ValueError):
+                writer_pk = None
+
+            writer = writers_by_pk.get(writer_pk) if writer_pk is not None else None
+            if (
+                writer is None
+                or (writer.discord_user_id and str(writer.discord_user_id).strip())
+                or not discord_id
+                or discord_id in used_discord_ids
+            ):
+                skipped_count += 1
+                continue
+
+            writer.discord_user_id = discord_id
+            used_discord_ids.add(discord_id)
+            linked.append({
+                "writer_id": writer.pk,
+                "display_name": writer.display_name,
+                "discord_user_id": discord_id,
+            })
+
+        if linked:
+            session.flush()
+            export_character_list_snapshot(session, backup_id, write_to_disk=True)
+
+    return {
+        "status": "success",
+        "linked_count": len(linked),
+        "skipped_count": skipped_count,
+        "linked": linked,
+    }
+
+
+def _unique_writer_display_name(
+    base_name: str,
+    discord_user_id: str,
+    taken_names_lower: Set[str],
+) -> str:
+    """Returns a display_name <= 64 chars not already present in taken_names_lower."""
+    candidate = base_name.strip()[:64] or f"User #{discord_user_id}"[:64]
+    if candidate.lower() not in taken_names_lower:
+        return candidate
+    suffix = f" ({discord_user_id})"
+    tagged = f"{candidate[: max(1, 64 - len(suffix))]}{suffix}"
+    if tagged.lower() not in taken_names_lower:
+        return tagged
+    counter = 2
+    while True:
+        c_suffix = f" ({discord_user_id}-{counter})"
+        numbered = f"{candidate[: max(1, 64 - len(c_suffix))]}{c_suffix}"
+        if numbered.lower() not in taken_names_lower:
+            return numbered
+        counter += 1
+
+
+def create_writers_from_seen_discord_users(backup_id: str, base_path: str) -> Dict[str, Any]:
+    """
+    Creates Writer profiles for every seen Discord user who is neither linked to an
+    existing writer nor targeted by an active writer link suggestion.
+    """
+    suggestions = get_writer_link_suggestions(backup_id, base_path)
+    suggested_discord_ids: Set[str] = {
+        str(s.get("suggested_discord_id") or s.get("suggested_discord_user_id") or "").strip()
+        for s in suggestions
+    }
+    suggested_discord_ids.discard("")
+
+    created: List[Dict[str, Any]] = []
+
+    with db_session(backup_id=backup_id, backup_path=base_path) as session:
+        existing_writers = (
+            session.query(WriterModel)
+            .filter(WriterModel.backup_id == str(backup_id))
+            .all()
+        )
+        linked_discord_ids: Set[str] = {
+            str(w.discord_user_id).strip()
+            for w in existing_writers
+            if w.discord_user_id and str(w.discord_user_id).strip()
+        }
+        taken_names_lower: Set[str] = {
+            w.display_name.strip().lower()
+            for w in existing_writers
+            if w.display_name and w.display_name.strip()
+        }
+
+        seen_users = (
+            session.query(SeenDiscordUserModel)
+            .filter(SeenDiscordUserModel.backup_id == str(backup_id))
+            .order_by(
+                func.lower(SeenDiscordUserModel.username).asc(),
+                SeenDiscordUserModel.discord_user_id.asc(),
+            )
+            .all()
+        )
+
+        for u in seen_users:
+            uid = str(u.discord_user_id or "").strip()
+            if not uid or uid in linked_discord_ids or uid in suggested_discord_ids:
+                continue
+
+            raw_username = (u.username or "").strip() or f"User #{uid}"
+            display_name = _unique_writer_display_name(raw_username, uid, taken_names_lower)
+            taken_names_lower.add(display_name.lower())
+            linked_discord_ids.add(uid)
+
+            writer = WriterModel(
+                backup_id=str(backup_id),
+                display_name=display_name,
+                discord_user_id=uid,
+            )
+            session.add(writer)
+            session.flush()
+
+            alias_set: Set[str] = {display_name}
+            for raw_alias in (u.global_name, u.nickname):
+                if raw_alias and str(raw_alias).strip():
+                    alias_set.add(str(raw_alias).strip()[:64])
+
+            sorted_aliases = sorted(alias_set)
+            for alias_str in sorted_aliases:
+                session.add(WriterAliasModel(writer_pk=writer.pk, alias=alias_str))
+
+            created.append({
+                "id": writer.pk,
+                "display_name": writer.display_name,
+                "discord_user_id": writer.discord_user_id,
+                "aliases": sorted_aliases,
+                "character_count": 0,
+                "characters": [],
+            })
+
+        if created:
+            session.flush()
+            export_character_list_snapshot(session, backup_id, write_to_disk=True)
+
+    return {
+        "status": "success",
+        "created_count": len(created),
+        "writers": created,
+    }
 
 
 # --- UNASSIGNED CHARACTERS QUEUE ---
@@ -520,6 +805,37 @@ def get_scene_issues(
                 else:
                     char_name_map[ch.char_id] = f"Character #{ch.char_id}"
 
+        # Batch-check IS_DELETED in skeletons.sqlite for candidate messages if present
+        deleted_candidate_keys: Set[Tuple[str, str]] = set()
+        if issues_raw and has_skeleton_db(base_path, backup_id=backup_id):
+            chan_ids_chk = set()
+            msg_ids_chk = set()
+            for iss in issues_raw:
+                ch = iss.scene.channel if iss.scene else None
+                if ch and str(ch.discord_id).isdigit() and iss.candidate_message_id and str(iss.candidate_message_id).isdigit():
+                    chan_ids_chk.add(int(ch.discord_id))
+                    msg_ids_chk.add(int(iss.candidate_message_id))
+            if chan_ids_chk and msg_ids_chk:
+                try:
+                    with skeleton_db_session(backup_id=backup_id, backup_path=base_path) as skel_session:
+                        rows = (
+                            skel_session.query(
+                                MessageSkeletonModel.channel_discord_id,
+                                MessageSkeletonModel.message_id,
+                                MessageSkeletonModel.flags,
+                            )
+                            .filter(
+                                MessageSkeletonModel.channel_discord_id.in_(chan_ids_chk),
+                                MessageSkeletonModel.message_id.in_(msg_ids_chk),
+                            )
+                            .all()
+                        )
+                        for ch_id, m_id, fl in rows:
+                            if int(fl or 0) & SkeletonFlags.IS_DELETED:
+                                deleted_candidate_keys.add((str(ch_id), str(m_id)))
+                except Exception:
+                    pass
+
         formatted = []
         for iss in issues_raw:
             scene = iss.scene
@@ -527,6 +843,10 @@ def get_scene_issues(
             chan_id = channel.discord_id if channel else ""
             chan_name = channel.name if channel else ""
             start_msg_id = scene.start_message_id if scene else ""
+            channel_is_deleted = bool(channel and channel.is_deleted)
+            candidate_is_deleted = bool(
+                iss.candidate_message_id and (chan_id, str(iss.candidate_message_id)) in deleted_candidate_keys
+            )
 
             discord_link = ""
             if server_id and chan_id and start_msg_id:
@@ -550,6 +870,9 @@ def get_scene_issues(
                 "scene_kind": scene.kind if scene else "scene",
                 "channel_name": chan_name,
                 "channel_discord_id": chan_id,
+                "channel_is_deleted": channel_is_deleted,
+                "candidate_is_deleted": candidate_is_deleted,
+                "is_deleted": bool(channel_is_deleted or candidate_is_deleted),
                 "next_scene_pk": iss.next_scene_pk,
                 "next_scene_key": iss.next_scene.scene_key if iss.next_scene else None,
                 "candidate_message_id": iss.candidate_message_id,
@@ -580,79 +903,6 @@ def get_scene_issues(
         }
 
 
-def _extract_scene_participants(
-    messages: List[Dict[str, Any]],
-    start_index: int,
-    end_index: int,
-    char_id_to_pk: Dict[int, int],
-    resolved_flags_map: Optional[Dict[str, Any]] = None,
-) -> List[Dict[str, Any]]:
-    """
-    Extracts Tupperbox character bot IDs from messages in range [start_index, end_index],
-    filtering out non-tuppers, mention-only posts, and ignored messages.
-    Applies character overrides if present.
-    Returns ordered list of dicts:
-        [{
-            "character_pk": int,
-            "position": int,
-            "first_message_id": str,
-            "first_at": Optional[datetime],
-            "last_message_id": str,
-            "last_at": Optional[datetime],
-        }]
-    """
-    ordered_cpks: List[int] = []
-    details_by_cpk: Dict[int, Dict[str, Any]] = {}
-
-    for i in range(start_index, end_index + 1):
-        if i < len(messages):
-            m = messages[i]
-            if m.get("type") != "Default":
-                continue
-            content = str(m.get("content", "") or "")
-            if MENTION_ONLY_PAT.match(content.strip()):
-                continue
-
-            mid = str(m.get("id", ""))
-            ts = t.parse_datetime(m.get("timestamp"))
-
-            target_cpk = None
-            if resolved_flags_map and mid in resolved_flags_map:
-                flag = resolved_flags_map[mid]
-                res = flag.get("resolution") if isinstance(flag, dict) else getattr(flag, "resolution", None)
-                if res == FlaggedResolution.IGNORED.value:
-                    continue
-                elif res == FlaggedResolution.OVERRIDE.value:
-                    o_author = flag.get("override_author") if isinstance(flag, dict) else getattr(flag, "override_author", None)
-                    if isinstance(o_author, dict) and o_author.get("id"):
-                        o_aid = str(o_author["id"]).strip()
-                        if o_aid.isdigit() and t.is_tupper(int(o_aid)) and int(o_aid) in char_id_to_pk:
-                            target_cpk = char_id_to_pk[int(o_aid)]
-
-            if target_cpk is None:
-                aid = t.get_author_id(m)
-                if t.is_tupper(aid) and aid in char_id_to_pk:
-                    target_cpk = char_id_to_pk[aid]
-
-            if target_cpk is not None:
-                if target_cpk not in details_by_cpk:
-                    pos = len(ordered_cpks)
-                    ordered_cpks.append(target_cpk)
-                    details_by_cpk[target_cpk] = {
-                        "character_pk": target_cpk,
-                        "position": pos,
-                        "first_message_id": mid,
-                        "first_at": ts,
-                        "last_message_id": mid,
-                        "last_at": ts,
-                    }
-                else:
-                    details_by_cpk[target_cpk]["last_message_id"] = mid
-                    details_by_cpk[target_cpk]["last_at"] = ts
-
-    return [details_by_cpk[cpk] for cpk in ordered_cpks]
-
-
 def _merge_scenes(
     session,
     backup_id: str,
@@ -668,9 +918,14 @@ def _merge_scenes(
     if s1.channel_pk != s2.channel_pk:
         raise exc.ValidationError("Cannot merge scenes belonging to different channels.")
 
-    if s2.start_index <= s1.end_index:
+    s1_start_sf = snowflake_int(s1.start_message_id)
+    s1_end_sf = snowflake_int(s1.end_message_id)
+    s2_start_sf = snowflake_int(s2.start_message_id)
+    s2_end_sf = snowflake_int(s2.end_message_id)
+
+    if s2_start_sf <= s1_end_sf:
         raise exc.ValidationError(
-            f"Scene 2 (start={s2.start_index}) must start after Scene 1 (end={s1.end_index})."
+            f"Scene 2 (start={s2.start_message_id}) must start after Scene 1 (end={s1.end_message_id})."
         )
 
     # Adjacency check: verify no other scene in this channel starts between s1 and s2
@@ -679,8 +934,8 @@ def _merge_scenes(
         .filter(
             SceneModel.backup_id == str(backup_id),
             SceneModel.channel_pk == s1.channel_pk,
-            SceneModel.start_index > s1.end_index,
-            SceneModel.start_index < s2.start_index,
+            cast(SceneModel.start_message_id, BigInteger) > s1_end_sf,
+            cast(SceneModel.start_message_id, BigInteger) < s2_start_sf,
         )
         .first()
     )
@@ -700,12 +955,14 @@ def _merge_scenes(
     s1.end_author_id = s2.end_author_id
     s1.end_excerpt = s2.end_excerpt
     s1.status = s2.status
+    s1.message_count = int(s1.message_count or 0) + int(s2.message_count or 0)
 
     # Combine participants
     s1_parts = {p.character_pk: p for p in s1.participants}
     for p2 in s2.participants:
         if p2.character_pk in s1_parts:
             p1 = s1_parts[p2.character_pk]
+            p1.message_count = int(p1.message_count or 1) + int(p2.message_count or 1)
             if p2.last_at or p2.last_message_id:
                 p1.last_message_id = p2.last_message_id
                 p1.last_at = p2.last_at
@@ -714,6 +971,7 @@ def _merge_scenes(
                 scene_pk=s1.pk,
                 character_pk=p2.character_pk,
                 position=len(s1_parts),
+                message_count=int(p2.message_count or 1),
                 first_message_id=p2.first_message_id,
                 first_at=p2.first_at,
                 last_message_id=p2.last_message_id,
@@ -836,7 +1094,7 @@ def _merge_scenes(
                 SceneModel.channel_pk == s1.channel_pk,
                 SceneModel.backup_id == str(backup_id),
             )
-            .order_by(SceneModel.start_index)
+            .order_by(cast(SceneModel.start_message_id, BigInteger).asc(), SceneModel.start_at.asc())
             .all()
         )
         key_prefix = s1_key.rsplit("-", 1)[0]
@@ -867,71 +1125,91 @@ def _split_scene_at(
     exclude_issue_pk: Optional[int] = None,
 ) -> Tuple[SceneModel, SceneModel]:
     """
-    Splits scene into two scenes at candidate_message_id / candidate_index.
+    Splits scene into two scenes at candidate_message_id using skeletons.sqlite + Snowflake bounds.
     The left half (scene) always receives status "no_end_tag".
     The right half (scene2) inherits the original scene's end bounds and status.
-    Participants are partitioned, other issues re-linked, and channel keys renumbered.
+    Participants are partitioned, counts recomputed, other issues re-linked, and channel keys renumbered.
     Returns (scene, scene2).
     """
     channel = scene.channel
     if not channel:
         raise exc.NotFoundError(f"Channel for scene #{scene.pk} not found in database.")
 
-    # Locate channel JSON
-    c_path = Path(channel.path)
-    if (Path(base_path) / c_path).exists():
-        file_path = Path(base_path) / c_path
-    elif (Path(base_path) / "Data" / c_path).exists():
-        file_path = Path(base_path) / "Data" / c_path
+    scene_start_sf = snowflake_int(scene.start_message_id)
+    scene_end_sf = snowflake_int(scene.end_message_id)
+
+    # Validate explicit candidate Snowflake against scene bounds BEFORE querying bounded skeletons,
+    # so out-of-range message IDs consistently raise ValidationError (HTTP 400) rather than NotFoundError (404).
+    if candidate_message_id and str(candidate_message_id).isdigit():
+        cand_sf_pre = int(candidate_message_id)
+        if cand_sf_pre <= scene_start_sf or cand_sf_pre > scene_end_sf:
+            raise exc.ValidationError(
+                f"Candidate split point {cand_sf_pre} is outside Scene boundaries ({scene.start_message_id}..{scene.end_message_id})."
+            )
+
+    # Load channel skeletons (bounded to scene if candidate_message_id is provided, else full channel for index fallback)
+    if candidate_message_id and str(candidate_message_id).isdigit():
+        skeletons = _load_skeletons_or_json_fallback(
+            backup_id,
+            base_path,
+            channel,
+            start_message_id=scene.start_message_id,
+            end_message_id=scene.end_message_id,
+        )
     else:
-        raise exc.NotFoundError(f"Channel data file not found at {channel.path}")
+        skeletons = _load_skeletons_or_json_fallback(backup_id, base_path, channel)
 
-    channel_data = t.load_from_json(file_path.as_posix())
-    messages = channel_data.get("messages", [])
+    if not skeletons:
+        raise exc.NotFoundError(f"Channel skeletons not found for channel #{channel.discord_id}")
 
-    cand_idx = None
-    cand_msg = None
-
-    if candidate_index is not None and 0 <= candidate_index < len(messages):
-        if not candidate_message_id or str(messages[candidate_index].get("id")) == str(candidate_message_id):
-            cand_idx = candidate_index
-            cand_msg = messages[cand_idx]
-
-    if cand_idx is None and candidate_message_id:
-        for idx, m in enumerate(messages):
-            if str(m.get("id")) == str(candidate_message_id):
-                cand_idx = idx
-                cand_msg = m
+    cand_pos = None
+    cand_sk = None
+    if candidate_message_id and str(candidate_message_id).isdigit():
+        target_mid_int = int(candidate_message_id)
+        for idx, sk in enumerate(skeletons):
+            if int(sk.message_id) == target_mid_int:
+                cand_pos = idx
+                cand_sk = sk
                 break
+    elif candidate_index is not None and 0 <= int(candidate_index) < len(skeletons):
+        cand_pos = int(candidate_index)
+        cand_sk = skeletons[cand_pos]
 
-    if cand_msg is None or cand_idx is None:
+    if cand_sk is None or cand_pos is None:
         raise exc.NotFoundError(
-            f"Candidate message {candidate_message_id or candidate_index} not found in channel messages."
+            f"Candidate message {candidate_message_id or candidate_index} not found in channel skeletons."
         )
 
-    if cand_idx <= scene.start_index or cand_idx > scene.end_index:
+    cand_sf = int(cand_sk.message_id)
+    if cand_sf <= scene_start_sf or cand_sf > scene_end_sf:
         raise exc.ValidationError(
-            f"Candidate split point index {cand_idx} is outside Scene boundaries ({scene.start_index}..{scene.end_index})."
+            f"Candidate split point {cand_sf} is outside Scene boundaries ({scene.start_message_id}..{scene.end_message_id})."
         )
 
-    resolved_flags = get_resolved_flags_map(backup_id, base_path)
+    resolved_flags = get_resolved_flags_map(backup_id, base_path, session=session)
 
-    # Find prev_msg: last Default text message before cand_idx within scene.start_index..cand_idx-1
-    prev_msg = None
-    prev_idx = None
-    for i in range(cand_idx - 1, scene.start_index - 1, -1):
-        m = messages[i]
-        mid = str(m.get("id", ""))
-        flag = resolved_flags.get(mid)
-        if flag and (flag.get("resolution") if isinstance(flag, dict) else getattr(flag, "resolution", None)) == FlaggedResolution.IGNORED.value:
-            continue
-        if m.get("type") == "Default" and not MENTION_ONLY_PAT.match(str(m.get("content", "") or "").strip()):
-            prev_msg = m
-            prev_idx = i
+    # Find prev_sk: last valid Default non-mention-only non-ignored message before cand_sf within scene bounds
+    prev_sk = None
+    prev_eff = None
+    prev_pos = None
+    for i in range(cand_pos - 1, -1, -1):
+        sk = skeletons[i]
+        if int(sk.message_id) < scene_start_sf:
             break
-    if not prev_msg:
-        prev_idx = cand_idx - 1
-        prev_msg = messages[prev_idx]
+        eff = resolve_effective_skeleton(sk, resolved_flags_map=resolved_flags)
+        if eff and eff["is_valid"]:
+            prev_sk = sk
+            prev_eff = eff
+            prev_pos = i
+            break
+    if prev_sk is None:
+        if cand_pos == 0:
+            raise exc.ValidationError("No preceding message found before split point.")
+        prev_pos = cand_pos - 1
+        prev_sk = skeletons[prev_pos]
+        prev_eff = resolve_effective_skeleton(prev_sk, resolved_flags_map=resolved_flags)
+
+    cand_eff = resolve_effective_skeleton(cand_sk, resolved_flags_map=resolved_flags)
 
     orig_end_msg_id = scene.end_message_id
     orig_end_index = scene.end_index
@@ -941,19 +1219,68 @@ def _split_scene_at(
     orig_status = scene.status
     orig_scene_key = scene.scene_key
 
+    prev_msg_id = str(prev_sk.message_id)
+    cand_msg_id = str(cand_sk.message_id)
+
+    # Hydrate excerpts from FlaggedMessageModel -> local JSON (if present) -> extensible hook -> None
+    flagged_rows = (
+        session.query(FlaggedMessageModel)
+        .filter(
+            FlaggedMessageModel.backup_id == str(backup_id),
+            FlaggedMessageModel.message_id.in_([prev_msg_id, cand_msg_id]),
+        )
+        .all()
+    )
+    flagged_content_map: Dict[str, str] = {}
+    for fr in flagged_rows:
+        if fr.resolution == FlaggedResolution.OVERRIDE.value and fr.override_content is not None:
+            flagged_content_map[str(fr.message_id)] = fr.override_content
+        else:
+            flagged_content_map[str(fr.message_id)] = fr.content
+
+    prev_excerpt = fetch_message_excerpt(
+        backup_id, base_path, channel, prev_msg_id, flagged_content_map=flagged_content_map
+    )
+    cand_excerpt = fetch_message_excerpt(
+        backup_id, base_path, channel, cand_msg_id, flagged_content_map=flagged_content_map
+    )
+
+    prev_idx_val = (scene.start_index or 0) + prev_pos if len(skeletons) == 0 or int(skeletons[0].message_id) >= scene_start_sf else prev_pos
+    cand_idx_val = (scene.start_index or 0) + cand_pos if int(skeletons[0].message_id) >= scene_start_sf else cand_pos
+
+    # Partition skeletons into left and right scenes and compute counts + participants
+    skels_left = [sk for sk in skeletons if scene_start_sf <= int(sk.message_id) <= int(prev_msg_id)]
+    skels_right = [sk for sk in skeletons if cand_sf <= int(sk.message_id) <= scene_end_sf]
+
+    chars = session.query(CharacterModel).filter_by(backup_id=str(backup_id)).all()
+    char_id_to_pk = {c.char_id: c.pk for c in chars}
+
+    part1_msg_count, part1_details = compute_scene_counts_from_skeletons(
+        skels_left, char_id_to_pk, resolved_flags_map=resolved_flags
+    )
+    part2_msg_count, part2_details = compute_scene_counts_from_skeletons(
+        skels_right, char_id_to_pk, resolved_flags_map=resolved_flags
+    )
+
     # Truncate Scene 1 (left half is ALWAYS "no_end_tag")
-    prev_content = str(prev_msg.get("content", ""))
-    scene.end_message_id = str(prev_msg.get("id", ""))
-    scene.end_index = prev_idx
-    scene.end_at = t.parse_datetime(prev_msg.get("timestamp")) or scene.end_at
-    scene.end_author_id = str(t.get_author_id(prev_msg) or prev_msg.get("author", {}).get("id", ""))
-    scene.end_excerpt = prev_content if len(prev_content) <= EXCERPT_MAX_LEN else "..." + prev_content[-(EXCERPT_MAX_LEN-3):]
+    scene.end_message_id = prev_msg_id
+    scene.end_index = prev_idx_val
+    scene.message_count = part1_msg_count
+    scene.end_at = (
+        (prev_eff["timestamp_dt"] if prev_eff else None)
+        or (datetime.fromtimestamp(int(prev_sk.timestamp_unix), tz=timezone.utc) if prev_sk.timestamp_unix else None)
+        or scene.end_at
+    )
+    scene.end_author_id = str(prev_eff["author_id"] if prev_eff else prev_sk.author_id)
+    scene.end_excerpt = prev_excerpt
     scene.status = SceneStatus.NO_END_TAG.value
 
-    # Insert Scene 2 (right half)
-    cand_content = str(cand_msg.get("content", ""))
-    cand_author_id = str(t.get_author_id(cand_msg) or cand_msg.get("author", {}).get("id", ""))
-    cand_at = t.parse_datetime(cand_msg.get("timestamp")) or scene.start_at
+    cand_author_id = str(cand_eff["author_id"] if cand_eff else cand_sk.author_id)
+    cand_at = (
+        (cand_eff["timestamp_dt"] if cand_eff else None)
+        or (datetime.fromtimestamp(int(cand_sk.timestamp_unix), tz=timezone.utc) if cand_sk.timestamp_unix else None)
+        or scene.start_at
+    )
 
     orig_event_pk = scene.event_pk
     new_ev = None
@@ -981,10 +1308,10 @@ def _split_scene_at(
             backup_id=str(backup_id),
             event_key=new_event_key,
             name=None,
-            status=scene.status,
+            status=orig_status,
             start_at=cand_at,
             end_at=orig_end_at,
-            message_count=max(0, orig_end_index - cand_idx + 1),
+            message_count=part2_msg_count,
             is_curated=True,
             character_movements={},
         )
@@ -1004,26 +1331,20 @@ def _split_scene_at(
         custom_name=scene.custom_name,
         kind=scene.kind,
         status=orig_status,
-        start_message_id=str(cand_msg.get("id", "")),
+        start_message_id=cand_msg_id,
         end_message_id=orig_end_msg_id,
-        start_index=cand_idx,
+        start_index=cand_idx_val,
         end_index=orig_end_index,
+        message_count=part2_msg_count,
         start_at=cand_at,
         end_at=orig_end_at,
         start_author_id=cand_author_id,
         end_author_id=orig_end_author_id,
-        start_excerpt=cand_content if len(cand_content) <= EXCERPT_MAX_LEN else cand_content[:(EXCERPT_MAX_LEN-3)] + "...",
+        start_excerpt=cand_excerpt,
         end_excerpt=orig_end_excerpt,
     )
     session.add(scene2)
     session.flush()
-
-    # Partition / recompute participants
-    chars = session.query(CharacterModel).filter_by(backup_id=str(backup_id)).all()
-    char_id_to_pk = {c.char_id: c.pk for c in chars}
-
-    part1_details = _extract_scene_participants(messages, scene.start_index, prev_idx, char_id_to_pk, resolved_flags_map=resolved_flags)
-    part2_details = _extract_scene_participants(messages, cand_idx, orig_end_index, char_id_to_pk, resolved_flags_map=resolved_flags)
 
     session.query(SceneParticipantModel).filter_by(scene_pk=scene.pk).delete()
     session.flush()
@@ -1033,6 +1354,7 @@ def _split_scene_at(
             scene_pk=scene.pk,
             character_pk=p_info["character_pk"],
             position=p_info["position"],
+            message_count=p_info["message_count"],
             first_message_id=p_info["first_message_id"],
             first_at=p_info["first_at"],
             last_message_id=p_info["last_message_id"],
@@ -1044,6 +1366,7 @@ def _split_scene_at(
             scene_pk=scene2.pk,
             character_pk=p_info["character_pk"],
             position=p_info["position"],
+            message_count=p_info["message_count"],
             first_message_id=p_info["first_message_id"],
             first_at=p_info["first_at"],
             last_message_id=p_info["last_message_id"],
@@ -1056,7 +1379,6 @@ def _split_scene_at(
         from db.models import EventModel
         from db.event_service import _recompute_event_from_scenes
 
-        # Renumber orig_ev scenes
         if orig_ev:
             orig_ev_scenes = (
                 session.query(SceneModel)
@@ -1071,11 +1393,9 @@ def _split_scene_at(
                 sc.scene_key = f"{orig_ev.event_key}-{idx}"
             session.flush()
 
-            # Renumber scene2 in new_ev
             scene2.scene_key = f"{new_ev.event_key}-1"
             session.flush()
 
-            # Partition character movements
             orig_movements: Dict[str, List[Dict[str, Any]]] = {}
             new_movements: Dict[str, List[Dict[str, Any]]] = {}
             chan_id_str = str(channel.discord_id if channel else scene.channel_pk)
@@ -1113,7 +1433,7 @@ def _split_scene_at(
         channel_scenes = (
             session.query(SceneModel)
             .filter(SceneModel.channel_pk == scene.channel_pk, SceneModel.backup_id == str(backup_id))
-            .order_by(SceneModel.start_index)
+            .order_by(cast(SceneModel.start_message_id, BigInteger).asc(), SceneModel.start_at.asc())
             .all()
         )
         key_prefix = orig_scene_key.rsplit("-", 1)[0]
@@ -1124,11 +1444,12 @@ def _split_scene_at(
             sc.scene_key = f"{key_prefix}-{idx + 1}"
         session.flush()
 
-    # Re-link other issues that were on Scene 1 at or after cand_idx to Scene 2
+    # Re-link other issues that were on Scene 1 at or after cand_sf to Scene 2
     relink_q = session.query(SceneIssueModel).filter(
         SceneIssueModel.backup_id == str(backup_id),
         SceneIssueModel.scene_pk == scene.pk,
-        SceneIssueModel.candidate_index >= cand_idx,
+        SceneIssueModel.candidate_message_id.isnot(None),
+        cast(SceneIssueModel.candidate_message_id, BigInteger) >= cand_sf,
     )
     if exclude_issue_pk is not None:
         relink_q = relink_q.filter(SceneIssueModel.pk != exclude_issue_pk)
@@ -1488,26 +1809,39 @@ def suggest_character_for_non_tupper(
     return None
 
 
-def get_resolved_flags_map(backup_id: str, base_path: str) -> Dict[str, Dict[str, Any]]:
+def _query_resolved_flags_map(session, backup_id: str) -> Dict[str, Dict[str, Any]]:
+    flags = session.query(FlaggedMessageModel).filter(
+        FlaggedMessageModel.backup_id == str(backup_id),
+        FlaggedMessageModel.resolved_at.isnot(None),
+    ).all()
+    return {
+        str(f.message_id): {
+            "resolution": f.resolution,
+            "override_content": f.override_content,
+            "override_author": f.override_author,
+            "override_flags": f.override_flags,
+        }
+        for f in flags
+    }
+
+
+def get_resolved_flags_map(
+    backup_id: str,
+    base_path: str,
+    session=None,
+) -> Dict[str, Dict[str, Any]]:
     """
-    Returns a dictionary mapping message_id -> {"resolution": ..., "override_content": ..., "override_author": ...}
+    Returns a dictionary mapping message_id -> {"resolution": ..., "override_content": ..., "override_author": ..., "override_flags": ...}
     for all resolved flagged messages in SQLite for this backup.
+    Reuses the caller's active SQLAlchemy session when provided so uncommitted flushes are visible.
     """
+    if session is not None:
+        session.flush()
+        return _query_resolved_flags_map(session, str(backup_id))
     require_db(base_path, backup_id=backup_id)
     init_db(engine_or_backup_id=backup_id, backup_path=base_path)
-    with db_session(backup_id=backup_id, backup_path=base_path) as session:
-        flags = session.query(FlaggedMessageModel).filter(
-            FlaggedMessageModel.backup_id == str(backup_id),
-            FlaggedMessageModel.resolved_at.isnot(None),
-        ).all()
-        return {
-            str(f.message_id): {
-                "resolution": f.resolution,
-                "override_content": f.override_content,
-                "override_author": f.override_author,
-            }
-            for f in flags
-        }
+    with db_session(backup_id=backup_id, backup_path=base_path) as own_session:
+        return _query_resolved_flags_map(own_session, str(backup_id))
 
 
 def get_preserved_flagged_message_ids(backup_id: str, base_path: str) -> Set[str]:
@@ -1526,32 +1860,36 @@ def get_preserved_flagged_message_ids(backup_id: str, base_path: str) -> Set[str
 
 
 def _recompute_scene_participants(session, backup_id: str, base_path: str, scene: SceneModel) -> None:
-    """Recomputes and syncs scene_participants for a single SceneModel."""
+    """Recomputes and syncs scene_participants and message_count for a single SceneModel from skeletons.sqlite."""
     channel = scene.channel
     if not channel:
         return
-    c_path = Path(channel.path)
-    if (Path(base_path) / c_path).exists():
-        file_path = Path(base_path) / c_path
-    elif (Path(base_path) / "Data" / c_path).exists():
-        file_path = Path(base_path) / "Data" / c_path
-    else:
+
+    skeletons = _load_skeletons_or_json_fallback(
+        backup_id,
+        base_path,
+        channel,
+        start_message_id=scene.start_message_id,
+        end_message_id=scene.end_message_id,
+    )
+    if not skeletons:
         return
 
-    channel_data = t.load_from_json(file_path.as_posix())
-    raw_messages = channel_data.get("messages", [])
-    resolved_flags = get_resolved_flags_map(backup_id, base_path)
-
+    resolved_flags = get_resolved_flags_map(backup_id, base_path, session=session)
     chars = session.query(CharacterModel).filter_by(backup_id=str(backup_id)).all()
     char_id_to_pk = {c.char_id: c.pk for c in chars}
 
-    part_details = _extract_scene_participants(raw_messages, scene.start_index, scene.end_index, char_id_to_pk, resolved_flags_map=resolved_flags)
+    msg_count, part_details = compute_scene_counts_from_skeletons(
+        skeletons, char_id_to_pk, resolved_flags_map=resolved_flags
+    )
+    scene.message_count = msg_count
     session.query(SceneParticipantModel).filter_by(scene_pk=scene.pk).delete()
     for p_info in part_details:
         session.add(SceneParticipantModel(
             scene_pk=scene.pk,
             character_pk=p_info["character_pk"],
             position=p_info["position"],
+            message_count=p_info["message_count"],
             first_message_id=p_info["first_message_id"],
             first_at=p_info["first_at"],
             last_message_id=p_info["last_message_id"],
@@ -1569,7 +1907,7 @@ def _renumber_channel_scenes(session, backup_id: str, channel_pk: int) -> None:
             SceneModel.backup_id == str(backup_id),
             SceneModel.event_pk.is_(None),
         )
-        .order_by(SceneModel.start_index)
+        .order_by(cast(SceneModel.start_message_id, BigInteger).asc(), SceneModel.start_at.asc())
         .all()
     )
     if not channel_scenes:
@@ -1588,10 +1926,15 @@ def _sync_scene_after_message_resolution(
 ) -> None:
     """
     Applies immediate live SQLite mutations to scenes and scene_issues following
-    a message resolution according to the Section 3.2 Compatibility Matrix.
+    a message resolution using skeletons.sqlite + Snowflake bounds.
+    Returns immediately with zero skeleton/JSON reads when resolution == 'kept'.
     """
-    msg_id = str(flagged.message_id)
     res = flagged.resolution
+    if res == FlaggedResolution.KEPT.value:
+        return
+
+    msg_id = str(flagged.message_id)
+    msg_sf = snowflake_int(msg_id)
 
     start_scenes = session.query(SceneModel).filter(
         SceneModel.backup_id == str(backup_id),
@@ -1608,47 +1951,34 @@ def _sync_scene_after_message_resolution(
         SceneIssueModel.candidate_message_id == msg_id,
     ).all()
 
-    # Locate channel messages if channel_pk is present
-    raw_msgs = []
-    if flagged.channel_pk:
-        chan_model = session.query(ChannelModel).filter_by(pk=flagged.channel_pk).first()
-        if chan_model:
-            c_path = Path(chan_model.path)
-            f_path = Path(base_path) / c_path if (Path(base_path) / c_path).exists() else Path(base_path) / "Data" / c_path
-            if f_path.exists():
-                chan_data = t.load_from_json(f_path.as_posix())
-                raw_msgs = chan_data.get("messages", [])
-
     if res == FlaggedResolution.OVERRIDE.value:
-        o_author_id = str((flagged.override_author or {}).get("id") or "")
-        o_content = str(flagged.override_content or "")
-        start_excerpt = o_content if len(o_content) <= EXCERPT_MAX_LEN else o_content[:(EXCERPT_MAX_LEN-3)] + "..."
-        end_excerpt = o_content if len(o_content) <= EXCERPT_MAX_LEN else "..." + o_content[-(EXCERPT_MAX_LEN-3):]
+        eff_author = flagged.override_author if flagged.override_author is not None else flagged.author
+        o_author_id = str((eff_author or {}).get("id") or "")
+        o_content = flagged.override_content if flagged.override_content is not None else flagged.content
+        eff_excerpt = t.format_excerpt(str(o_content or ""))
 
         for sc in start_scenes:
             sc.start_author_id = o_author_id
-            sc.start_excerpt = start_excerpt
+            sc.start_excerpt = eff_excerpt
             _recompute_scene_participants(session, backup_id, base_path, sc)
 
         for sc in end_scenes:
             sc.end_author_id = o_author_id
-            sc.end_excerpt = end_excerpt
+            sc.end_excerpt = eff_excerpt
             _recompute_scene_participants(session, backup_id, base_path, sc)
 
-        if not start_scenes and not end_scenes and flagged.channel_pk and raw_msgs:
-            msg_idx = next((i for i, m in enumerate(raw_msgs) if str(m.get("id")) == msg_id), None)
-            if msg_idx is not None:
-                mid_scenes = session.query(SceneModel).filter(
-                    SceneModel.backup_id == str(backup_id),
-                    SceneModel.channel_pk == flagged.channel_pk,
-                    SceneModel.start_index <= msg_idx,
-                    SceneModel.end_index >= msg_idx,
-                ).all()
-                for sc in mid_scenes:
-                    _recompute_scene_participants(session, backup_id, base_path, sc)
+        if not start_scenes and not end_scenes and flagged.channel_pk and msg_sf > 0:
+            mid_scenes = session.query(SceneModel).filter(
+                SceneModel.backup_id == str(backup_id),
+                SceneModel.channel_pk == flagged.channel_pk,
+                cast(SceneModel.start_message_id, BigInteger) <= msg_sf,
+                cast(SceneModel.end_message_id, BigInteger) >= msg_sf,
+            ).all()
+            for sc in mid_scenes:
+                _recompute_scene_participants(session, backup_id, base_path, sc)
 
         for iss in candidate_issues:
-            iss.candidate_excerpt = o_content[:250]
+            iss.candidate_excerpt = eff_excerpt
 
     elif res == FlaggedResolution.IGNORED.value:
         # 1. Unresolved soft boundaries on candidate message are obsolete -> delete them
@@ -1656,29 +1986,59 @@ def _sync_scene_after_message_resolution(
             if iss.kind == IssueKind.SOFT_BOUNDARY.value and iss.resolved_at is None:
                 session.delete(iss)
 
+        chan_model = session.query(ChannelModel).filter_by(pk=flagged.channel_pk).first() if flagged.channel_pk else None
+        chan_skeletons = (
+            _load_skeletons_or_json_fallback(backup_id, base_path, chan_model)
+            if chan_model and (start_scenes or end_scenes or candidate_issues)
+            else []
+        )
+        resolved_flags = get_resolved_flags_map(backup_id, base_path, session=session) if chan_skeletons else {}
+
+        def _find_first_valid_forward(skels: List[Any], after_sf: int, end_sf: int) -> Optional[Tuple[Any, Dict[str, Any]]]:
+            for sk in skels:
+                mid_i = int(sk.message_id)
+                if mid_i <= after_sf:
+                    continue
+                if mid_i > end_sf:
+                    break
+                eff = resolve_effective_skeleton(sk, resolved_flags_map=resolved_flags)
+                if eff and eff["is_valid"]:
+                    return sk, eff
+            return None
+
+        def _find_last_valid_backward(skels: List[Any], start_sf: int, before_sf: int) -> Optional[Tuple[Any, Dict[str, Any]]]:
+            for sk in reversed(skels):
+                mid_i = int(sk.message_id)
+                if mid_i >= before_sf:
+                    continue
+                if mid_i < start_sf:
+                    break
+                eff = resolve_effective_skeleton(sk, resolved_flags_map=resolved_flags)
+                if eff and eff["is_valid"]:
+                    return sk, eff
+            return None
+
         # 2. Start boundary shrinking
-        shifted_scene_starts: Dict[int, Tuple[str, int, str]] = {}
+        shifted_scene_starts: Dict[int, Tuple[str, Optional[str]]] = {}
         for sc in start_scenes:
-            if raw_msgs:
-                valid_found = False
-                for i in range(sc.start_index + 1, sc.end_index + 1):
-                    m = raw_msgs[i]
-                    m_id = str(m.get("id"))
-                    f_other = session.query(FlaggedMessageModel).filter_by(backup_id=str(backup_id), message_id=m_id).first()
-                    if f_other and f_other.resolution == FlaggedResolution.IGNORED.value:
-                        continue
-                    if m.get("type") == "Default" and not MENTION_ONLY_PAT.match(str(m.get("content", "") or "").strip()):
-                        sc.start_message_id = m_id
-                        sc.start_index = i
-                        sc.start_at = t.parse_datetime(m.get("timestamp")) or sc.start_at
-                        sc.start_author_id = str(t.get_author_id(m) or "")
-                        cnt = str(m.get("content", ""))
-                        sc.start_excerpt = cnt if len(cnt) <= EXCERPT_MAX_LEN else cnt[:(EXCERPT_MAX_LEN-3)] + "..."
-                        valid_found = True
-                        shifted_scene_starts[sc.pk] = (m_id, i, cnt[:250])
-                        _recompute_scene_participants(session, backup_id, base_path, sc)
-                        break
-                if not valid_found:
+            if chan_skeletons:
+                found = _find_first_valid_forward(
+                    chan_skeletons,
+                    after_sf=snowflake_int(sc.start_message_id),
+                    end_sf=snowflake_int(sc.end_message_id),
+                )
+                if found:
+                    sk, eff = found
+                    m_id = eff["message_id_str"]
+                    new_excerpt = fetch_message_excerpt(backup_id, base_path, chan_model, m_id)
+                    sc.start_message_id = m_id
+                    if eff["timestamp_dt"]:
+                        sc.start_at = eff["timestamp_dt"]
+                    sc.start_author_id = str(eff["author_id"])
+                    sc.start_excerpt = new_excerpt
+                    shifted_scene_starts[sc.pk] = (m_id, new_excerpt)
+                    _recompute_scene_participants(session, backup_id, base_path, sc)
+                else:
                     chan_pk = sc.channel_pk
                     session.delete(sc)
                     session.flush()
@@ -1689,34 +2049,30 @@ def _sync_scene_after_message_resolution(
             if iss.resolution == IssueResolution.SPLIT.value or iss.kind == IssueKind.AUTO_SPLIT.value:
                 target_sc_pk = iss.next_scene_pk or iss.scene_pk
                 if target_sc_pk in shifted_scene_starts:
-                    new_mid, new_idx, new_exc = shifted_scene_starts[target_sc_pk]
+                    new_mid, new_exc = shifted_scene_starts[target_sc_pk]
                     iss.candidate_message_id = new_mid
-                    iss.candidate_index = new_idx
                     iss.candidate_excerpt = new_exc
                 else:
                     sc2 = session.query(SceneModel).filter_by(pk=target_sc_pk).first()
-                    if sc2 and raw_msgs:
-                        valid_found = False
-                        for i in range(sc2.start_index + 1, sc2.end_index + 1):
-                            m = raw_msgs[i]
-                            m_id = str(m.get("id"))
-                            f_other = session.query(FlaggedMessageModel).filter_by(backup_id=str(backup_id), message_id=m_id).first()
-                            if f_other and f_other.resolution == FlaggedResolution.IGNORED.value:
-                                continue
-                            if m.get("type") == "Default" and not MENTION_ONLY_PAT.match(str(m.get("content", "") or "").strip()):
-                                sc2.start_message_id = m_id
-                                sc2.start_index = i
-                                sc2.start_at = t.parse_datetime(m.get("timestamp")) or sc2.start_at
-                                sc2.start_author_id = str(t.get_author_id(m) or "")
-                                cnt = str(m.get("content", ""))
-                                sc2.start_excerpt = cnt if len(cnt) <= EXCERPT_MAX_LEN else cnt[:(EXCERPT_MAX_LEN-3)] + "..."
-                                iss.candidate_message_id = m_id
-                                iss.candidate_index = i
-                                iss.candidate_excerpt = cnt[:250]
-                                valid_found = True
-                                _recompute_scene_participants(session, backup_id, base_path, sc2)
-                                break
-                        if not valid_found:
+                    if sc2 and chan_skeletons:
+                        found = _find_first_valid_forward(
+                            chan_skeletons,
+                            after_sf=snowflake_int(sc2.start_message_id),
+                            end_sf=snowflake_int(sc2.end_message_id),
+                        )
+                        if found:
+                            sk, eff = found
+                            m_id = eff["message_id_str"]
+                            new_excerpt = fetch_message_excerpt(backup_id, base_path, chan_model, m_id)
+                            sc2.start_message_id = m_id
+                            if eff["timestamp_dt"]:
+                                sc2.start_at = eff["timestamp_dt"]
+                            sc2.start_author_id = str(eff["author_id"])
+                            sc2.start_excerpt = new_excerpt
+                            iss.candidate_message_id = m_id
+                            iss.candidate_excerpt = new_excerpt
+                            _recompute_scene_participants(session, backup_id, base_path, sc2)
+                        else:
                             chan_pk = sc2.channel_pk
                             session.delete(sc2)
                             session.flush()
@@ -1724,25 +2080,23 @@ def _sync_scene_after_message_resolution(
 
         # 4. End boundary shrinking
         for sc in end_scenes:
-            if raw_msgs:
-                valid_found = False
-                for i in range(sc.end_index - 1, sc.start_index - 1, -1):
-                    m = raw_msgs[i]
-                    m_id = str(m.get("id"))
-                    f_other = session.query(FlaggedMessageModel).filter_by(backup_id=str(backup_id), message_id=m_id).first()
-                    if f_other and f_other.resolution == FlaggedResolution.IGNORED.value:
-                        continue
-                    if m.get("type") == "Default" and not MENTION_ONLY_PAT.match(str(m.get("content", "") or "").strip()):
-                        sc.end_message_id = m_id
-                        sc.end_index = i
-                        sc.end_at = t.parse_datetime(m.get("timestamp")) or sc.end_at
-                        sc.end_author_id = str(t.get_author_id(m) or "")
-                        cnt = str(m.get("content", ""))
-                        sc.end_excerpt = cnt if len(cnt) <= EXCERPT_MAX_LEN else "..." + cnt[-(EXCERPT_MAX_LEN-3):]
-                        valid_found = True
-                        _recompute_scene_participants(session, backup_id, base_path, sc)
-                        break
-                if not valid_found:
+            if chan_skeletons:
+                found = _find_last_valid_backward(
+                    chan_skeletons,
+                    start_sf=snowflake_int(sc.start_message_id),
+                    before_sf=snowflake_int(sc.end_message_id),
+                )
+                if found:
+                    sk, eff = found
+                    m_id = eff["message_id_str"]
+                    new_excerpt = fetch_message_excerpt(backup_id, base_path, chan_model, m_id)
+                    sc.end_message_id = m_id
+                    if eff["timestamp_dt"]:
+                        sc.end_at = eff["timestamp_dt"]
+                    sc.end_author_id = str(eff["author_id"])
+                    sc.end_excerpt = new_excerpt
+                    _recompute_scene_participants(session, backup_id, base_path, sc)
+                else:
                     chan_pk = sc.channel_pk
                     session.delete(sc)
                     session.flush()
@@ -1904,6 +2258,32 @@ def get_flagged_messages(
         ) if page_author_ids else []
         writer_cache = {str(w.discord_user_id).strip(): w for w in page_writers if w.discord_user_id}
 
+        # Batch-check IS_DELETED in skeletons.sqlite if present
+        deleted_flagged_keys: set = set()
+        if msgs_raw and has_skeleton_db(base_path, backup_id=backup_id):
+            chan_ids_chk = {int(f.channel.discord_id) for f in msgs_raw if f.channel and str(f.channel.discord_id).isdigit()}
+            msg_ids_chk = {int(f.message_id) for f in msgs_raw if str(f.message_id).isdigit()}
+            if chan_ids_chk and msg_ids_chk:
+                try:
+                    with skeleton_db_session(backup_id=backup_id, backup_path=base_path) as skel_session:
+                        rows = (
+                            skel_session.query(
+                                MessageSkeletonModel.channel_discord_id,
+                                MessageSkeletonModel.message_id,
+                                MessageSkeletonModel.flags,
+                            )
+                            .filter(
+                                MessageSkeletonModel.channel_discord_id.in_(chan_ids_chk),
+                                MessageSkeletonModel.message_id.in_(msg_ids_chk),
+                            )
+                            .all()
+                        )
+                        for ch_id, m_id, fl in rows:
+                            if int(fl or 0) & SkeletonFlags.IS_DELETED:
+                                deleted_flagged_keys.add((str(ch_id), str(m_id)))
+                except Exception:
+                    pass
+
         formatted = []
         for f in msgs_raw:
             channel = f.channel
@@ -1959,6 +2339,9 @@ def get_flagged_messages(
             if f.channel_pk and f.channel_pk in chan_scenes_map and chan_scenes_map[f.channel_pk]:
                 item_scene_type = chan_scenes_map[f.channel_pk][0].kind or SceneKind.SCENE.value
 
+            channel_is_deleted = bool(channel and channel.is_deleted)
+            message_is_deleted = bool((c_discord_id, str(f.message_id)) in deleted_flagged_keys)
+
             formatted.append({
                 "id": f.pk,
                 "message_id": f.message_id,
@@ -1967,12 +2350,17 @@ def get_flagged_messages(
                 "channel_name": c_name,
                 "channel_discord_id": c_discord_id,
                 "content": f.content,
+                "is_excerpt_truncated": bool(getattr(f, "is_excerpt_truncated", False)),
+                "channel_is_deleted": channel_is_deleted,
+                "message_is_deleted": message_is_deleted,
+                "is_deleted": bool(channel_is_deleted or message_is_deleted),
                 "author": f.author,
                 "discord_link": discord_link,
                 "flagged_at": f.flagged_at.isoformat() if f.flagged_at else None,
                 "resolution": f.resolution,
                 "override_content": f.override_content,
                 "override_author": f.override_author,
+                "override_flags": getattr(f, "override_flags", None),
                 "resolved_at": f.resolved_at.isoformat() if f.resolved_at else None,
                 "resolved_note": f.resolved_note,
                 "suggested_character": suggested,
@@ -2038,31 +2426,47 @@ def resolve_flagged_message(
         flagged.resolved_note = note.strip() if note and note.strip() else f"Resolved as {resolution}"
 
         if resolution == FlaggedResolution.OVERRIDE.value:
-            target_content = override_content if override_content is not None else flagged.content
             target_author = override_author if override_author is not None else flagged.author
+            resolved_aid_int = None
             if isinstance(target_author, dict) and "id" in target_author:
                 target_author = dict(target_author)
                 clean_id = str(target_author["id"]).strip()
                 target_author["id"] = clean_id
-                if clean_id.isdigit() and t.is_tupper(int(clean_id)):
-                    target_author["isBot"] = True
-                    char_model = (
-                        session.query(CharacterModel)
-                        .options(selectinload(CharacterModel.names))
-                        .filter_by(backup_id=str(backup_id), char_id=int(clean_id))
-                        .first()
-                    )
-                    if char_model and char_model.names:
-                        sorted_names = [n.name for n in sorted(char_model.names, key=lambda x: x.position)]
-                        if sorted_names:
-                            target_author["name"] = sorted_names[0]
+                if clean_id.isdigit():
+                    resolved_aid_int = int(clean_id)
+                    if t.is_tupper(resolved_aid_int):
+                        target_author["isBot"] = True
+                        char_model = (
+                            session.query(CharacterModel)
+                            .options(selectinload(CharacterModel.names))
+                            .filter_by(backup_id=str(backup_id), char_id=resolved_aid_int)
+                            .first()
+                        )
+                        if char_model and char_model.names:
+                            sorted_names = [n.name for n in sorted(char_model.names, key=lambda x: x.position)]
+                            if sorted_names:
+                                target_author["name"] = sorted_names[0]
                 if target_author.get("name"):
                     target_author["nickname"] = target_author["name"]
-            flagged.override_content = target_content
+
+            if override_content is not None:
+                flagged.override_content = override_content
+                flagged.override_flags = compute_skeleton_flags(
+                    {
+                        "type": "Default",
+                        "content": override_content,
+                        "author": target_author or {},
+                    },
+                    author_id=resolved_aid_int,
+                )
+            else:
+                flagged.override_content = None
+                flagged.override_flags = None
             flagged.override_author = target_author
         else:
             flagged.override_content = None
             flagged.override_author = None
+            flagged.override_flags = None
 
         _sync_scene_after_message_resolution(session, backup_id, base_path, flagged)
         session.flush()
@@ -2102,106 +2506,113 @@ def reopen_flagged_message(
         flagged.resolved_note = None
         flagged.override_content = None
         flagged.override_author = None
+        flagged.override_flags = None
+
+        msg_sf = snowflake_int(message_id)
 
         if old_res == FlaggedResolution.IGNORED.value and flagged.channel_pk:
             chan_model = session.query(ChannelModel).filter_by(pk=flagged.channel_pk).first()
             if chan_model:
-                c_path = Path(chan_model.path)
-                f_path = Path(base_path) / c_path if (Path(base_path) / c_path).exists() else Path(base_path) / "Data" / c_path
-                if f_path.exists():
-                    chan_data = t.load_from_json(f_path.as_posix())
-                    raw_msgs = chan_data.get("messages", [])
-                    msg_idx = next((i for i, m in enumerate(raw_msgs) if str(m.get("id")) == str(message_id)), None)
-                    if msg_idx is not None:
-                        target_msg = raw_msgs[msg_idx]
-                        orig_author_id = str(t.get_author_id(target_msg) or (flagged.author or {}).get("id") or "")
-                        orig_timestamp = t.parse_datetime(target_msg.get("timestamp"))
-                        cnt = str(flagged.content or "")
-                        start_excerpt = cnt if len(cnt) <= EXCERPT_MAX_LEN else cnt[:(EXCERPT_MAX_LEN-3)] + "..."
-                        end_excerpt = cnt if len(cnt) <= EXCERPT_MAX_LEN else "..." + cnt[-(EXCERPT_MAX_LEN-3):]
+                skels = _load_skeletons_or_json_fallback(
+                    backup_id,
+                    base_path,
+                    chan_model,
+                    start_message_id=message_id,
+                    end_message_id=message_id,
+                )
+                target_sk = skels[0] if skels else None
+                if target_sk is not None:
+                    orig_author_id = str(target_sk.author_id or (flagged.author or {}).get("id") or "")
+                    orig_timestamp = (
+                        datetime.fromtimestamp(int(target_sk.timestamp_unix), tz=timezone.utc)
+                        if target_sk.timestamp_unix
+                        else None
+                    )
+                    cnt = str(flagged.content or "")
+                    eff_excerpt = t.format_excerpt(cnt)
 
-                        scenes = session.query(SceneModel).filter_by(backup_id=str(backup_id), channel_pk=flagged.channel_pk).order_by(SceneModel.start_index).all()
-                        prev_scene = next((sc for sc in reversed(scenes) if sc.end_index <= msg_idx), None)
-                        next_scene = next((sc for sc in scenes if sc.start_index >= msg_idx), None)
+                    scenes = (
+                        session.query(SceneModel)
+                        .filter_by(backup_id=str(backup_id), channel_pk=flagged.channel_pk)
+                        .order_by(cast(SceneModel.start_message_id, BigInteger).asc(), SceneModel.start_at.asc())
+                        .all()
+                    )
+                    prev_scene = next(
+                        (sc for sc in reversed(scenes) if snowflake_int(sc.end_message_id) <= msg_sf),
+                        None,
+                    )
+                    next_scene = next(
+                        (sc for sc in scenes if snowflake_int(sc.start_message_id) >= msg_sf),
+                        None,
+                    )
 
-                        target_scene = None
-                        target_role = None
-                        if prev_scene and not next_scene:
+                    target_scene = None
+                    target_role = None
+                    if prev_scene and not next_scene:
+                        target_scene = prev_scene
+                        target_role = "end"
+                    elif next_scene and not prev_scene:
+                        target_scene = next_scene
+                        target_role = "start"
+                    elif prev_scene and next_scene:
+                        if int(target_sk.flags) & SkeletonFlags.HAS_END_TAG:
                             target_scene = prev_scene
                             target_role = "end"
-                        elif next_scene and not prev_scene:
+                        else:
                             target_scene = next_scene
                             target_role = "start"
-                        elif prev_scene and next_scene:
-                            if has_end_tag(target_msg):
-                                target_scene = prev_scene
-                                target_role = "end"
-                            else:
-                                target_scene = next_scene
-                                target_role = "start"
 
-                        if target_scene and target_role == "start":
-                            old_start_mid = target_scene.start_message_id
-                            target_scene.start_message_id = str(message_id)
-                            target_scene.start_index = msg_idx
-                            target_scene.start_author_id = orig_author_id
-                            if orig_timestamp:
-                                target_scene.start_at = orig_timestamp
-                            target_scene.start_excerpt = start_excerpt
-                            _recompute_scene_participants(session, backup_id, base_path, target_scene)
+                    if target_scene and target_role == "start":
+                        old_start_mid = target_scene.start_message_id
+                        target_scene.start_message_id = str(message_id)
+                        target_scene.start_author_id = orig_author_id
+                        if orig_timestamp:
+                            target_scene.start_at = orig_timestamp
+                        target_scene.start_excerpt = eff_excerpt
+                        _recompute_scene_participants(session, backup_id, base_path, target_scene)
 
-                            issues = session.query(SceneIssueModel).filter(
-                                SceneIssueModel.backup_id == str(backup_id),
-                                (SceneIssueModel.candidate_message_id == old_start_mid) | (SceneIssueModel.next_scene_pk == target_scene.pk),
-                            ).all()
-                            for iss in issues:
-                                if iss.resolution == IssueResolution.SPLIT.value or iss.kind == IssueKind.AUTO_SPLIT.value:
-                                    iss.candidate_message_id = str(message_id)
-                                    iss.candidate_index = msg_idx
-                                    iss.candidate_excerpt = cnt[:250]
+                        issues = session.query(SceneIssueModel).filter(
+                            SceneIssueModel.backup_id == str(backup_id),
+                            (SceneIssueModel.candidate_message_id == old_start_mid) | (SceneIssueModel.next_scene_pk == target_scene.pk),
+                        ).all()
+                        for iss in issues:
+                            if iss.resolution == IssueResolution.SPLIT.value or iss.kind == IssueKind.AUTO_SPLIT.value:
+                                iss.candidate_message_id = str(message_id)
+                                iss.candidate_excerpt = eff_excerpt
 
-                        elif target_scene and target_role == "end":
-                            target_scene.end_message_id = str(message_id)
-                            target_scene.end_index = msg_idx
-                            target_scene.end_author_id = orig_author_id
-                            if orig_timestamp:
-                                target_scene.end_at = orig_timestamp
-                            target_scene.end_excerpt = end_excerpt
-                            _recompute_scene_participants(session, backup_id, base_path, target_scene)
+                    elif target_scene and target_role == "end":
+                        target_scene.end_message_id = str(message_id)
+                        target_scene.end_author_id = orig_author_id
+                        if orig_timestamp:
+                            target_scene.end_at = orig_timestamp
+                        target_scene.end_excerpt = eff_excerpt
+                        _recompute_scene_participants(session, backup_id, base_path, target_scene)
 
         elif old_res == FlaggedResolution.OVERRIDE.value:
             orig_author_id = str((flagged.author or {}).get("id") or "")
             orig_content = str(flagged.content or "")
+            orig_excerpt = t.format_excerpt(orig_content)
             start_scenes = session.query(SceneModel).filter_by(backup_id=str(backup_id), start_message_id=str(message_id)).all()
             for sc in start_scenes:
                 sc.start_author_id = orig_author_id
-                sc.start_excerpt = orig_content if len(orig_content) <= EXCERPT_MAX_LEN else orig_content[:(EXCERPT_MAX_LEN-3)] + "..."
+                sc.start_excerpt = orig_excerpt
                 _recompute_scene_participants(session, backup_id, base_path, sc)
 
             end_scenes = session.query(SceneModel).filter_by(backup_id=str(backup_id), end_message_id=str(message_id)).all()
             for sc in end_scenes:
                 sc.end_author_id = orig_author_id
-                sc.end_excerpt = orig_content if len(orig_content) <= EXCERPT_MAX_LEN else "..." + orig_content[-(EXCERPT_MAX_LEN-3):]
+                sc.end_excerpt = orig_excerpt
                 _recompute_scene_participants(session, backup_id, base_path, sc)
 
-            if not start_scenes and not end_scenes and flagged.channel_pk:
-                chan_model = session.query(ChannelModel).filter_by(pk=flagged.channel_pk).first()
-                if chan_model:
-                    c_path = Path(chan_model.path)
-                    f_path = Path(base_path) / c_path if (Path(base_path) / c_path).exists() else Path(base_path) / "Data" / c_path
-                    if f_path.exists():
-                        chan_data = t.load_from_json(f_path.as_posix())
-                        raw_msgs = chan_data.get("messages", [])
-                        msg_idx = next((i for i, m in enumerate(raw_msgs) if str(m.get("id")) == str(message_id)), None)
-                        if msg_idx is not None:
-                            mid_scenes = session.query(SceneModel).filter(
-                                SceneModel.backup_id == str(backup_id),
-                                SceneModel.channel_pk == flagged.channel_pk,
-                                SceneModel.start_index <= msg_idx,
-                                SceneModel.end_index >= msg_idx,
-                            ).all()
-                            for sc in mid_scenes:
-                                _recompute_scene_participants(session, backup_id, base_path, sc)
+            if not start_scenes and not end_scenes and flagged.channel_pk and msg_sf > 0:
+                mid_scenes = session.query(SceneModel).filter(
+                    SceneModel.backup_id == str(backup_id),
+                    SceneModel.channel_pk == flagged.channel_pk,
+                    cast(SceneModel.start_message_id, BigInteger) <= msg_sf,
+                    cast(SceneModel.end_message_id, BigInteger) >= msg_sf,
+                ).all()
+                for sc in mid_scenes:
+                    _recompute_scene_participants(session, backup_id, base_path, sc)
 
         session.flush()
         try:
@@ -2250,9 +2661,8 @@ def add_manual_flagged_message(
 
         channel = (
             session.query(ChannelModel)
-            .join(ExportModel)
             .filter(
-                ExportModel.backup_id == str(backup_id),
+                ChannelModel.backup_id == str(backup_id),
                 ChannelModel.discord_id == str(channel_id),
             )
             .first()
@@ -2260,15 +2670,52 @@ def add_manual_flagged_message(
         if not channel:
             raise exc.ValidationError(f"Channel {channel_id} not found in this backup.")
 
+        found_content = None
+        found_author = None
+        is_truncated = False
+
         c_path = Path(channel.path)
         f_path = Path(base_path) / c_path if (Path(base_path) / c_path).exists() else Path(base_path) / "Data" / c_path
-        if not f_path.exists():
-            raise exc.ValidationError(f"Channel data file not found at {channel.path}.")
+        if f_path.exists():
+            chan_data = t.load_from_json(f_path.as_posix())
+            raw_msgs = chan_data.get("messages", [])
+            found_msg = next((m for m in raw_msgs if str(m.get("id")) == str(message_id)), None)
+            if found_msg:
+                found_content = str(found_msg.get("content", ""))
+                found_author = found_msg.get("author", {})
 
-        chan_data = t.load_from_json(f_path.as_posix())
-        raw_msgs = chan_data.get("messages", [])
-        found_msg = next((m for m in raw_msgs if str(m.get("id")) == str(message_id)), None)
-        if not found_msg:
+        if found_author is None:
+            skels = load_channel_skeletons(
+                backup_id, base_path, channel.discord_id, start_message_id=message_id, end_message_id=message_id
+            )
+            if skels:
+                sk = skels[0]
+                aid_str = str(sk.author_id)
+                author_name = f"User #{aid_str}"
+                is_bot = t.is_tupper(sk.author_id)
+                if is_bot:
+                    char_m = (
+                        session.query(CharacterModel)
+                        .options(selectinload(CharacterModel.names))
+                        .filter_by(backup_id=str(backup_id), char_id=int(sk.author_id))
+                        .first()
+                    )
+                    if char_m and char_m.names:
+                        author_name = sorted(char_m.names, key=lambda n: n.position)[0].name
+                else:
+                    seen_u = (
+                        session.query(SeenDiscordUserModel)
+                        .filter_by(backup_id=str(backup_id), discord_user_id=aid_str)
+                        .first()
+                    )
+                    if seen_u:
+                        author_name = seen_u.nickname or seen_u.global_name or seen_u.username
+                found_author = {"id": aid_str, "name": author_name, "isBot": is_bot}
+                fetched = fetch_message_excerpt(backup_id, base_path, channel, str(message_id))
+                found_content = fetched if fetched is not None else ""
+                is_truncated = fetched is None
+
+        if found_author is None:
             raise exc.ValidationError(f"Message {message_id} not found in channel #{channel.name}.")
 
         existing = (
@@ -2289,8 +2736,9 @@ def add_manual_flagged_message(
                 message_id=str(message_id),
                 channel_pk=channel.pk,
                 kind=FlaggedKind.MANUAL.value,
-                content=str(found_msg.get("content", "")),
-                author=found_msg.get("author", {}),
+                content=found_content or "",
+                is_excerpt_truncated=is_truncated,
+                author=found_author,
                 flagged_at=now_utc,
                 resolved_note=note.strip() if note and note.strip() else None,
             )
@@ -2346,9 +2794,8 @@ def create_manual_scene_split(
 
         channel = (
             session.query(ChannelModel)
-            .join(ExportModel)
             .filter(
-                ExportModel.backup_id == str(backup_id),
+                ChannelModel.backup_id == str(backup_id),
                 ChannelModel.discord_id == str(channel_id),
             )
             .first()
@@ -2367,33 +2814,35 @@ def create_manual_scene_split(
                 "This message is marked as Ignored (OOC). Reopen it in Flagged Messages or pick the next in-character message."
             )
 
-        c_path = Path(channel.path)
-        f_path = Path(base_path) / c_path if (Path(base_path) / c_path).exists() else Path(base_path) / "Data" / c_path
-        if not f_path.exists():
-            raise exc.ValidationError(f"Channel data file not found at {channel.path}.")
-
-        chan_data = t.load_from_json(f_path.as_posix())
-        raw_msgs = chan_data.get("messages", [])
-        msg_idx = next((i for i, m in enumerate(raw_msgs) if str(m.get("id")) == str(message_id)), None)
-        if msg_idx is None:
+        skels = _load_skeletons_or_json_fallback(
+            backup_id, base_path, channel, start_message_id=message_id, end_message_id=message_id
+        )
+        if not skels:
             raise exc.ValidationError(f"Message {message_id} not found in channel #{channel.name}.")
-        found_msg = raw_msgs[msg_idx]
 
-        # Locate containing scene
+        msg_sf = snowflake_int(message_id)
+
+        # Locate containing scene via Snowflake bounds
         scenes = (
             session.query(SceneModel)
             .filter_by(backup_id=str(backup_id), channel_pk=channel.pk)
-            .order_by(SceneModel.start_index)
+            .order_by(cast(SceneModel.start_message_id, BigInteger).asc(), SceneModel.start_at.asc())
             .all()
         )
-        target_scene = next((sc for sc in scenes if sc.start_index <= msg_idx <= sc.end_index), None)
+        target_scene = next(
+            (sc for sc in scenes if snowflake_int(sc.start_message_id) <= msg_sf <= snowflake_int(sc.end_message_id)),
+            None,
+        )
         if not target_scene:
             raise exc.ValidationError(f"Message {message_id} is not inside an indexed scene.")
 
-        if str(target_scene.start_message_id) == str(message_id) or target_scene.start_index == msg_idx:
+        if str(target_scene.start_message_id) == str(message_id):
             raise exc.ValidationError(
                 f"Message {message_id} is already the start message of Scene {target_scene.scene_key}."
             )
+
+        flagged_map = {str(message_id): flagged.content} if flagged else None
+        cand_excerpt = fetch_message_excerpt(backup_id, base_path, channel, str(message_id), flagged_content_map=flagged_map)
 
         now_utc = datetime.now(timezone.utc)
         issue = SceneIssueModel(
@@ -2403,8 +2852,8 @@ def create_manual_scene_split(
             kind=IssueKind.SOFT_BOUNDARY.value,
             reason=IssueReason.MANUAL.value,
             candidate_message_id=str(message_id),
-            candidate_index=msg_idx,
-            candidate_excerpt=str(found_msg.get("content", ""))[:250],
+            candidate_index=None,
+            candidate_excerpt=cand_excerpt,
             created_at=now_utc,
             resolved_at=now_utc,
             resolution=IssueResolution.SPLIT.value,
@@ -2419,7 +2868,6 @@ def create_manual_scene_split(
             base_path,
             target_scene,
             candidate_message_id=str(message_id),
-            candidate_index=msg_idx,
             exclude_issue_pk=issue.pk,
         )
         issue.next_scene_pk = s2.pk
@@ -2481,9 +2929,9 @@ def get_message_overrides(
     overrides = []
     for m in res.get("messages", []):
         item = dict(m)
-        if item.get("override_content"):
+        if item.get("override_content") is not None:
             item["content"] = item["override_content"]
-        if item.get("override_author"):
+        if item.get("override_author") is not None:
             item["author"] = item["override_author"]
         overrides.append(item)
     res["overrides"] = overrides
@@ -2507,8 +2955,8 @@ def get_overrides_map(backup_id: str, base_path: str) -> Dict[str, Dict[str, Any
         ).all()
         return {
             str(o.message_id): {
-                "content": o.override_content or o.content,
-                "author": o.override_author or o.author,
+                "content": o.override_content if o.override_content is not None else o.content,
+                "author": o.override_author if o.override_author is not None else o.author,
             }
             for o in overrides
         }
@@ -2536,10 +2984,9 @@ def save_flagged_messages(
             FlaggedMessageModel.kind != FlaggedKind.MANUAL.value,
         ).delete()
 
-        # Build discord_id -> channel_pk map
-        channels = session.query(ChannelModel).join(ExportModel).filter(
-            ExportModel.backup_id == str(backup_id),
-            ExportModel.scope == Scope.BASE.value
+        # Build discord_id -> channel_pk map (Schema v6: direct backup_id FK)
+        channels = session.query(ChannelModel).filter(
+            ChannelModel.backup_id == str(backup_id),
         ).all()
         chan_map = {ch.discord_id: ch.pk for ch in channels}
 
@@ -2561,6 +3008,7 @@ def save_flagged_messages(
                 channel_pk=chan_map.get(chan_discord_id),
                 kind=str(item.get("kind", FlaggedKind.OOC_MESSAGE.value)),
                 content=str(item.get("content", "")),
+                is_excerpt_truncated=bool(item.get("is_excerpt_truncated", False)),
                 author=item.get("author", {}),
                 flagged_at=item.get("flagged_at") or now_utc,
             )
@@ -2569,6 +3017,66 @@ def save_flagged_messages(
 
         session.flush()
 
+        if debug_files:
+            export_curation_snapshots(session, backup_id, base_path)
+
+
+def save_channel_flagged_messages(
+    backup_id: str,
+    base_path: str,
+    channel_pk: int,
+    flagged_items: List[Dict[str, Any]],
+    min_message_id: Optional[Any] = None,
+    debug_files: bool = False,
+) -> None:
+    """
+    Channel-scoped atomic upsert for auto-detected FlaggedMessageModel rows.
+    Deletes only unresolved auto-detected rows in `channel_pk` (optionally bounded
+    to `cast(message_id, BigInteger) > int(min_message_id)`), preserving all resolved
+    rows, manual items, and older unresolved rows before the lookback window.
+    """
+    require_db(base_path, backup_id=backup_id)
+    init_db(engine_or_backup_id=backup_id, backup_path=base_path)
+    now_utc = datetime.now(timezone.utc)
+    min_sf = int(min_message_id) if (min_message_id is not None and str(min_message_id).isdigit() and int(min_message_id) > 0) else None
+
+    with db_session(backup_id=backup_id, backup_path=base_path) as session:
+        del_q = session.query(FlaggedMessageModel).filter(
+            FlaggedMessageModel.backup_id == str(backup_id),
+            FlaggedMessageModel.channel_pk == int(channel_pk),
+            FlaggedMessageModel.resolved_at.is_(None),
+            FlaggedMessageModel.kind != FlaggedKind.MANUAL.value,
+        )
+        if min_sf is not None:
+            del_q = del_q.filter(cast(FlaggedMessageModel.message_id, BigInteger) > min_sf)
+        del_q.delete(synchronize_session=False)
+
+        existing_mids = {
+            str(r[0])
+            for r in session.query(FlaggedMessageModel.message_id).filter(
+                FlaggedMessageModel.backup_id == str(backup_id)
+            ).all()
+        }
+
+        for item in flagged_items:
+            mid = str(item["message_id"])
+            if mid in existing_mids:
+                continue
+            raw_content = str(item.get("content", "") or "")
+            flagged = FlaggedMessageModel(
+                backup_id=str(backup_id),
+                message_id=mid,
+                channel_pk=int(channel_pk),
+                kind=str(item.get("kind", FlaggedKind.OOC_MESSAGE.value)),
+                content=t.format_excerpt(raw_content),
+                is_excerpt_truncated=bool(item.get("is_excerpt_truncated", len(raw_content) > 250)),
+                author=item.get("author", {}),
+                flagged_at=item.get("flagged_at") or now_utc,
+            )
+            session.add(flagged)
+            existing_mids.add(mid)
+
+        session.flush()
         if debug_files:
             export_curation_snapshots(session, backup_id, base_path)
 
@@ -2769,10 +3277,13 @@ def _evaluate_scene_pair_merge(session, backup_id: str, s1: SceneModel, s2: Scen
     can_merge = True
     disabled_reason = None
 
+    s1_end_sf = snowflake_int(s1.end_message_id)
+    s2_start_sf = snowflake_int(s2.start_message_id)
+
     if s1.channel_pk != s2.channel_pk:
         can_merge = False
         disabled_reason = "Scenes belong to different channels."
-    elif s2.start_index <= s1.end_index:
+    elif s2_start_sf <= s1_end_sf:
         can_merge = False
         disabled_reason = "Overlapping scenes cannot be merged."
     else:
@@ -2782,8 +3293,8 @@ def _evaluate_scene_pair_merge(session, backup_id: str, s1: SceneModel, s2: Scen
             .filter(
                 SceneModel.backup_id == str(backup_id),
                 SceneModel.channel_pk == s1.channel_pk,
-                SceneModel.start_index > s1.end_index,
-                SceneModel.start_index < s2.start_index,
+                cast(SceneModel.start_message_id, BigInteger) > s1_end_sf,
+                cast(SceneModel.start_message_id, BigInteger) < s2_start_sf,
             )
             .first()
         )
@@ -2823,6 +3334,8 @@ def get_scene_merge_neighbors(
 
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
         scene = _find_scene_by_id(session, backup_id, scene_id)
+        sc_start_sf = snowflake_int(scene.start_message_id)
+        sc_end_sf = snowflake_int(scene.end_message_id)
 
         # Immediate previous scene in same channel
         prev_scene = (
@@ -2831,9 +3344,9 @@ def get_scene_merge_neighbors(
                 SceneModel.backup_id == str(backup_id),
                 SceneModel.channel_pk == scene.channel_pk,
                 SceneModel.kind == scene.kind,
-                SceneModel.end_index < scene.start_index,
+                cast(SceneModel.end_message_id, BigInteger) < sc_start_sf,
             )
-            .order_by(SceneModel.start_index.desc())
+            .order_by(cast(SceneModel.start_message_id, BigInteger).desc())
             .first()
         )
 
@@ -2844,9 +3357,9 @@ def get_scene_merge_neighbors(
                 SceneModel.backup_id == str(backup_id),
                 SceneModel.channel_pk == scene.channel_pk,
                 SceneModel.kind == scene.kind,
-                SceneModel.start_index > scene.end_index,
+                cast(SceneModel.start_message_id, BigInteger) > sc_end_sf,
             )
-            .order_by(SceneModel.start_index.asc())
+            .order_by(cast(SceneModel.start_message_id, BigInteger).asc())
             .first()
         )
 
@@ -2911,6 +3424,8 @@ def merge_adjacent_scene(
 
     with db_session(backup_id=backup_id, backup_path=base_path) as session:
         scene = _find_scene_by_id(session, backup_id, scene_id)
+        sc_start_sf = snowflake_int(scene.start_message_id)
+        sc_end_sf = snowflake_int(scene.end_message_id)
 
         if direction == "prev":
             prev_scene = (
@@ -2919,9 +3434,9 @@ def merge_adjacent_scene(
                     SceneModel.backup_id == str(backup_id),
                     SceneModel.channel_pk == scene.channel_pk,
                     SceneModel.kind == scene.kind,
-                    SceneModel.end_index < scene.start_index,
+                    cast(SceneModel.end_message_id, BigInteger) < sc_start_sf,
                 )
-                .order_by(SceneModel.start_index.desc())
+                .order_by(cast(SceneModel.start_message_id, BigInteger).desc())
                 .first()
             )
             if not prev_scene:
@@ -2935,9 +3450,9 @@ def merge_adjacent_scene(
                     SceneModel.backup_id == str(backup_id),
                     SceneModel.channel_pk == scene.channel_pk,
                     SceneModel.kind == scene.kind,
-                    SceneModel.start_index > scene.end_index,
+                    cast(SceneModel.start_message_id, BigInteger) > sc_end_sf,
                 )
-                .order_by(SceneModel.start_index.asc())
+                .order_by(cast(SceneModel.start_message_id, BigInteger).asc())
                 .first()
             )
             if not next_scene:

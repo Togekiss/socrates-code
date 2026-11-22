@@ -19,7 +19,7 @@ import { BackupStatusGuard } from './layout/BackupStatusGuard';
 import { ListPageLayout } from './layout/ListPageLayout';
 import { useBackupStatusGuard } from '../hooks/useBackupStatusGuard';
 import { PanelSurface, Button } from './ui';
-import type { BackupInfo, User, WriterDetailed, WriterLinkSuggestion } from '../types';
+import type { BackupInfo, SeenDiscordUser, User, WriterDetailed, WriterLinkSuggestion } from '../types';
 import { getRoleLevel, ROLE_LEVELS } from '../utils/rbac';
 
 interface WritersTabProps {
@@ -45,6 +45,7 @@ export const WritersTab = ({
 }: WritersTabProps) => {
   const [writers, setWriters] = useState<WriterDetailed[]>([]);
   const [suggestions, setSuggestions] = useState<WriterLinkSuggestion[]>([]);
+  const [seenDiscordUsers, setSeenDiscordUsers] = useState<SeenDiscordUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -60,6 +61,8 @@ export const WritersTab = ({
   const [editingWriter, setEditingWriter] = useState<WriterDetailed | null>(null);
   const [isCreatingWriter, setIsCreatingWriter] = useState(false);
   const [linkingSuggestionId, setLinkingSuggestionId] = useState<number | null>(null);
+  const [acceptingAllSuggestions, setAcceptingAllSuggestions] = useState(false);
+  const [creatingFromDiscordUsers, setCreatingFromDiscordUsers] = useState(false);
 
   const effectiveRoleLevel = propRoleLevel ?? backupInfo?.role_level ?? getRoleLevel(backupInfo?.effective_role);
   const canCurate = effectiveRoleLevel >= ROLE_LEVELS.curator;
@@ -76,6 +79,7 @@ export const WritersTab = ({
   useEffect(() => {
     setWriters([]);
     setSuggestions([]);
+    setSeenDiscordUsers([]);
     setError(null);
     setCharCountMin(0);
     setCharCountMax(null);
@@ -88,15 +92,18 @@ export const WritersTab = ({
     Promise.all([
       api.getWritersDetailed(backupId),
       canCurate ? api.getWriterLinkSuggestions(backupId).catch(() => []) : Promise.resolve([]),
+      canCurate ? api.getSeenDiscordUsers(backupId).catch(() => []) : Promise.resolve([]),
     ])
-      .then(([wData, sData]) => {
+      .then(([wData, sData, uData]) => {
         setWriters(Array.isArray(wData) ? wData : []);
         setSuggestions(canCurate && Array.isArray(sData) ? sData : []);
+        setSeenDiscordUsers(canCurate && Array.isArray(uData) ? uData : []);
       })
       .catch(err => {
         console.error(err);
         setWriters([]);
         setSuggestions([]);
+        setSeenDiscordUsers([]);
         setError(getErrorMessage(err, 'Failed to load writers data.'));
       })
       .finally(() => {
@@ -109,6 +116,24 @@ export const WritersTab = ({
       fetchData();
     }
   }, [statusGuard.isReady, fetchData]);
+
+  const unlinkedDiscordUsersCount = useMemo(() => {
+    if (!canCurate || seenDiscordUsers.length === 0) return 0;
+    const linkedIds = new Set(
+      writers
+        .map(w => w.discord_user_id?.trim())
+        .filter((id): id is string => Boolean(id))
+    );
+    const suggestedIds = new Set(
+      suggestions
+        .map(s => (s.suggested_discord_id ?? s.suggested_discord_user_id ?? '').trim())
+        .filter(Boolean)
+    );
+    return seenDiscordUsers.filter(u => {
+      const uid = u.discord_user_id?.trim();
+      return Boolean(uid) && !u.linked_writer_id && !linkedIds.has(uid) && !suggestedIds.has(uid);
+    }).length;
+  }, [canCurate, seenDiscordUsers, writers, suggestions]);
 
   const handleAcceptSuggestion = async (sugg: WriterLinkSuggestion) => {
     const writerId = sugg.writer_id ?? sugg.writer_pk;
@@ -127,6 +152,37 @@ export const WritersTab = ({
       setError(getErrorMessage(err, 'Failed to link writer suggestion.'));
     } finally {
       setLinkingSuggestionId(null);
+    }
+  };
+
+  const handleAcceptAllSuggestions = async () => {
+    if (suggestions.length === 0) return;
+    setAcceptingAllSuggestions(true);
+    setError(null);
+    try {
+      await api.acceptAllWriterLinkSuggestions(backupId);
+      fetchData();
+      if (onRefreshSummary) onRefreshSummary();
+    } catch (err) {
+      console.error('Failed to accept all link suggestions:', err);
+      setError(getErrorMessage(err, 'Failed to accept all writer link suggestions.'));
+    } finally {
+      setAcceptingAllSuggestions(false);
+    }
+  };
+
+  const handleCreateWritersFromDiscordUsers = async () => {
+    setCreatingFromDiscordUsers(true);
+    setError(null);
+    try {
+      await api.createWritersFromDiscordUsers(backupId);
+      fetchData();
+      if (onRefreshSummary) onRefreshSummary();
+    } catch (err) {
+      console.error('Failed to create writers from Discord users:', err);
+      setError(getErrorMessage(err, 'Failed to create writers from Discord users.'));
+    } finally {
+      setCreatingFromDiscordUsers(false);
     }
   };
 
@@ -201,6 +257,8 @@ export const WritersTab = ({
           <Button
             variant="secondary"
             size="md"
+            disabled={!statusGuard.canMutate}
+            title={!statusGuard.canMutate ? 'Editing is disabled while sync is in progress.' : undefined}
             onClick={() => setIsCreatingWriter(true)}
             icon={<Plus size={14} />}
           >
@@ -208,6 +266,7 @@ export const WritersTab = ({
           </Button>
         ) : undefined
       }
+      banners={<BackupStatusGuard title="Writers" guard={statusGuard} />}
       filterBar={
         <WritersFilter
           searchFilter={search}
@@ -240,6 +299,7 @@ export const WritersTab = ({
           <WriterEditModal
             backupId={backupId}
             writer={editingWriter}
+            seenDiscordUsers={canCurate ? seenDiscordUsers : undefined}
             isParticipantSelfEdit={!canCurate && isParticipant}
             onClose={() => {
               setIsCreatingWriter(false);
@@ -258,7 +318,13 @@ export const WritersTab = ({
         <WriterLinkSuggestions
           suggestions={suggestions}
           linkingSuggestionId={linkingSuggestionId}
+          unlinkedDiscordUsersCount={unlinkedDiscordUsersCount}
+          acceptingAll={acceptingAllSuggestions}
+          creatingFromDiscordUsers={creatingFromDiscordUsers}
+          disabled={!statusGuard.canMutate}
           onAcceptSuggestion={handleAcceptSuggestion}
+          onAcceptAllSuggestions={handleAcceptAllSuggestions}
+          onCreateWritersFromDiscordUsers={handleCreateWritersFromDiscordUsers}
         />
       )}
 
@@ -299,6 +365,8 @@ export const WritersTab = ({
               <Button
                 variant="secondary"
                 size="sm"
+                disabled={!statusGuard.canMutate}
+                title={!statusGuard.canMutate ? 'Editing is disabled while sync is in progress.' : undefined}
                 onClick={() => setIsCreatingWriter(true)}
                 icon={<Plus size={14} />}
               >
@@ -321,7 +389,8 @@ export const WritersTab = ({
                 key={writer.id}
                 writer={writer}
                 showDiscordId={showDiscordId}
-                onEdit={canEditWriter ? setEditingWriter : undefined}
+                editDisabled={!statusGuard.canMutate}
+                onEdit={canEditWriter ? w => { if (statusGuard.canMutate) setEditingWriter(w); } : undefined}
               />
             );
           })}

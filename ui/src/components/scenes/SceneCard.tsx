@@ -1,5 +1,5 @@
 import React from 'react';
-import { Check, AlertCircle, Edit3 } from 'lucide-react';
+import { Check, AlertCircle, AlertTriangle, Edit3 } from 'lucide-react';
 import { DataCard, Badge, Button, FilterChip } from '../ui';
 import { MessageExcerptAccordion } from './MessageExcerptAccordion';
 import { resolveCharacterName } from '../../utils/characters';
@@ -12,6 +12,7 @@ interface SceneCardProps {
   charactersFilter: number[];
   setCharactersFilter: (filter: number[]) => void;
   onEdit?: (scene: Scene) => void;
+  editDisabled?: boolean;
 }
 
 export const SceneCard: React.FC<SceneCardProps> = ({
@@ -20,6 +21,7 @@ export const SceneCard: React.FC<SceneCardProps> = ({
   charactersFilter,
   setCharactersFilter,
   onEdit,
+  editDisabled = false,
 }) => {
   const hasUnresolvedIssues =
     scene.issues &&
@@ -33,7 +35,9 @@ export const SceneCard: React.FC<SceneCardProps> = ({
 
   const startTs = formatTimestamp(scene.start?.timestamp);
   const msgCount =
-    scene.end && scene.start && typeof scene.end.index === 'number' && typeof scene.start.index === 'number'
+    typeof scene.message_count === 'number'
+      ? scene.message_count
+      : scene.end && scene.start && typeof scene.end.index === 'number' && typeof scene.start.index === 'number'
       ? Math.max(0, scene.end.index - scene.start.index + 1)
       : 0;
 
@@ -74,6 +78,17 @@ export const SceneCard: React.FC<SceneCardProps> = ({
 
         {/* Status badges, counts, and FAR RIGHT Edit button */}
         <div className="flex-row items-center gap-xs flex-wrap">
+          {scene.is_deleted && (
+            <Badge
+              variant="danger"
+              className="text-sm font-semibold"
+              title="Channel or boundary message was deleted on Discord"
+            >
+              <AlertTriangle size={11} />
+              <span>Deleted on Discord</span>
+            </Badge>
+          )}
+
           <Badge
             variant={scene.status === 'no_end_tag' ? 'danger' : 'neutral'}
             className="text-sm uppercase font-semibold"
@@ -117,9 +132,10 @@ export const SceneCard: React.FC<SceneCardProps> = ({
             <Button
               variant="secondary"
               size="xs"
+              disabled={editDisabled}
               onClick={() => onEdit(scene)}
               icon={<Edit3 size={12} />}
-              title="Edit custom name"
+              title={editDisabled ? 'Editing is disabled while sync is in progress.' : 'Edit custom name'}
             >
               Edit
             </Button>

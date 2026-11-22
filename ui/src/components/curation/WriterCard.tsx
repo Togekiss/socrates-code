@@ -7,12 +7,14 @@ interface WriterCardProps {
   writer: WriterDetailed;
   onEdit?: (writer: WriterDetailed) => void;
   showDiscordId?: boolean;
+  editDisabled?: boolean;
 }
 
 export const WriterCard: React.FC<WriterCardProps> = ({
   writer,
   onEdit,
   showDiscordId = true,
+  editDisabled = false,
 }) => {
   return (
     <DataCard
@@ -46,6 +48,8 @@ export const WriterCard: React.FC<WriterCardProps> = ({
             <Button
               variant="secondary"
               size="xs"
+              disabled={editDisabled}
+              title={editDisabled ? 'Editing is disabled while sync is in progress.' : undefined}
               onClick={() => onEdit(writer)}
               icon={<Edit2 size={12} />}
             >

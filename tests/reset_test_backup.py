@@ -26,11 +26,12 @@ def reset_test_backup() -> bool:
 
     try:
         # pyrefly: ignore [missing-import]
-        from db.session import close_engine, close_all_engines
+        from db.session import close_engine, close_all_engines, invalidate_sqlite_tmp_cache
         # pyrefly: ignore [missing-import]
         from models import SceneManager
         SceneManager.clear_cache()
         close_engine(backup_path=target.as_posix(), sync=False, invalidate_cache=True)
+        invalidate_sqlite_tmp_cache(backup_path=target.as_posix())
         close_all_engines()
         import gc
         gc.collect()
@@ -39,7 +40,7 @@ def reset_test_backup() -> bool:
 
     target.mkdir(parents=True, exist_ok=True)
 
-    # 1. Clean files in target that do not exist in src_copy (e.g. backup.sqlite, generated scenes)
+    # 1. Clean files in target that do not exist in src_copy (e.g. backup.sqlite, skeletons.sqlite, -wal/-shm, generated scenes)
     for root, dirs, files in os.walk(target, topdown=False):
         rel_root = Path(root).relative_to(target)
         src_root = src_copy / rel_root

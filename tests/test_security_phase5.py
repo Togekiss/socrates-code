@@ -165,6 +165,8 @@ class Phase5FirebaseHostingAndContainerHygieneTests(unittest.TestCase):
         self.assertIn("useradd", dockerfile)
         self.assertIn("USER socrates", dockerfile)
         self.assertNotIn("--reload", dockerfile)
+        self.assertNotIn("dotnet", dockerfile)
+        self.assertNotIn("packages-microsoft-prod", dockerfile)
 
     def test_public_ignore_excludes_audits_secrets_and_outputs(self):
         public_ignore_path = PROJECT_ROOT / ".github" / "workflows" / "public-ignore.txt"

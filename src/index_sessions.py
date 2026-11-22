@@ -15,10 +15,23 @@ from find_character_scenes import (
     extract_participants_from_messages,
     MENTION_ONLY_PAT,
 )
-from fix_bad_messages import prepare_channel_messages
+from db.skeleton_models import (
+    ONLINE_TAG_PAT,
+    OFFLINE_TAG_PAT,
+    SkeletonFlags,
+    _APOLOGY_WORD_PAT,
+    _BACK_WORD_PAT,
+    _DELAY_WORD_PAT,
+    _RETURN_PHRASE_PAT,
+    has_online_tag,
+    has_offline_tag,
+    has_apology_continuation,
+)
+from fix_bad_messages import prepare_channel_messages, prepare_channel_skeletons
 from models import ServerBackup, Category, Channel, Step
 from db.models import SceneStatus, SceneKind
-from db.session import has_db
+from db.session import has_db, has_skeleton_db
+from db.scene_service import load_channel_skeletons
 from models.scene_manager import SceneManager
 
 t.set_path()
@@ -65,54 +78,46 @@ SESSION_SPIKE_RATIO = 80.0
 # Rolling window size for computing local tempo (number of messages before/after).
 SESSION_TEMPO_WINDOW = 10
 
-# Regex patterns for status tags and conversational apologies/continuations
-ONLINE_TAG_PAT = re.compile(r"`{1,3}[^`]*?\b(?:online|joined)\b[^`]*?`{1,3}", re.IGNORECASE | re.DOTALL)
-OFFLINE_TAG_PAT = re.compile(r"`{1,3}[^`]*?\b(?:offline|idle|left|leaving)\b[^`]*?`{1,3}", re.IGNORECASE | re.DOTALL)
-# Matches conversational apologies, return announcements, and absence explanations (linear checks, no ReDoS)
-_APOLOGY_WORD_PAT = re.compile(r"\b(?:sorry|apolog\w*)\b", re.IGNORECASE)
-_BACK_WORD_PAT = re.compile(r"\bback\b", re.IGNORECASE)
-_DELAY_WORD_PAT = re.compile(r"\b(?:delay|wait|late|busy|distracted)\b", re.IGNORECASE)
-_RETURN_PHRASE_PAT = re.compile(
-    r"\b(?:i(?:['’]| m)?\s*back|,\s*back|finally\s+back|got\s+back|passed\s+out|asleep|dozed\s+off)\b",
-    re.IGNORECASE,
-)
-
-
-def has_online_tag(msg: Dict[str, Any]) -> bool:
-    """Returns True if the message contains an [Online] or [Joined] tag in backticks."""
-    return bool(ONLINE_TAG_PAT.search(msg.get("content") or ""))
-
-
-def has_offline_tag(msg: Dict[str, Any]) -> bool:
-    """Returns True if the message contains an [Offline] or [Idle] tag in backticks."""
-    return bool(OFFLINE_TAG_PAT.search(msg.get("content") or ""))
-
-
-def has_apology_continuation(msg: Dict[str, Any]) -> bool:
-    """Returns True if the message indicates an apology or direct return to an ongoing scene."""
-    content = msg.get("content") or ""
-    if _RETURN_PHRASE_PAT.search(content):
-        return True
-    m_apology = _APOLOGY_WORD_PAT.search(content)
-    if not m_apology:
-        return False
-    if _BACK_WORD_PAT.search(content):
-        return True
-    return bool(_DELAY_WORD_PAT.search(content, m_apology.end()))
-
 
 def parse_msg_datetime(msg: Dict[str, Any]) -> Optional[datetime]:
     """Parses message timestamp into a timezone-aware UTC datetime."""
+    if msg.get("timestamp_dt") is not None:
+        dt_val = msg["timestamp_dt"]
+        return dt_val if dt_val.tzinfo else dt_val.replace(tzinfo=timezone.utc)
     ts_str = msg.get("timestamp")
-    if not ts_str:
-        return None
-    try:
-        dt = datetime.fromisoformat(ts_str)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except Exception:
-        return None
+    if ts_str:
+        try:
+            dt = datetime.fromisoformat(ts_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except Exception:
+            pass
+    ts_unix = msg.get("timestamp_unix")
+    if ts_unix:
+        try:
+            return datetime.fromtimestamp(int(ts_unix), tz=timezone.utc)
+        except Exception:
+            pass
+    return None
+
+
+def _msg_has_online_tag(msg: Dict[str, Any]) -> bool:
+    if "flags" in msg:
+        return bool(int(msg["flags"]) & SkeletonFlags.HAS_ONLINE_TAG)
+    return has_online_tag(msg)
+
+
+def _msg_has_offline_tag(msg: Dict[str, Any]) -> bool:
+    if "flags" in msg:
+        return bool(int(msg["flags"]) & SkeletonFlags.HAS_OFFLINE_TAG)
+    return has_offline_tag(msg)
+
+
+def _msg_has_apology(msg: Dict[str, Any]) -> bool:
+    if "flags" in msg:
+        return bool(int(msg["flags"]) & SkeletonFlags.HAS_APOLOGY)
+    return has_apology_continuation(msg)
 
 
 def merge_one_message_blocks(
@@ -272,11 +277,16 @@ def find_all_sessions_in_channel(
             pace = pace_map.get(i, 0.5)
             spike_ratio = gap_min_list[i] / pace
 
-            is_tag = has_online_tag(msg) or has_offline_tag(prev_msg)
-            is_apology = has_apology_continuation(msg)
-            cur_auth = msg.get("author", {}).get("name")
-            prev_auth = prev_msg.get("author", {}).get("name")
-            same_author = (cur_auth == prev_auth and cur_auth is not None)
+            is_tag = _msg_has_online_tag(msg) or _msg_has_offline_tag(prev_msg)
+            is_apology = _msg_has_apology(msg)
+            cur_auth = (msg.get("author") or {}).get("name")
+            prev_auth = (prev_msg.get("author") or {}).get("name")
+            if cur_auth is not None and prev_auth is not None:
+                same_author = (cur_auth == prev_auth)
+            else:
+                cur_aid = t.get_author_id(msg)
+                prev_aid = t.get_author_id(prev_msg)
+                same_author = (cur_aid is not None and prev_aid is not None and cur_aid == prev_aid)
 
             should_split = False
             # Condition 1: Inactivity exceeds hard ceiling
@@ -344,6 +354,7 @@ def find_all_sessions_in_channel(
         )
         session["kind"] = SceneKind.SESSION.value
         session["participant_details"] = participant_details
+        session["message_count"] = len(block_msgs)
         session["issues"] = []
         session["id_builder"] = id_builder
         if resolved_start:
@@ -360,17 +371,68 @@ def find_all_sessions_in_channel(
 
     return sessions
 
+def _synthetic_channel_data(category_name: str, channel: Any, server_id: str = "") -> Dict[str, Any]:
+    is_thread = not hasattr(channel, "threads")
+    return {
+        "guild": {"id": str(server_id or getattr(c, "SERVER_ID", "") or "")},
+        "channel": {
+            "id": str(channel.id),
+            "name": str(channel.name),
+            "category": str(category_name),
+            "type": "GuildPublicThread" if is_thread else "GuildTextChat",
+        },
+        "messages": [],
+    }
+
+
 def process_chatroom_channel(
     channel: Channel,
     id_builder: str,
     resolved_decisions: Optional[Dict[str, str]] = None,
     resolved_flags_map: Optional[Dict[str, Any]] = None,
+    *,
+    backup_id: Optional[str] = None,
+    backup_path: Optional[str] = None,
+    category_name: str = "",
+    server_id: str = "",
+    rescan_json: bool = False,
+    excerpts_map: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Loads raw channel JSON, prepares messages with flags/overrides, and segments into sessions.
+    Loads channel skeletons (or raw channel JSON when `rescan_json=True` / skeletons absent),
+    prepares messages with flags/overrides, and segments into sessions.
     Never auto-flags messages in chatroom channels.
     """
+    b_id = backup_id or getattr(c, "BACKUP_ID", None)
+    b_path = backup_path or getattr(c, "BACKUP_BASE", None)
+
+    if not rescan_json and b_id and b_path and has_skeleton_db(b_path, backup_id=b_id):
+        skeletons = load_channel_skeletons(b_id, b_path, channel.id)
+        channel_data = _synthetic_channel_data(category_name, channel, server_id=server_id)
+        if skeletons:
+            prepared = prepare_channel_skeletons(
+                skeletons,
+                resolved_flags_map or {},
+                excerpts_map=excerpts_map,
+            )
+            sessions = find_all_sessions_in_channel(
+                channel_data=channel_data,
+                messages=prepared,
+                id_builder=id_builder,
+                resolved_decisions=resolved_decisions,
+            )
+            channel.scenes = len(sessions)
+            return sessions
+        # If skeletons.sqlite exists and channel has 0 messages, check if JSON fallback applies
+        file_path = (Path(c.DATA_FOLDER) / channel.path).as_posix() if channel.path else ""
+        if not (file_path and Path(file_path).is_file()):
+            channel.scenes = 0
+            return []
+
     file_path = (Path(c.DATA_FOLDER) / channel.path).as_posix()
+    if not Path(file_path).is_file():
+        channel.scenes = 0
+        return []
     channel_data = t.load_from_json(file_path)
 
     raw_messages = channel_data.get("messages", [])
@@ -391,6 +453,12 @@ def find_sessions_in_category(
     category: Category,
     resolved_decisions: Optional[Dict[str, str]] = None,
     resolved_flags_map: Optional[Dict[str, Any]] = None,
+    *,
+    backup_id: Optional[str] = None,
+    backup_path: Optional[str] = None,
+    server_id: str = "",
+    rescan_json: bool = False,
+    excerpts_map: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Processes all channels and threads in a chatroom category to produce chat sessions.
@@ -407,6 +475,12 @@ def find_sessions_in_category(
             id_builder=chan_id_b,
             resolved_decisions=resolved_decisions,
             resolved_flags_map=resolved_flags_map,
+            backup_id=backup_id,
+            backup_path=backup_path,
+            category_name=category.name,
+            server_id=server_id,
+            rescan_json=rescan_json,
+            excerpts_map=excerpts_map,
         )
         all_sessions.extend(sessions)
         t.log("info", f"\t  Found {len(sessions)} sessions in '{channel.name}', adding up to {len(all_sessions)} total sessions\n")
@@ -418,6 +492,12 @@ def find_sessions_in_category(
                 id_builder=thread_id_b,
                 resolved_decisions=resolved_decisions,
                 resolved_flags_map=resolved_flags_map,
+                backup_id=backup_id,
+                backup_path=backup_path,
+                category_name=category.name,
+                server_id=server_id,
+                rescan_json=rescan_json,
+                excerpts_map=excerpts_map,
             )
             all_sessions.extend(thread_sessions)
             t.log("info", f"\t  Found {len(thread_sessions)} sessions in '{thread.name}', adding up to {len(all_sessions)} total sessions\n")

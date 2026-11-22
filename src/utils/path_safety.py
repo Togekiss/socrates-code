@@ -7,7 +7,36 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Set, Union
+
+_CATEGORY_PREFIX_RE = re.compile(r"^\d+#\s*")
+
+
+def strip_category_prefix(name: Any) -> str:
+    """Strips a leading '<pos># ' position prefix from category names saved by DCE or UI selectors."""
+    return _CATEGORY_PREFIX_RE.sub("", str(name or "")).strip()
+
+
+def expand_category_names(names: Optional[Iterable[Any]]) -> Set[str]:
+    """Builds a lookup set containing both raw and position-prefix-stripped category names."""
+    expanded: Set[str] = set()
+    for raw in names or ():
+        raw_s = str(raw or "").strip()
+        if raw_s:
+            expanded.add(raw_s)
+        stripped = strip_category_prefix(raw_s)
+        if stripped:
+            expanded.add(stripped)
+    return expanded
+
+
+def category_name_matches(cat_name: Any, targets: Set[str]) -> bool:
+    """Returns True if cat_name (raw or stripped of leading '<pos># ') appears in targets."""
+    raw_s = str(cat_name or "").strip()
+    if raw_s in targets:
+        return True
+    stripped = strip_category_prefix(raw_s)
+    return bool(stripped and stripped in targets)
 
 SNOWFLAKE_RE = re.compile(r"^\d{15,22}$")
 CHANNEL_ID_RE = re.compile(r"^\d{1,20}$")

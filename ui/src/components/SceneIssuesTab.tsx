@@ -193,13 +193,15 @@ export const SceneIssuesTab = ({
         <Button
           variant="secondary"
           size="md"
+          disabled={!statusGuard.canMutate}
           onClick={() => setIsManualSplitOpen(true)}
           icon={<Plus size={14} />}
-          title="Create manual scene split"
+          title={!statusGuard.canMutate ? 'Curation edits are disabled while sync is in progress.' : 'Create manual scene split'}
         >
           Manual Split
         </Button>
       }
+      banners={<BackupStatusGuard title="Scene Issues" guard={statusGuard} />}
       filterBar={
         <SceneIssuesFilters
           statusFilter={statusFilter}
@@ -315,11 +317,12 @@ export const SceneIssuesTab = ({
               key={iss.id}
               issue={iss}
               isReopening={reopeningId === iss.id}
-              onResolve={setResolvingIssue}
-              onReopen={handleReopen}
-              onOppositeAction={(action, targetIssue) =>
-                handleOpenOppositeAction(action, targetIssue)
-              }
+              mutationDisabled={!statusGuard.canMutate}
+              onResolve={item => { if (statusGuard.canMutate) setResolvingIssue(item); }}
+              onReopen={id => { if (statusGuard.canMutate) handleReopen(id); }}
+              onOppositeAction={(action, targetIssue) => {
+                if (statusGuard.canMutate) handleOpenOppositeAction(action, targetIssue);
+              }}
             />
           ))}
         </div>

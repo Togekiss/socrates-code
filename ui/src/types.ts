@@ -31,9 +31,23 @@ export interface MeResponse {
 }
 
 export type StepStatus = 'pending' | 'running' | 'success' | 'failed';
+export type StorageMode = 'backupless' | 'full';
+export type SyncStatus = 'idle' | 'syncing' | 'paused' | 'failed';
 
 export interface BackupStepStatus {
   [stepName: string]: StepStatus;
+}
+
+export interface BackupChannelSummary {
+  id: string;
+  name: string;
+  position?: number;
+  path?: string;
+  is_deleted?: boolean;
+  number_of_messages?: number;
+  number_of_scenes?: number;
+  number_of_threads?: number;
+  threads?: BackupChannelSummary[];
 }
 
 export interface BackupCategory {
@@ -45,7 +59,7 @@ export interface BackupCategory {
   number_of_scenes?: number;
   number_of_channels?: number;
   number_of_threads?: number;
-  channels?: unknown[];
+  channels?: BackupChannelSummary[];
 }
 
 export interface BackupInfo {
@@ -55,6 +69,13 @@ export interface BackupInfo {
   server_id?: string;
   status: 'pending' | 'running' | 'success' | 'failed';
   steps?: BackupStepStatus;
+  storage_mode?: StorageMode;
+  sync_status?: SyncStatus;
+  sync_started_at?: string | null;
+  last_synced_at?: string | null;
+  sync_error?: string | null;
+  channels_total?: number;
+  channels_done?: number;
   categories?: number | BackupCategory[];
   channels?: number | unknown[];
   threads?: number | unknown[];
@@ -78,6 +99,7 @@ export interface BackupInfo {
   schema_version?: number;
   current_schema_version?: number;
   is_schema_outdated?: boolean;
+  has_data_files?: boolean;
   bot_in_guild?: boolean;
   effective_role?: BackupRole;
   role_level?: number;
@@ -95,6 +117,7 @@ export interface AdminConfig {
   serverName?: string;
   backupName?: string;
   path?: string;
+  storageMode?: StorageMode;
   [key: string]: unknown;
 }
 
@@ -108,6 +131,7 @@ export interface BackupConfig {
   include_archived?: boolean;
   export_formats?: string[];
   timezone?: string;
+  storageMode?: StorageMode;
   admin?: AdminConfig;
   [key: string]: unknown;
 }
@@ -196,6 +220,31 @@ export interface WriterLinkSuggestion {
   evidence_count?: number;
 }
 
+export interface SeenDiscordUser {
+  discord_user_id: string;
+  username: string;
+  global_name?: string | null;
+  nickname?: string | null;
+  is_current_member?: boolean;
+  message_count?: number;
+  last_seen_at?: string | null;
+  linked_writer_id?: number | null;
+  linked_writer_name?: string | null;
+}
+
+export interface AcceptAllWriterSuggestionsResponse {
+  status: string;
+  linked_count: number;
+  skipped_count: number;
+  linked: Array<{ writer_id: number; display_name: string; discord_user_id: string }>;
+}
+
+export interface CreateWritersFromDiscordUsersResponse {
+  status: string;
+  created_count: number;
+  writers: WriterDetailed[];
+}
+
 export interface MyWriter { id: number; display_name: string; discord_user_id: string; aliases: string[]; character_ids: number[]; }
 export interface UnassignedCharacter {
   id: number;
@@ -246,6 +295,10 @@ export interface Scene {
   start_message_id?: string;
   end_message_id?: string;
   message_count?: number;
+  is_deleted?: boolean;
+  channel_is_deleted?: boolean;
+  start_message_deleted?: boolean;
+  end_message_deleted?: boolean;
   participants?: SceneParticipant[] | SceneParticipantDetail[];
   status?: string;
   discord_url?: string;
@@ -276,6 +329,11 @@ export interface ChatSession {
   type?: string;
   thread_name?: string | null;
   status: string;
+  message_count?: number;
+  is_deleted?: boolean;
+  channel_is_deleted?: boolean;
+  start_message_deleted?: boolean;
+  end_message_deleted?: boolean;
   characters: number[];
   participants: SceneParticipantDetail[];
   issues?: SceneIssueRef[];
@@ -306,6 +364,10 @@ export interface EventChannelEntry {
   parent_channel_id?: string | null;
   status: string;
   message_count: number;
+  is_deleted?: boolean;
+  channel_is_deleted?: boolean;
+  start_message_deleted?: boolean;
+  end_message_deleted?: boolean;
   start: { id: string; timestamp: string; index?: number; authorID?: string; content?: string; link: string };
   end: { id: string; timestamp: string; index?: number; authorID?: string; content?: string; link: string };
   characters?: number[];
@@ -325,6 +387,7 @@ export interface EventRecord {
   start_at?: string;
   end_at?: string;
   message_count: number;
+  is_deleted?: boolean;
   characters: number[];
   participants: SceneParticipantDetail[];
   character_movements: Record<string, EventMovementHop[]>;
@@ -349,6 +412,7 @@ export interface ManualSplitResponse {
 export interface SceneIssue {
   id: number; kind: IssueKind; reason: IssueReason | string; scene_pk: number | null; scene_key: string;
   scene_kind?: 'scene' | 'session' | 'event'; channel_name: string; channel_discord_id: string;
+  channel_is_deleted?: boolean; candidate_is_deleted?: boolean; is_deleted?: boolean;
   next_scene_pk?: number | null; next_scene_key?: string | null; candidate_message_id?: string | null;
   candidate_index?: number | null; candidate_excerpt?: string | null;
   previous_chars?: number[] | null; next_chars?: number[] | null;
@@ -365,14 +429,24 @@ export interface DiscordAuthor {
 export interface FlaggedMessage {
   id: number; message_id: string; kind: FlaggedKind; channel_name: string; channel_discord_id: string;
   content: string; author: DiscordAuthor; discord_link: string; flagged_at: string | null;
+  is_excerpt_truncated?: boolean; is_deleted?: boolean; channel_is_deleted?: boolean; message_is_deleted?: boolean;
   resolution?: FlaggedResolution | null; override_content?: string | null;
   override_author?: DiscordAuthor | null; resolved_at?: string | null; resolved_note?: string | null;
   suggested_character?: SuggestedCharacter | null;
 }
 
+export interface FullContentResponse {
+  content: string;
+  is_deleted: boolean;
+  is_truncated: boolean;
+  hydrated: boolean;
+  source: 'local_json' | 'discord_api' | 'deleted_fallback' | 'excerpt_fallback' | string;
+}
+
 export interface MessageOverride {
   id: number; message_id: string; channel_name: string; channel_discord_id: string;
   content: string; author: DiscordAuthor; discord_link: string; created_at: string | null;
+  is_excerpt_truncated?: boolean; is_deleted?: boolean; channel_is_deleted?: boolean; message_is_deleted?: boolean;
 }
 
 export interface PaginatedResponse {

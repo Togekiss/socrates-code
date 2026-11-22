@@ -21,8 +21,6 @@ from tests.test_env import skip_in_production_or_missing_live_backups
 from db.models import (
     Base,
     BackupModel,
-    ExportModel,
-    BackupStepModel,
     ChannelModel,
     WriterModel,
     WriterAliasModel,
@@ -34,6 +32,7 @@ from db.models import (
     SceneModel,
     SceneParticipantModel,
     SceneIssueModel,
+    SeenDiscordUserModel,
     FlaggedResolution,
     FlaggedMessageModel,
     SchemaVersionModel,
@@ -41,6 +40,8 @@ from db.models import (
     Scope,
     Step,
     Status,
+    SyncStatus,
+    StorageMode,
     SceneStatus,
     SceneKind,
     IssueKind,
@@ -49,6 +50,14 @@ from db.models import (
     VersionType,
     Origin,
     Activity,
+)
+from db.skeleton_models import (
+    SkeletonBase,
+    SkeletonFlags,
+    MessageSkeletonModel,
+    SkeletonSchemaVersionModel,
+    CURRENT_SKELETON_SCHEMA_VERSION,
+    compute_skeleton_flags,
 )
 
 # pyrefly: ignore [missing-import]
@@ -79,8 +88,6 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
         tables = set(inspector.get_table_names())
         expected_tables = {
             "backups",
-            "exports",
-            "backup_steps",
             "channels",
             "writers",
             "writer_aliases",
@@ -93,10 +100,13 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
             "scene_participants",
             "scene_issues",
             "flagged_messages",
+            "seen_discord_users",
             "schema_version",
         }
         missing = expected_tables - tables
         self.assertEqual(len(missing), 0, f"Missing expected tables: {missing}")
+        self.assertNotIn("exports", tables)
+        self.assertNotIn("backup_steps", tables)
 
     def test_backup_and_character_model_relationships(self):
         with self.Session() as session:
@@ -105,23 +115,34 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
                 backup_name="Test Backup 1",
                 server_id="123456789012345678",
                 server_name="Test Server",
+                storage_mode=StorageMode.BACKUPLESS.value,
+                sync_status=SyncStatus.IDLE.value,
             )
             session.add(backup)
             session.flush()
 
-            export = ExportModel(
+            channel = ChannelModel(
                 backup_id=backup.backup_id,
-                scope=Scope.BASE,
+                discord_id="100200300401",
+                type="GuildTextChat",
+                name="general",
+                position=1,
+                path="1# Cat/1# general.json",
+                sync_status="synced",
+                last_message_id="999888777",
             )
-            session.add(export)
-            session.flush()
+            session.add(channel)
 
-            step = BackupStepModel(
-                export_pk=export.pk,
-                step=Step.DOWNLOAD,
-                status=Status.SUCCESS,
+            seen_user = SeenDiscordUserModel(
+                backup_id=backup.backup_id,
+                discord_user_id="111222333444",
+                username="test_writer",
+                global_name="Test Writer",
+                nickname="TW",
+                is_current_member=True,
+                message_count=42,
             )
-            session.add(step)
+            session.add(seen_user)
 
             writer = WriterModel(
                 backup_id=backup.backup_id,
@@ -167,13 +188,24 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
         with self.Session() as session:
             loaded_backup = session.query(BackupModel).filter_by(backup_id="test_backup_1").first()
             self.assertIsNotNone(loaded_backup)
-            self.assertEqual(len(loaded_backup.exports), 1)
+            self.assertEqual(loaded_backup.storage_mode, "backupless")
+            self.assertEqual(loaded_backup.sync_status, "idle")
+            self.assertEqual(len(loaded_backup.channels), 1)
+            self.assertEqual(loaded_backup.channels[0].last_message_id, "999888777")
+            self.assertEqual(len(loaded_backup.seen_users), 1)
+            self.assertTrue(loaded_backup.seen_users[0].is_current_member)
 
             loaded_char = session.query(CharacterModel).filter_by(char_id=1).first()
             self.assertIsNotNone(loaded_char)
             self.assertEqual(loaded_char.names[0].name, "Protagonist")
             self.assertEqual(loaded_char.writer.display_name, "TestWriter")
             self.assertEqual(loaded_char.group.names[0].name, "TestGroup")
+
+            # Verify cascade delete from backups -> channels & seen_users
+            session.delete(loaded_backup)
+            session.commit()
+            self.assertEqual(session.query(ChannelModel).count(), 0)
+            self.assertEqual(session.query(SeenDiscordUserModel).count(), 0)
 
     def test_scenes_and_flagged_messages(self):
         with self.Session() as session:
@@ -186,15 +218,8 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
             session.add(backup)
             session.flush()
 
-            export = ExportModel(
-                backup_id=backup.backup_id,
-                scope=Scope.BASE,
-            )
-            session.add(export)
-            session.flush()
-
             channel = ChannelModel(
-                export_pk=export.pk,
+                backup_id=backup.backup_id,
                 discord_id="100200300400",
                 type="GuildTextChat",
                 name="rp-general",
@@ -216,6 +241,7 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
                 end_message_id="222",
                 start_index=0,
                 end_index=9,
+                message_count=10,
                 start_at=now,
                 end_at=now,
                 start_author_id="123",
@@ -230,6 +256,7 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
                 message_id="555666777888",
                 kind=FlaggedKind.OOC_MESSAGE.value,
                 content="Hello from non-tupper bot",
+                is_excerpt_truncated=True,
                 author={"id": "555", "name": "BadBot"},
                 flagged_at=now,
             )
@@ -239,11 +266,13 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
             loaded_scene = session.query(SceneModel).filter_by(scene_key="1-1-1").first()
             self.assertIsNotNone(loaded_scene)
             self.assertEqual(loaded_scene.start_message_id, "111")
+            self.assertEqual(loaded_scene.message_count, 10)
             self.assertEqual(loaded_scene.channel.name, "rp-general")
 
             loaded_flag = session.query(FlaggedMessageModel).filter_by(message_id="555666777888").first()
             self.assertIsNotNone(loaded_flag)
             self.assertEqual(loaded_flag.kind, FlaggedKind.OOC_MESSAGE.value)
+            self.assertTrue(loaded_flag.is_excerpt_truncated)
             self.assertEqual(loaded_flag.author["name"], "BadBot")
 
     def test_issue_kind_and_scene_status_enums(self):
@@ -262,9 +291,9 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
 
     def test_schema_version_tracking(self):
         """Verifies that schema_version table correctly tracks CURRENT_SCHEMA_VERSION."""
-        self.assertEqual(CURRENT_SCHEMA_VERSION, 5)
+        self.assertEqual(CURRENT_SCHEMA_VERSION, 6)
         current_ver = get_db_schema_version(self.engine)
-        self.assertEqual(current_ver, 5)
+        self.assertEqual(current_ver, 6)
 
         with self.Session() as session:
             record = session.query(SchemaVersionModel).filter_by(version=CURRENT_SCHEMA_VERSION).first()
@@ -282,14 +311,20 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
         self.assertIn("kind", scene_cols)
         self.assertIn("event_pk", scene_cols)
         self.assertIn("custom_name", scene_cols)
+        self.assertIn("message_count", scene_cols)
 
         event_cols = {c["name"]: c for c in inspector.get_columns("events")}
         for col_name in ("pk", "backup_id", "event_key", "name", "status", "start_at", "end_at", "message_count", "character_movements"):
             self.assertIn(col_name, event_cols)
 
         part_cols = {c["name"]: c for c in inspector.get_columns("scene_participants")}
-        for col_name in ("position", "first_message_id", "first_at", "last_message_id", "last_at"):
+        for col_name in ("position", "message_count", "first_message_id", "first_at", "last_message_id", "last_at"):
             self.assertIn(col_name, part_cols)
+
+        flagged_cols = {c["name"]: c for c in inspector.get_columns("flagged_messages")}
+        self.assertIn("is_excerpt_truncated", flagged_cols)
+        self.assertIn("override_flags", flagged_cols)
+        self.assertNotIn("is_deleted", flagged_cols)
 
     def test_event_model_and_upgrade_roundtrip(self):
         """Verifies EventModel creation, SceneModel.event_pk relationship, and upgrade extraction/population."""
@@ -305,12 +340,8 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
             session.add(backup)
             session.flush()
 
-            export = ExportModel(backup_id=backup.backup_id, scope=Scope.BASE)
-            session.add(export)
-            session.flush()
-
             channel = ChannelModel(
-                export_pk=export.pk,
+                backup_id=backup.backup_id,
                 discord_id="1008065639467982868",
                 type="GuildTextChat",
                 name="event-1",
@@ -491,12 +522,13 @@ class TestSqliteWalCheckpointing(unittest.TestCase):
                 conn = sqlite3.connect(standalone_copy.as_posix())
                 try:
                     rows = conn.execute(
-                        "SELECT step, status FROM backup_steps WHERE step = 'index_scenes'"
+                        "SELECT sync_status FROM backups WHERE backup_id = ?",
+                        (backup_id,),
                     ).fetchall()
                 finally:
                     conn.close()
 
-                self.assertEqual(rows, [("index_scenes", "success")])
+                self.assertEqual(rows, [("idle",)])
             finally:
                 close_all_engines()
 
@@ -591,15 +623,16 @@ class TestSqliteTmpCacheAndSync(unittest.TestCase):
                     synced = sync_dirty_sqlite_dbs(force=False, min_interval=10.0)
                     self.assertEqual(synced, [source_sqlite])
 
-                    # Verify standalone source_sqlite has "running"
+                    # Verify standalone source_sqlite has "syncing"
                     conn = sqlite3.connect(source_sqlite)
                     try:
                         rows = conn.execute(
-                            "SELECT step, status FROM backup_steps WHERE step = 'index_scenes'"
+                            "SELECT sync_status FROM backups WHERE backup_id = ?",
+                            (backup_id,),
                         ).fetchall()
                     finally:
                         conn.close()
-                    self.assertEqual(rows, [("index_scenes", "running")])
+                    self.assertEqual(rows, [("syncing",)])
 
                     # 4. Rapid second write within min_interval is debounced (skipped)
                     status_service.update_step_status(
@@ -608,26 +641,28 @@ class TestSqliteTmpCacheAndSync(unittest.TestCase):
                     skipped = sync_dirty_sqlite_dbs(force=False, min_interval=10.0)
                     self.assertEqual(skipped, [])
 
-                    # Target source_sqlite still has "running" until forced or interval elapses
+                    # Target source_sqlite still has "syncing" until forced or interval elapses
                     conn = sqlite3.connect(source_sqlite)
                     try:
                         rows = conn.execute(
-                            "SELECT step, status FROM backup_steps WHERE step = 'index_scenes'"
+                            "SELECT sync_status FROM backups WHERE backup_id = ?",
+                            (backup_id,),
                         ).fetchall()
                     finally:
                         conn.close()
-                    self.assertEqual(rows, [("index_scenes", "running")])
+                    self.assertEqual(rows, [("syncing",)])
 
                     # 5. close_all_engines() forces sync before disposing
                     close_all_engines()
                     conn = sqlite3.connect(source_sqlite)
                     try:
                         rows = conn.execute(
-                            "SELECT step, status FROM backup_steps WHERE step = 'index_scenes'"
+                            "SELECT sync_status FROM backups WHERE backup_id = ?",
+                            (backup_id,),
                         ).fetchall()
                     finally:
                         conn.close()
-                    self.assertEqual(rows, [("index_scenes", "success")])
+                    self.assertEqual(rows, [("idle",)])
 
                     # 6. External replacement of source_sqlite is picked up on next open
                     ext_copy = Path(tmpdir) / "external_modified.sqlite"
@@ -635,7 +670,8 @@ class TestSqliteTmpCacheAndSync(unittest.TestCase):
                     ext_conn = sqlite3.connect(ext_copy.as_posix())
                     try:
                         ext_conn.execute(
-                            "UPDATE backup_steps SET status = 'failed' WHERE step = 'index_scenes'"
+                            "UPDATE backups SET sync_status = 'failed' WHERE backup_id = ?",
+                            (backup_id,),
                         )
                         ext_conn.commit()
                     finally:
@@ -643,6 +679,7 @@ class TestSqliteTmpCacheAndSync(unittest.TestCase):
                     shutil.copy2(ext_copy, source_sqlite)
 
                     reloaded = status_service.load_backup_state(backup_id, base_path)
+                    self.assertEqual(reloaded["sync_status"], "failed")
                     self.assertEqual(reloaded["steps"]["index_scenes"], "failed")
                 finally:
                     close_all_engines()
@@ -707,10 +744,10 @@ class TestSqliteTmpCacheAndSync(unittest.TestCase):
                     # Verify source_sqlite has valid tables and schema
                     conn = sqlite3.connect(source_sqlite)
                     try:
-                        step_rows = conn.execute("SELECT step FROM backup_steps").fetchall()
+                        backup_rows = conn.execute("SELECT backup_id FROM backups").fetchall()
                     finally:
                         conn.close()
-                    self.assertGreater(len(step_rows), 0)
+                    self.assertEqual(backup_rows, [(backup_id,)])
 
                     # Verify .source_meta.json matches source stat
                     source_stat = _stat_file(source_sqlite)
@@ -772,10 +809,10 @@ class TestSqliteTmpCacheAndSync(unittest.TestCase):
                     # Verify database was copied cleanly despite simulated EXDEV
                     conn = sqlite3.connect(source_sqlite)
                     try:
-                        step_rows = conn.execute("SELECT step FROM backup_steps").fetchall()
+                        backup_rows = conn.execute("SELECT backup_id FROM backups").fetchall()
                     finally:
                         conn.close()
-                    self.assertGreater(len(step_rows), 0)
+                    self.assertEqual(backup_rows, [(backup_id,)])
                 finally:
                     close_all_engines()
                     invalidate_sqlite_tmp_cache(backup_id=backup_id, backup_path=base_path)
@@ -897,11 +934,12 @@ class TestSqliteTmpCacheAndSync(unittest.TestCase):
                     conn = sqlite3.connect(source_sqlite)
                     try:
                         rows = conn.execute(
-                            "SELECT step, status FROM backup_steps WHERE step = 'index_scenes'"
+                            "SELECT sync_status FROM backups WHERE backup_id = ?",
+                            (backup_id,),
                         ).fetchall()
                     finally:
                         conn.close()
-                    self.assertEqual(rows, [("index_scenes", "running")])
+                    self.assertEqual(rows, [("syncing",)])
                 finally:
                     close_all_engines()
                     invalidate_sqlite_tmp_cache(backup_id=backup_id, backup_path=base_path)
@@ -975,11 +1013,12 @@ class TestSqliteTmpCacheAndSync(unittest.TestCase):
                     conn = sqlite3.connect(source_sqlite)
                     try:
                         rows = conn.execute(
-                            "SELECT step, status FROM backup_steps WHERE step = 'index_scenes'"
+                            "SELECT sync_status FROM backups WHERE backup_id = ?",
+                            (backup_id,),
                         ).fetchall()
                     finally:
                         conn.close()
-                    self.assertEqual(rows, [("index_scenes", "success")])
+                    self.assertEqual(rows, [("idle",)])
                 finally:
                     close_all_engines()
                     invalidate_sqlite_tmp_cache(backup_id=backup_id, backup_path=base_path)
@@ -1032,6 +1071,168 @@ class TestSqliteTmpCacheAndSync(unittest.TestCase):
                 finally:
                     close_all_engines()
                     invalidate_sqlite_tmp_cache(backup_path=base_path)
+
+
+class TestSkeletonModelsAndSession(unittest.TestCase):
+    """Tests skeletons.sqlite WITHOUT ROWID schema, 14-bit SkeletonFlags, /tmp path isolation, and format_excerpt."""
+
+    def test_skeleton_table_without_rowid_and_schema_version(self):
+        from db.session import (
+            get_skeleton_engine,
+            skeleton_db_session,
+            get_skeleton_sqlite_path,
+            close_all_engines,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            backup_dir = Path(tmpdir) / "skel_test"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                eng = get_skeleton_engine(backup_path=backup_dir.as_posix())
+                skel_path = get_skeleton_sqlite_path(backup_dir.as_posix())
+                self.assertTrue(os.path.exists(skel_path))
+
+                with skeleton_db_session(backup_path=backup_dir.as_posix()) as s:
+                    ver = s.query(SkeletonSchemaVersionModel).first()
+                    self.assertIsNotNone(ver)
+                    self.assertEqual(ver.version, CURRENT_SKELETON_SCHEMA_VERSION)
+
+                    s.add(MessageSkeletonModel(
+                        channel_discord_id=1013915163423932496,
+                        message_id=1018678482202542151,
+                        author_id=7,
+                        timestamp_unix=1700000000,
+                        flags=int(SkeletonFlags.IS_DEFAULT | SkeletonFlags.IS_TUPPER | SkeletonFlags.IS_DELETED),
+                    ))
+
+                # Verify WITHOUT ROWID DDL in SQLite
+                conn = sqlite3.connect(skel_path)
+                try:
+                    ddl = conn.execute(
+                        "SELECT sql FROM sqlite_master WHERE type='table' AND name='message_skeletons'"
+                    ).fetchone()[0]
+                    self.assertIn("WITHOUT ROWID", ddl.upper())
+                    row = conn.execute("SELECT author_id, flags FROM message_skeletons").fetchone()
+                    self.assertEqual(row[0], 7)
+                    self.assertTrue(row[1] & SkeletonFlags.IS_DELETED)
+                finally:
+                    conn.close()
+            finally:
+                close_all_engines()
+
+    def test_compute_skeleton_flags_all_14_bits(self):
+        # 1. Default tupper with start + end + short end + online + apology
+        m1 = {
+            "type": "Default",
+            "content": "[October 12th - Morning]\n`Online` Sorry, back! ```End```",
+            "author": {"id": "7", "name": "Tama"},
+            "attachments": [{"id": "a1"}],
+            "is_deleted": True,
+        }
+        f1 = compute_skeleton_flags(m1)
+        self.assertTrue(f1 & SkeletonFlags.IS_DEFAULT)
+        self.assertTrue(f1 & SkeletonFlags.IS_TUPPER)
+        self.assertTrue(f1 & SkeletonFlags.HAS_ATTACHMENT)
+        self.assertFalse(f1 & SkeletonFlags.IS_BANNER)  # tupper cannot be banner
+        self.assertTrue(f1 & SkeletonFlags.HAS_START_TAG)
+        self.assertTrue(f1 & SkeletonFlags.HAS_END_TAG)
+        self.assertFalse(f1 & SkeletonFlags.IS_SHORT_END_TAG)
+        self.assertTrue(f1 & SkeletonFlags.HAS_ONLINE_TAG)
+        self.assertTrue(f1 & SkeletonFlags.HAS_APOLOGY)
+        self.assertTrue(f1 & SkeletonFlags.IS_DELETED)
+
+        # 2. Short end tag + offline tag
+        m2 = {"type": "Default", "content": "`Offline` [END]", "author": {"id": "5"}}
+        f2 = compute_skeleton_flags(m2)
+        self.assertTrue(f2 & SkeletonFlags.HAS_END_TAG)
+        self.assertTrue(f2 & SkeletonFlags.IS_SHORT_END_TAG)
+        self.assertTrue(f2 & SkeletonFlags.HAS_OFFLINE_TAG)
+
+        # 3. Mention-only
+        m3 = {"type": "Default", "content": "<@123456> @RUKI", "author": {"id": "999999999999"}}
+        f3 = compute_skeleton_flags(m3)
+        self.assertTrue(f3 & SkeletonFlags.IS_MENTION_ONLY)
+
+        # 4. Non-tupper banner vs mod event end
+        m4 = {"type": "Default", "content": "Event Banner", "author": {"id": "999999999999"}, "embeds": [{"title": "X"}]}
+        f4 = compute_skeleton_flags(m4)
+        self.assertTrue(f4 & SkeletonFlags.IS_BANNER)
+        self.assertFalse(f4 & SkeletonFlags.IS_EVENT_END)
+
+        m5 = {"type": "Default", "content": "[EVENT END]", "author": {"id": "999999999999"}, "attachments": [{"id": "x"}]}
+        f5 = compute_skeleton_flags(m5)
+        self.assertTrue(f5 & SkeletonFlags.IS_EVENT_END)
+        self.assertTrue(f5 & SkeletonFlags.IS_MOD_END)
+        self.assertFalse(f5 & SkeletonFlags.IS_BANNER)
+
+    def test_tmp_cache_leaf_filename_isolation_and_central_db(self):
+        from unittest.mock import patch
+        from db.session import (
+            get_tmp_sqlite_path,
+            get_skeleton_engine,
+            skeleton_db_session,
+            close_all_engines,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            b_dir = Path(tmpdir) / "my_backup"
+            b_dir.mkdir(parents=True, exist_ok=True)
+            p_main = get_tmp_sqlite_path((b_dir / "backup.sqlite").as_posix())
+            p_skel = get_tmp_sqlite_path((b_dir / "skeletons.sqlite").as_posix())
+            p_audit = get_tmp_sqlite_path((b_dir / "audit.sqlite").as_posix())
+
+            self.assertEqual(os.path.basename(p_main), "backup.sqlite")
+            self.assertEqual(os.path.basename(p_skel), "skeletons.sqlite")
+            self.assertEqual(os.path.basename(p_audit), "audit.sqlite")
+            self.assertEqual(len({p_main, p_skel, p_audit}), 3)
+
+            # Central DATABASE_URL fallback initializes both Base and SkeletonBase without local files
+            central_db = Path(tmpdir) / "central.db"
+            with patch.dict(os.environ, {"DATABASE_URL": f"sqlite:///{central_db.as_posix()}"}):
+                close_all_engines()
+                try:
+                    eng = get_skeleton_engine(backup_id="c1", backup_path=b_dir.as_posix())
+                    self.assertIn("message_skeletons", inspect(eng).get_table_names())
+                    with skeleton_db_session(backup_id="c1", backup_path=b_dir.as_posix()) as s:
+                        s.add(MessageSkeletonModel(
+                            channel_discord_id=111,
+                            message_id=222,
+                            author_id=1,
+                            timestamp_unix=1700000000,
+                            flags=1,
+                        ))
+                    self.assertFalse((b_dir / "skeletons.sqlite").exists())
+                finally:
+                    close_all_engines()
+
+    def test_format_excerpt_head_and_tail(self):
+        short = "Short message."
+        self.assertEqual(t.format_excerpt(short), short)
+
+        exact = "a" * 250
+        self.assertEqual(t.format_excerpt(exact), exact)
+
+        long_txt = ("H" * 120) + ("M" * 50) + ("T" * 120)
+        res = t.format_excerpt(long_txt)
+        self.assertEqual(len(res), 247)
+        self.assertEqual(res, ("H" * 120) + "\n[...]\n" + ("T" * 120))
+
+    def test_load_channel_skeletons_does_not_create_missing_db(self):
+        from db.scene_service import load_channel_skeletons
+        from db.session import close_all_engines, has_skeleton_db, get_skeleton_sqlite_path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            b_dir = Path(tmpdir) / "no_skel_backup"
+            b_dir.mkdir(parents=True, exist_ok=True)
+            skel_path = Path(get_skeleton_sqlite_path(b_dir.as_posix()))
+            try:
+                self.assertFalse(has_skeleton_db(backup_path=b_dir.as_posix()))
+                rows = load_channel_skeletons("no_skel_id", b_dir.as_posix(), "1234567890")
+                self.assertEqual(rows, [])
+                self.assertFalse(skel_path.exists())
+                self.assertFalse(has_skeleton_db(backup_path=b_dir.as_posix()))
+            finally:
+                close_all_engines()
 
 
 if __name__ == "__main__":

@@ -281,9 +281,12 @@ export const EventsTab = ({
         />
       }
       banners={
-        byMe && !myWriter ? (
-          <UnlinkedWriterBanner onNavigateToWriters={onNavigateToWriters} />
-        ) : undefined
+        <>
+          <BackupStatusGuard title="Events" guard={statusGuard} />
+          {byMe && !myWriter && (
+            <UnlinkedWriterBanner onNavigateToWriters={onNavigateToWriters} />
+          )}
+        </>
       }
       countText={
         !error && (!loading || totalItems > 0) ? (
@@ -337,7 +340,8 @@ export const EventsTab = ({
               key={ev.pk || ev.id}
               event={ev}
               allCharacters={allCharacters}
-              onEdit={canCurate ? target => setEditingEvent(target) : undefined}
+              onEdit={canCurate ? target => { if (statusGuard.canMutate) setEditingEvent(target); } : undefined}
+              editDisabled={!statusGuard.canMutate}
             />
           ))}
         </div>

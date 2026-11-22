@@ -31,7 +31,6 @@ from db.models import (  # noqa: E402
     BackupModel,
     CharacterModel,
     CharacterNameModel,
-    ExportModel,
     WriterAliasModel,
     WriterModel,
 )
@@ -783,12 +782,6 @@ class TestRBACEndpointEnforcement(unittest.TestCase):
                         server_id=gid,
                         server_name="Guild",
                         created_at=datetime.now(timezone.utc),
-                    )
-                )
-                session.add(
-                    ExportModel(
-                        backup_id=b_id,
-                        scope="base",
                     )
                 )
 

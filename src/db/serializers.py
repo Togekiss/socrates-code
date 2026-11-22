@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+import threading
+from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import func, inspect
 from sqlalchemy.orm import Session, selectinload
 
@@ -7,19 +8,102 @@ import utils.tricks as t
 from utils import exceptions as exc
 from .models import (
     BackupModel,
-    BackupStepModel,
     ChannelModel,
     CharacterGroupModel,
     CharacterModel,
     EventModel,
-    ExportModel,
     SceneKind,
     SceneModel,
     Scope,
     Status,
     Step,
+    StorageMode,
+    SyncStatus,
     WriterModel,
 )
+
+_STEP_CACHE_LOCK = threading.RLock()
+_RUNTIME_STEP_OVERRIDES: Dict[Tuple[str, str], Dict[str, str]] = {}
+
+
+def set_runtime_step_override(backup_id: str, scope: str, step: str, status: str) -> None:
+    with _STEP_CACHE_LOCK:
+        _RUNTIME_STEP_OVERRIDES.setdefault((str(backup_id), str(scope)), {})[str(step)] = str(status)
+
+
+def clear_runtime_step_overrides(backup_id: str, scope: Optional[str] = None) -> None:
+    with _STEP_CACHE_LOCK:
+        if scope is None:
+            keys = [k for k in _RUNTIME_STEP_OVERRIDES if k[0] == str(backup_id)]
+            for k in keys:
+                _RUNTIME_STEP_OVERRIDES.pop(k, None)
+        else:
+            _RUNTIME_STEP_OVERRIDES.pop((str(backup_id), str(scope)), None)
+
+
+def synthesize_legacy_steps(
+    backup: BackupModel,
+    scope: str = "base",
+    has_channels: bool = False,
+) -> Tuple[str, Dict[str, str]]:
+    """Synthesizes backward-compatible 'status' and 'steps' dict from Schema v6 BackupModel."""
+    sync_status = getattr(backup, "sync_status", None) or SyncStatus.IDLE.value
+    last_synced_at = getattr(backup, "last_synced_at", None)
+    is_initialized = (last_synced_at is not None) or has_channels
+
+    steps_dict: Dict[str, str] = {}
+    for st in Step:
+        if scope == Scope.BASE.value and st != Step.UPDATE and is_initialized:
+            steps_dict[st.value] = Status.SUCCESS.value
+        else:
+            steps_dict[st.value] = Status.PENDING.value
+
+    cache_key = (str(backup.backup_id), str(scope))
+    with _STEP_CACHE_LOCK:
+        bucket = _RUNTIME_STEP_OVERRIDES.get(cache_key)
+        if bucket and sync_status == SyncStatus.IDLE.value:
+            stale_keys = [
+                k for k, v in bucket.items()
+                if v in (Status.RUNNING.value, Status.FAILED.value)
+            ]
+            for k in stale_keys:
+                bucket.pop(k, None)
+            if not bucket:
+                _RUNTIME_STEP_OVERRIDES.pop(cache_key, None)
+        overrides = dict(_RUNTIME_STEP_OVERRIDES.get(cache_key, {}))
+
+    for step_key, step_status in overrides.items():
+        steps_dict[step_key] = step_status
+
+    if sync_status == SyncStatus.SYNCING.value:
+        if not any(v == Status.RUNNING.value for v in steps_dict.values()):
+            fallback_step = Step.UPDATE.value if scope == Scope.UPDATE.value else Step.INDEX_SCENES.value
+            steps_dict[fallback_step] = Status.RUNNING.value
+    elif sync_status == SyncStatus.FAILED.value:
+        if not any(v == Status.FAILED.value for v in steps_dict.values()):
+            running_steps = [k for k, v in steps_dict.items() if v == Status.RUNNING.value]
+            if running_steps:
+                for k in running_steps:
+                    steps_dict[k] = Status.FAILED.value
+            else:
+                fallback_step = Step.UPDATE.value if scope == Scope.UPDATE.value else Step.INDEX_SCENES.value
+                steps_dict[fallback_step] = Status.FAILED.value
+    elif sync_status == SyncStatus.IDLE.value:
+        for k, v in list(steps_dict.items()):
+            if v == Status.RUNNING.value:
+                steps_dict[k] = Status.SUCCESS.value
+
+    effective_steps = [v for k, v in steps_dict.items() if k != Step.UPDATE.value] if scope == Scope.BASE.value else list(steps_dict.values())
+    if sync_status == SyncStatus.SYNCING.value or any(v == Status.RUNNING.value for v in effective_steps):
+        overall_status = Status.RUNNING.value
+    elif sync_status == SyncStatus.FAILED.value or any(v == Status.FAILED.value for v in effective_steps):
+        overall_status = Status.FAILED.value
+    elif effective_steps and all(v == Status.SUCCESS.value for v in effective_steps):
+        overall_status = Status.SUCCESS.value
+    else:
+        overall_status = Status.PENDING.value
+
+    return overall_status, steps_dict
 
 
 def build_backup_info_dict(
@@ -29,35 +113,21 @@ def build_backup_info_dict(
     is_schema_outdated: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """
-    Pure in-memory ORM-to-dict serializer for backup_info state
-    (backups, exports, backup_steps, channels, scenes, events).
-    Never writes to disk or checks debugFiles.
+    Pure in-memory ORM-to-dict serializer for backup_info state (Schema v6)
+    (backups, channels, scenes, events). Never writes to disk or checks debugFiles.
     """
     backup = session.query(BackupModel).filter(BackupModel.backup_id == str(backup_id)).first()
     if not backup:
         raise exc.BackupError(f"Backup with id '{backup_id}' not found in database.")
 
-    export = session.query(ExportModel).filter(
-        ExportModel.backup_id == str(backup_id),
-        ExportModel.scope == str(scope),
-    ).first()
-    if not export:
-        raise exc.BackupError(f"Export scope '{scope}' for backup '{backup_id}' not found in database.")
+    # Query all channels belonging to this backup directly (Schema v6)
+    all_channels = session.query(ChannelModel).filter(
+        ChannelModel.backup_id == str(backup_id)
+    ).all()
 
-    # Reconstruct steps dictionary
-    steps = session.query(BackupStepModel).filter(BackupStepModel.export_pk == export.pk).all()
-    steps_dict = {step.step: step.status for step in steps}
-
-    # Determine overall status
-    effective_steps = [s for s in steps if s.step != Step.UPDATE.value] if scope == Scope.BASE.value else steps
-    if all(s.status == Status.SUCCESS.value for s in effective_steps) and effective_steps:
-        overall_status = Status.SUCCESS.value
-    elif any(s.status == Status.FAILED.value for s in effective_steps):
-        overall_status = Status.FAILED.value
-    elif any(s.status == Status.RUNNING.value for s in effective_steps):
-        overall_status = Status.RUNNING.value
-    else:
-        overall_status = Status.PENDING.value
+    overall_status, steps_dict = synthesize_legacy_steps(
+        backup, scope=scope, has_channels=bool(all_channels)
+    )
 
     # Scene & event counts indexed by channel_pk and category_pk
     scene_counts_by_channel: Dict[int, int] = {}
@@ -130,11 +200,6 @@ def build_backup_info_dict(
                 err_line = str(e).splitlines()[0] if str(e) else type(e).__name__
                 fb_line = str(fallback_e).splitlines()[0] if str(fallback_e) else type(fallback_e).__name__
                 t.log("debug", f"Failed to calculate scene counts for backup {backup_id}: {err_line} (fallback: {fb_line})")
-
-    # Query all channels belonging to this export
-    all_channels = session.query(ChannelModel).filter(
-        ChannelModel.export_pk == export.pk
-    ).all()
 
     categories = [c for c in all_channels if c.type == "GuildCategory"]
     categories.sort(key=lambda c: c.position)
@@ -213,12 +278,23 @@ def build_backup_info_dict(
         }
         categories_json.append(cat_data)
 
+    last_synced_iso = backup.last_synced_at.isoformat() if backup.last_synced_at else None
+    sync_started_iso = backup.sync_started_at.isoformat() if backup.sync_started_at else None
+    created_iso = backup.created_at.isoformat() if backup.created_at else None
+
     return {
         "id": backup.server_id or "",
         "name": backup.server_name or "",
-        "updated_at": export.updated_at.isoformat() if export.updated_at else datetime.now(timezone.utc).isoformat(),
-        "exported_from": export.exported_from.isoformat() if export.exported_from else "",
-        "exported_at": export.exported_at.isoformat() if export.exported_at else "",
+        "updated_at": last_synced_iso or created_iso or datetime.now(timezone.utc).isoformat(),
+        "exported_from": "",
+        "exported_at": created_iso or last_synced_iso or "",
+        "storage_mode": getattr(backup, "storage_mode", StorageMode.BACKUPLESS.value),
+        "sync_status": getattr(backup, "sync_status", SyncStatus.IDLE.value),
+        "sync_started_at": sync_started_iso,
+        "last_synced_at": last_synced_iso,
+        "sync_error": getattr(backup, "sync_error", None),
+        "channels_total": int(getattr(backup, "channels_total", 0) or 0),
+        "channels_done": int(getattr(backup, "channels_done", 0) or 0),
         "status": overall_status,
         "steps": steps_dict,
         "number_of_categories": total_category_count,

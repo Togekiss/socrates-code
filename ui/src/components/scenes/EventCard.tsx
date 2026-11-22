@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import {
+  AlertTriangle,
   ExternalLink,
   ChevronDown,
   ChevronRight,
@@ -26,9 +27,15 @@ interface EventCardProps {
   event: EventRecord;
   allCharacters: Character[];
   onEdit?: (event: EventRecord) => void;
+  editDisabled?: boolean;
 }
 
-export const EventCard: React.FC<EventCardProps> = ({ event, allCharacters, onEdit }) => {
+export const EventCard: React.FC<EventCardProps> = ({
+  event,
+  allCharacters,
+  onEdit,
+  editDisabled = false,
+}) => {
   const [activeCharId, setActiveCharId] = useState<number | null>(null);
   const [expandedRowKey, setExpandedRowKey] = useState<string | null>(null);
 
@@ -177,6 +184,13 @@ export const EventCard: React.FC<EventCardProps> = ({ event, allCharacters, onEd
             <Badge variant="neutral" className="text-sm">
               {entry.message_count} msgs
             </Badge>
+
+            {(entry.is_deleted || entry.channel_is_deleted) && (
+              <Badge variant="danger" className="text-sm font-semibold" title="Channel or boundary message was deleted on Discord">
+                <AlertTriangle size={11} />
+                <span>Deleted on Discord</span>
+              </Badge>
+            )}
           </div>
 
           <div className="flex-row items-center gap-xs flex-wrap">
@@ -247,6 +261,17 @@ export const EventCard: React.FC<EventCardProps> = ({ event, allCharacters, onEd
 
         {/* Status, msg count, and FAR RIGHT Edit Button */}
         <div className="flex-row items-center gap-xs flex-wrap">
+          {event.is_deleted && (
+            <Badge
+              variant="danger"
+              className="text-sm font-semibold"
+              title="One or more channels or boundary messages in this event were deleted on Discord"
+            >
+              <AlertTriangle size={11} />
+              <span>Deleted on Discord</span>
+            </Badge>
+          )}
+
           <Badge
             variant={event.status === 'open' ? 'warning' : 'success'}
             className="text-sm uppercase font-semibold"
@@ -263,9 +288,10 @@ export const EventCard: React.FC<EventCardProps> = ({ event, allCharacters, onEd
             <Button
               variant="secondary"
               size="xs"
+              disabled={editDisabled}
               onClick={() => onEdit(event)}
               icon={<Edit3 size={12} />}
-              title="Edit event details"
+              title={editDisabled ? 'Editing is disabled while sync is in progress.' : 'Edit event details'}
             >
               Edit
             </Button>

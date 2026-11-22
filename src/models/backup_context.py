@@ -7,6 +7,8 @@ import json
 import os
 import sys
 
+from utils.path_safety import strip_category_prefix
+
 # Global static paths that do not depend on the active backup
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent.as_posix()
 DATA_ROOT = Path(os.environ.get("SOCRATES_DATA_DIR", ROOT_DIR)).as_posix()
@@ -233,11 +235,11 @@ class BackupContext:
             bad_end_messages=(Path(info_folder) / 'bad_end_messages.json').as_posix(),
             sqlite_db=(Path(backup_base) / 'backup.sqlite').as_posix(),
             server_id=admin_cfg.get('serverId', ""),
-            dm_categories=admin_cfg.get('dmCategories', []),
-            chatroom_categories=admin_cfg.get('chatroomCategories', []),
-            event_categories=admin_cfg.get('eventCategories', []),
-            categories_to_ignore=set(admin_cfg.get('categoriesToIgnore', [])),
-            categories_to_keep=set(admin_cfg.get('categoriesToKeep', [])),
+            dm_categories=[strip_category_prefix(x) for x in admin_cfg.get('dmCategories', []) if strip_category_prefix(x)],
+            chatroom_categories=[strip_category_prefix(x) for x in admin_cfg.get('chatroomCategories', []) if strip_category_prefix(x)],
+            event_categories=[strip_category_prefix(x) for x in admin_cfg.get('eventCategories', []) if strip_category_prefix(x)],
+            categories_to_ignore={strip_category_prefix(x) for x in admin_cfg.get('categoriesToIgnore', []) if strip_category_prefix(x)},
+            categories_to_keep={strip_category_prefix(x) for x in admin_cfg.get('categoriesToKeep', []) if strip_category_prefix(x)},
             keep_mode=admin_cfg.get('keepMode', False),
             info=verbosity.get('info', True),
             debug=verbosity.get('debug', True),

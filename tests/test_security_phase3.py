@@ -27,7 +27,6 @@ from db.models import (  # noqa: E402
     CURRENT_SCHEMA_VERSION,
     CharacterModel,
     CharacterNameModel,
-    ExportModel,
     WriterAliasModel,
     WriterModel,
 )
@@ -141,18 +140,19 @@ class TestAuditDatabaseIsolationAndFormatting(unittest.TestCase):
             self.assertEqual(audit_sqlite_path.name, "audit.sqlite")
             self.assertEqual(global_audit_path, data_root / "out" / "global_audit.sqlite")
 
-            # Verify backup.sqlite has schema v5 and NO audit_logs table
-            conn = sqlite3.connect(backup_sqlite_path.as_posix())
             try:
-                tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-                self.assertNotIn("audit_logs", tables)
-                version_row = conn.execute("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1").fetchone()
-                self.assertEqual(version_row[0], CURRENT_SCHEMA_VERSION)
-                self.assertEqual(CURRENT_SCHEMA_VERSION, 5)
+                # Verify backup.sqlite has current schema v6 and NO audit_logs table
+                conn = sqlite3.connect(backup_sqlite_path.as_posix())
+                try:
+                    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+                    self.assertNotIn("audit_logs", tables)
+                    version_row = conn.execute("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1").fetchone()
+                    self.assertEqual(version_row[0], CURRENT_SCHEMA_VERSION)
+                    self.assertEqual(CURRENT_SCHEMA_VERSION, 6)
+                finally:
+                    conn.close()
             finally:
-                conn.close()
-
-            close_all_engines()
+                close_all_engines()
 
     def test_unittest_default_global_audit_is_isolated_from_workspace_db(self):
         real_db_path = (PROJECT_ROOT / "out" / "global_audit.sqlite").resolve().as_posix().lower()
@@ -359,12 +359,6 @@ class TestAuditEndpointsAndRecording(unittest.TestCase):
                     backup_name="AuditTestBackup",
                     server_id=TEST_GUILD_ID,
                     server_name="Audit Test Guild",
-                )
-            )
-            session.add(
-                ExportModel(
-                    backup_id=TEST_BACKUP_ID,
-                    scope="base",
                 )
             )
             writer = WriterModel(

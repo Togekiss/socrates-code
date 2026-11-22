@@ -5,8 +5,10 @@ import {
   Database,
   Folder,
   Hash,
+  HardDrive,
   MessageSquare,
   Calendar,
+  PauseCircle,
   Users,
   Clock,
   AlertCircle,
@@ -21,6 +23,7 @@ import type { TabType } from './Sidebar';
 import { AiDisclosure } from './AiDisclosure';
 import { PanelSurface, StatCard, DataCard, Badge, Button } from './ui';
 import { getRoleLevel, ROLE_LEVELS } from '../utils/rbac';
+import { calcCompletionPct } from '../utils/formatters';
 
 interface StatusTabProps {
   backupId: string | null;
@@ -160,6 +163,15 @@ export const StatusTab = ({
   const numCategories = getCount(info.number_of_categories, info.categories);
   const numChannels = getCount(info.number_of_channels, info.channels);
   const numThreads = getCount(info.number_of_threads, info.threads);
+  const storageMode = info.storage_mode || 'backupless';
+  const syncStatus = info.sync_status ?? (info.status === 'running' ? 'syncing' : info.status === 'failed' ? 'failed' : 'idle');
+  const channelsTotal = info.channels_total ?? 0;
+  const channelsDone = info.channels_done ?? 0;
+  const progressPct = calcCompletionPct(channelsDone, channelsTotal);
+  const isSyncing = syncStatus === 'syncing' || info.status === 'running';
+  const isPaused = syncStatus === 'paused';
+  const isFailed = !isSyncing && !isPaused && (syncStatus === 'failed' || info.status === 'failed');
+  const isSyncedReady = !isSyncing && !isPaused && !isFailed && (Boolean(info.last_synced_at) || info.status === 'success');
 
   return (
     <div className="status-tab flex-col gap-xl">
@@ -172,6 +184,11 @@ export const StatusTab = ({
           </div>
 
           <div className="flex-row items-center gap-sm flex-wrap">
+            <Badge variant={storageMode === 'full' ? 'info' : 'accent'}>
+              {storageMode === 'full' ? <HardDrive size={14} /> : <Database size={14} />}
+              <span>{storageMode === 'full' ? 'Full Backup' : 'Backupless'}</span>
+            </Badge>
+
             {info.schema_version !== undefined && info.schema_version !== null && (
               <Badge variant={info.is_schema_outdated ? 'danger' : 'success'}>
                 <Database size={14} />
@@ -196,26 +213,83 @@ export const StatusTab = ({
 
             <Badge
               variant={
-                info.status === 'success'
+                isSyncedReady
                   ? 'success'
-                  : info.status === 'failed'
+                  : isFailed
                   ? 'danger'
+                  : isSyncing
+                  ? 'accent'
                   : 'warning'
               }
             >
-              {info.status === 'success' ? (
+              {isSyncedReady ? (
                 <CheckCircle size={14} />
-              ) : info.status === 'failed' ? (
+              ) : isFailed ? (
                 <AlertCircle size={14} />
+              ) : isPaused ? (
+                <PauseCircle size={14} />
               ) : (
-                <Clock size={14} />
+                <Clock size={14} className={isSyncing ? 'animate-spin' : ''} />
               )}
               <span>
-                {info.status === 'success' ? 'Ready' : info.status === 'failed' ? 'Failed' : 'Pending / Running'}
+                {isSyncing
+                  ? channelsTotal > 0
+                    ? `Syncing (${channelsDone}/${channelsTotal})`
+                    : 'Syncing'
+                  : isPaused
+                  ? `Paused (${channelsDone}/${channelsTotal})`
+                  : isFailed
+                  ? 'Sync Failed'
+                  : isSyncedReady
+                  ? 'Ready'
+                  : 'Not Synced'}
               </span>
             </Badge>
           </div>
         </div>
+
+        {(isSyncing || isPaused || (isFailed && info.sync_error)) && (
+          <div
+            className={isFailed ? 'banner-danger' : 'banner-info'}
+            style={{ padding: '0.65rem 0.9rem' }}
+          >
+            <div className="flex-col gap-xs w-full">
+              <div className="flex-row items-center justify-between flex-wrap gap-sm">
+                <span className="text-sm font-semibold">
+                  {isSyncing
+                    ? `Syncing channels: ${channelsDone} / ${channelsTotal} (${progressPct}%)`
+                    : isPaused
+                    ? `Sync paused at ${channelsDone} / ${channelsTotal} channels (${progressPct}%)`
+                    : info.sync_error || 'Last sync failed.'}
+                </span>
+                {canManageBackup && (
+                  <Button variant="secondary" size="xs" onClick={() => setTab('run')}>
+                    Open Sync Controls
+                  </Button>
+                )}
+              </div>
+              {channelsTotal > 0 && (isSyncing || isPaused) && (
+                <div
+                  style={{
+                    width: '100%',
+                    height: '6px',
+                    borderRadius: '999px',
+                    background: 'rgba(255,255,255,0.12)',
+                    overflow: 'hidden',
+                  }}
+                >
+                  <div
+                    style={{
+                      width: `${progressPct}%`,
+                      height: '100%',
+                      background: isPaused ? 'var(--warning)' : 'var(--accent-primary)',
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Dataset Statistics */}
         <div>
@@ -366,7 +440,7 @@ export const StatusTab = ({
         )}
 
         <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', textAlign: 'right' }}>
-          Exported at: {info.last_run ? new Date(info.last_run).toLocaleString() : info.updated_at ? new Date(info.updated_at).toLocaleString() : 'Unknown'}
+          Last synced: {info.last_synced_at ? new Date(info.last_synced_at).toLocaleString() : info.last_run ? new Date(info.last_run).toLocaleString() : info.updated_at ? new Date(info.updated_at).toLocaleString() : 'Never'}
         </div>
       </PanelSurface>
 

@@ -4,7 +4,12 @@ import time
 from typing import Dict, List, Optional, Tuple, Any, Set
 import utils.tricks as t
 import utils.exceptions as exc
-from fix_bad_messages import prepare_channel_messages, collect_channel_flagged_messages
+from fix_bad_messages import (
+    prepare_channel_messages,
+    prepare_channel_skeletons,
+    collect_channel_flagged_messages,
+    build_skeletons_from_messages,
+)
 from find_character_scenes import (
     has_end_tag,
     has_start_tag,
@@ -16,9 +21,12 @@ from find_character_scenes import (
     AUTO_SPLIT_MIN_TUPPERS,
     ROSTER_CHANGE_MIN_TUPPERS,
 )
-from models import ServerBackup, Category, Channel, Thread, SceneManager, Step
-from db.models import SceneStatus, IssueKind, SceneKind
-from db.session import has_db
+from models import ServerBackup, Category, Channel, Thread, SceneManager, Step, CharacterList
+from db.models import SceneStatus, IssueKind, SceneKind, SceneModel, SceneIssueModel, FlaggedMessageModel, BackupModel, StorageMode
+from db.session import has_db, has_skeleton_db, db_session
+from db.scene_service import load_channel_skeletons, upsert_channel_skeletons, snowflake_int
+from db.skeleton_models import SkeletonFlags
+from utils.path_safety import category_name_matches, expand_category_names
 t.set_path()
 from res import constants as c
 
@@ -42,10 +50,12 @@ def load_status(backup_id: Optional[str] = None, backup_path: Optional[str] = No
     """Loads backup information and checks if it is ready to index."""
     try:
         backup = ServerBackup.load(scope="base", backup_id=backup_id, backup_path=backup_path)
+        resolved_path = backup_path or backup.path or getattr(c, "BACKUP_BASE", None)
 
-        if backup.is_other_step_running(Step.INDEX_SCENES):
+        from backup_server import is_sync_lock_held
+        if is_sync_lock_held(resolved_path):
             raise exc.AlreadyRunningError("The export is still running in another process. Exiting...")
-        
+
         if not backup.can_index_scenes():
             raise exc.DataNotReadyError("The data may be corrupted or incomplete. Ensure the backup downloaded successfully and try again.")
 
@@ -317,6 +327,43 @@ def _detect_soft_boundaries(
     return soft_boundaries, already_merged
 
 
+def _msg_is_default(m: Dict[str, Any]) -> bool:
+    if "flags" in m:
+        return bool(int(m["flags"]) & SkeletonFlags.IS_DEFAULT)
+    return m.get("type") == "Default"
+
+
+def _msg_is_mention_only(m: Dict[str, Any]) -> bool:
+    if "flags" in m:
+        return bool(int(m["flags"]) & SkeletonFlags.IS_MENTION_ONLY)
+    return bool(MENTION_ONLY_PAT.match(str(m.get("content", "") or "").strip()))
+
+
+def _msg_has_end_tag(m: Dict[str, Any]) -> bool:
+    if "flags" in m:
+        return bool(int(m["flags"]) & SkeletonFlags.HAS_END_TAG)
+    return has_end_tag(m)
+
+
+def _msg_is_short_end_tag(m: Dict[str, Any]) -> bool:
+    if "flags" in m:
+        return bool(int(m["flags"]) & SkeletonFlags.IS_SHORT_END_TAG)
+    content = str(m.get("content", "") or "")
+    return len(content.strip()) <= END_TAG_SHORT_MSG_MAX_LEN
+
+
+def _msg_has_start_tag(m: Dict[str, Any]) -> bool:
+    if "flags" in m:
+        return bool(int(m["flags"]) & SkeletonFlags.HAS_START_TAG)
+    return has_start_tag(m)
+
+
+def _msg_has_attachment(m: Dict[str, Any]) -> bool:
+    if "flags" in m:
+        return bool(int(m["flags"]) & SkeletonFlags.HAS_ATTACHMENT)
+    return len(m.get("attachments", []) or []) > 0
+
+
 def _segment_explicit_boundaries(
     messages: List[Dict[str, Any]],
     resolved_decisions: Optional[Dict[str, str]] = None,
@@ -332,35 +379,29 @@ def _segment_explicit_boundaries(
     for i, m in enumerate(messages):
 
         # Skip non-text messages (pins, invites, etc)
-        if m.get("type") != "Default":
+        if not _msg_is_default(m):
             continue
 
         # Skip messages with only a mention
-        m_content = m.get("content", "") or ""
-        if MENTION_ONLY_PAT.match(m_content.strip()):
+        if _msg_is_mention_only(m):
             continue
-        
+
+        m_content = m.get("content", "") or ""
         # Check the author and if the message has start or end tags
         aid = t.get_author_id(m)
-        is_end = has_end_tag(m_content)
-        is_start = has_start_tag(m_content)
+        is_end = _msg_has_end_tag(m)
+        is_start = _msg_has_start_tag(m)
 
-        # Skip OOC setup posts, like images that describe the channel location:
-        # If there's no "current block" (we're at the start), AND
-        # The message has no start or end tags (it's not a scene message), AND
-        # The message is from an OOC user (id >= 10000), AND
-        # The message has attachments (it's likely an image)
+        # Skip OOC setup posts, like images that describe the channel location
         if (
             (not curr_block or all(not t.is_tupper(msg["author_id"]) for msg in curr_block))
-            and not t.is_tupper(aid) and len(m.get("attachments", [])) > 0
+            and not t.is_tupper(aid) and _msg_has_attachment(m)
             and not is_start and not is_end
         ):
             continue
 
-        # If a "new" scene's first message is an end tag,
-        # it means the previous scene had two messages with an end tag,
-        # so we add this message to the previous block instead of this one
-        if len(curr_block) == 0 and len(raw_blocks) > 0 and is_end and len(m_content.strip()) <= END_TAG_SHORT_MSG_MAX_LEN:
+        # If a "new" scene's first message is an end tag, append to previous block
+        if len(curr_block) == 0 and len(raw_blocks) > 0 and is_end and _msg_is_short_end_tag(m):
             prev_blk, prev_status, prev_res_start = raw_blocks[-1]
             prev_blk.append({
                 "index": i,
@@ -432,6 +473,7 @@ def _build_scene(
     )
     scene["kind"] = kind
     scene["participant_details"] = participant_details or []
+    scene["message_count"] = len(sblk)
     scene["issues"] = issues
     scene["id_builder"] = id_builder
     if resolved_start:
@@ -459,7 +501,7 @@ def find_all_scenes_in_channel(
 
         # Get all text messages (no Discord status messages like only mentions, pins, invites, etc.)
         # Might not be needed if fix_bad_messages already filtered messages like these out
-        default_msgs = [(i, m) for i, m in enumerate(messages) if m.get("type") == "Default" and not MENTION_ONLY_PAT.match(str(m.get("content", "") or "").strip())]
+        default_msgs = [(i, m) for i, m in enumerate(messages) if _msg_is_default(m) and not _msg_is_mention_only(m)]
         if not default_msgs:
             return []
 
@@ -473,13 +515,14 @@ def find_all_scenes_in_channel(
 
         first_idx, first_msg = default_msgs[0]
         last_idx, last_msg = default_msgs[-1]
-        status = SceneStatus.CLOSED.value if has_end_tag(last_msg) else SceneStatus.OPEN.value
+        status = SceneStatus.CLOSED.value if _msg_has_end_tag(last_msg) else SceneStatus.OPEN.value
 
         start_msg = message_info(first_msg, channel, first_idx)
         end_msg = message_info(last_msg, channel, last_idx)
         scene = scene_info(start_msg, end_msg, f"{id_builder}1", 1, channel, status, characters)
         scene["kind"] = SceneKind.SCENE.value
         scene["participant_details"] = participant_details
+        scene["message_count"] = len(thread_msgs)
         scene["issues"] = []
         scene["id_builder"] = id_builder
         return [scene]
@@ -560,8 +603,8 @@ def find_all_scenes_in_channel(
             )
             total_scenes.append(scene)
 
-    # Sort all the scenes we found in this channel by their start index
-    total_scenes.sort(key=lambda x: x["start"]["index"])
+    # Sort all the scenes we found in this channel by Snowflake ID / start index
+    total_scenes.sort(key=lambda x: (snowflake_int(x["start"].get("id")), x["start"]["index"]))
 
     # Assign each scene an index and an ID
     for i, scene in enumerate(total_scenes):
@@ -572,18 +615,138 @@ def find_all_scenes_in_channel(
 
 
 
+def _load_db_excerpts_map(backup_id: str, backup_path: str) -> Dict[str, str]:
+    """Loads preserved message boundary excerpts from SceneModel, SceneIssueModel, and FlaggedMessageModel."""
+    excerpts: Dict[str, str] = {}
+    if not has_db(backup_path, backup_id=backup_id):
+        return excerpts
+    try:
+        with db_session(backup_id=backup_id, backup_path=backup_path) as session:
+            for s_mid, s_exc, e_mid, e_exc in session.query(
+                SceneModel.start_message_id,
+                SceneModel.start_excerpt,
+                SceneModel.end_message_id,
+                SceneModel.end_excerpt,
+            ).filter(SceneModel.backup_id == str(backup_id)).all():
+                if s_mid and s_exc:
+                    excerpts[str(s_mid)] = str(s_exc)
+                if e_mid and e_exc:
+                    excerpts[str(e_mid)] = str(e_exc)
+            for c_mid, c_exc in session.query(
+                SceneIssueModel.candidate_message_id,
+                SceneIssueModel.candidate_excerpt,
+            ).filter(SceneIssueModel.backup_id == str(backup_id)).all():
+                if c_mid and c_exc and str(c_mid) not in excerpts:
+                    excerpts[str(c_mid)] = str(c_exc)
+            for f_mid, f_cnt, f_ov in session.query(
+                FlaggedMessageModel.message_id,
+                FlaggedMessageModel.content,
+                FlaggedMessageModel.override_content,
+            ).filter(FlaggedMessageModel.backup_id == str(backup_id)).all():
+                if f_mid:
+                    val = f_ov if f_ov is not None else f_cnt
+                    if val:
+                        excerpts[str(f_mid)] = str(val)
+    except Exception:
+        pass
+    return excerpts
+
+
+def _synthetic_channel_dict(
+    channel: Channel | Thread,
+    category_name: str,
+    server_id: str = "",
+) -> Dict[str, Any]:
+    is_thread = isinstance(channel, Thread) or not hasattr(channel, "threads")
+    return {
+        "guild": {"id": str(server_id or getattr(c, "SERVER_ID", "") or "")},
+        "channel": {
+            "id": str(channel.id),
+            "name": str(channel.name),
+            "category": str(category_name),
+            "type": "GuildPublicThread" if is_thread else "GuildTextChat",
+        },
+        "messages": [],
+    }
+
+
+def _rescan_json_channel_skeletons(
+    channel: Channel | Thread,
+    file_path: str,
+    backup_id: str,
+    backup_path: str,
+    char_list: Optional[CharacterList] = None,
+    excerpts_map: Optional[Dict[str, str]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Reads a Data/<channel.path> JSON, runs assign_ids_in_memory, and rebuilds skeletons.sqlite rows."""
+    if not file_path or not Path(file_path).is_file():
+        return None
+    json_data = t.load_from_json(file_path)
+    raw_messages = json_data.get("messages", [])
+    if char_list is not None:
+        from assign_ids import assign_ids_in_memory
+        assign_ids_in_memory(raw_messages, char_list)
+    if excerpts_map is not None:
+        for m in raw_messages:
+            mid_s = str(m.get("id") or "")
+            if mid_s:
+                excerpts_map[mid_s] = str(m.get("content") or "")
+    chan_did = str(getattr(channel, "id", None) or (json_data.get("channel") or {}).get("id") or "")
+    if chan_did and backup_id and backup_path:
+        skels = build_skeletons_from_messages(raw_messages, chan_did)
+        upsert_channel_skeletons(backup_id, backup_path, chan_did, skels, effective_after_id=0)
+    return json_data
+
+
 def process_channel(
     channel: Channel | Thread,
     id_builder: str,
     resolved_decisions: Optional[dict] = None,
     resolved_flags_map: Optional[dict] = None,
     preserved_flagged_mids: Optional[set] = None,
+    *,
+    backup_id: Optional[str] = None,
+    backup_path: Optional[str] = None,
+    category_name: str = "",
+    server_id: str = "",
+    rescan_json: bool = False,
+    excerpts_map: Optional[Dict[str, str]] = None,
+    char_list: Optional[CharacterList] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    file_path = (Path(c.DATA_FOLDER) / channel.path).as_posix()
+    b_id = backup_id or getattr(c, "BACKUP_ID", None)
+    b_path = backup_path or getattr(c, "BACKUP_BASE", None)
+    data_folder = (Path(b_path) / "Data").as_posix() if b_path else c.DATA_FOLDER
+    file_path = (Path(data_folder) / channel.path).as_posix() if channel.path else ""
     t.log("log", f"  Analysing {channel.name}...")
 
-    # Load JSON channel from file
-    json_data = t.load_from_json(file_path)
+    if not rescan_json and b_id and b_path and has_skeleton_db(b_path, backup_id=b_id):
+        skeletons = load_channel_skeletons(b_id, b_path, channel.id)
+        if skeletons:
+            prepared_messages = prepare_channel_skeletons(
+                skeletons,
+                resolved_flags_map or {},
+                excerpts_map=excerpts_map,
+            )
+            channel_for_scenes = _synthetic_channel_dict(channel, category_name, server_id=server_id)
+            channel_for_scenes["messages"] = prepared_messages
+            scenes = find_all_scenes_in_channel(channel_for_scenes, id_builder, resolved_decisions=resolved_decisions)
+            channel.scenes = len(scenes)
+            return scenes, []
+        if not (file_path and Path(file_path).is_file()):
+            channel.scenes = 0
+            return [], []
+
+    if not file_path or not Path(file_path).is_file():
+        channel.scenes = 0
+        return [], []
+
+    if rescan_json and b_id and b_path:
+        json_data = _rescan_json_channel_skeletons(
+            channel, file_path, b_id, b_path, char_list=char_list, excerpts_map=excerpts_map
+        ) or {}
+    else:
+        json_data = t.load_from_json(file_path)
+
     raw_messages = json_data.get("messages", [])
 
     # Prepare messages in-memory with resolved overrides and exclusions
@@ -621,6 +784,13 @@ def find_scenes_in_category(
     resolved_decisions: Optional[dict] = None,
     resolved_flags_map: Optional[dict] = None,
     preserved_flagged_mids: Optional[set] = None,
+    *,
+    backup_id: Optional[str] = None,
+    backup_path: Optional[str] = None,
+    server_id: str = "",
+    rescan_json: bool = False,
+    excerpts_map: Optional[Dict[str, str]] = None,
+    char_list: Optional[CharacterList] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     start_time = time.time()
 
@@ -636,6 +806,13 @@ def find_scenes_in_category(
             resolved_decisions=resolved_decisions,
             resolved_flags_map=resolved_flags_map,
             preserved_flagged_mids=preserved_flagged_mids,
+            backup_id=backup_id,
+            backup_path=backup_path,
+            category_name=category.name,
+            server_id=server_id,
+            rescan_json=rescan_json,
+            excerpts_map=excerpts_map,
+            char_list=char_list,
         )
         all_scenes.extend(scenes)
         all_flagged.extend(flagged)
@@ -648,6 +825,13 @@ def find_scenes_in_category(
                 resolved_decisions=resolved_decisions,
                 resolved_flags_map=resolved_flags_map,
                 preserved_flagged_mids=preserved_flagged_mids,
+                backup_id=backup_id,
+                backup_path=backup_path,
+                category_name=category.name,
+                server_id=server_id,
+                rescan_json=rescan_json,
+                excerpts_map=excerpts_map,
+                char_list=char_list,
             )
             all_scenes.extend(scenes)
             all_flagged.extend(flagged)
@@ -673,19 +857,31 @@ def find_scenes_in_category(
 
 ################ Main function #################
 
-def index_scenes(backup_id: Optional[str] = None, backup_path: Optional[str] = None):
+def index_scenes(
+    backup_id: Optional[str] = None,
+    backup_path: Optional[str] = None,
+    rescan_json: bool = False,
+):
     backup = load_status(backup_id=backup_id, backup_path=backup_path)
     b_id = backup_id or backup.backup_id or getattr(c, "BACKUP_ID", None)
     b_path = backup_path or backup.path or getattr(c, "BACKUP_BASE", None)
+    data_folder = (Path(b_path) / "Data").as_posix() if b_path else c.DATA_FOLDER
 
     start_time = time.time()
     try:
         t.log("base", f"\n# Indexing all the scenes in {c.BACKUP_NAME}... #\n")
 
-        # Load existing resolved boundary decisions and flags from SQLite so curation persists
+        if rescan_json and (not data_folder or not Path(data_folder).is_dir()):
+            raise exc.IndexScenesError(
+                f"Cannot rescan local JSONs: Data folder not found at '{data_folder}' (full storage_mode required)."
+            )
+
+        # Load existing resolved boundary decisions, flags, and preserved DB excerpts from SQLite
         resolved_decisions = {}
         resolved_flags_map = {}
         preserved_flagged_mids = set()
+        excerpts_map: Dict[str, str] = {}
+        use_skeletons_mode = (not rescan_json) and bool(b_id and b_path and has_skeleton_db(b_path, backup_id=b_id))
 
         if has_db(b_path, backup_id=b_id):
             from db.curation_service import (
@@ -698,33 +894,66 @@ def index_scenes(backup_id: Optional[str] = None, backup_path: Optional[str] = N
                 t.log("info", f"  Loaded {len(resolved_decisions)} resolved curation decisions.\n")
             resolved_flags_map = get_resolved_flags_map(b_id, b_path)
             preserved_flagged_mids = get_preserved_flagged_message_ids(b_id, b_path)
+            if use_skeletons_mode:
+                excerpts_map = _load_db_excerpts_map(b_id, b_path)
+
+        char_list = CharacterList.load(backup_id=b_id, base_path=b_path) if rescan_json else None
 
         full_scenes = []
         full_sessions = []
         full_flagged = []
         event_cats = []
 
-        event_cat_names = set(getattr(c, "EVENT_CATEGORIES", []) or [])
-        chatroom_cat_names = set(getattr(c, "CHATROOM_CATEGORIES", []) or [])
+        event_cat_names = expand_category_names(getattr(c, "EVENT_CATEGORIES", []))
+        chatroom_cat_names = expand_category_names(getattr(c, "CHATROOM_CATEGORIES", []))
 
         for category in backup.categories:
-            if category.name in event_cat_names or category.id == "events_category" or category.name == "Events":
+            if (
+                category_name_matches(category.name, event_cat_names)
+                or category.id == "events_category"
+                or category.name == "Events"
+            ):
                 event_cats.append(category)
                 continue
 
-            if category.name in chatroom_cat_names:
+            if category_name_matches(category.name, chatroom_cat_names):
+                if rescan_json:
+                    for ch in category.channels:
+                        _rescan_json_channel_skeletons(
+                            ch,
+                            (Path(data_folder) / ch.path).as_posix(),
+                            b_id,
+                            b_path,
+                            char_list=char_list,
+                            excerpts_map=excerpts_map,
+                        )
+                        for th in ch.threads:
+                            _rescan_json_channel_skeletons(
+                                th,
+                                (Path(data_folder) / th.path).as_posix(),
+                                b_id,
+                                b_path,
+                                char_list=char_list,
+                                excerpts_map=excerpts_map,
+                            )
                 from index_sessions import find_sessions_in_category
+                use_rebuilt_skeletons = rescan_json and bool(b_id and b_path and has_skeleton_db(b_path, backup_id=b_id))
                 sessions = find_sessions_in_category(
                     category=category,
                     resolved_decisions=resolved_decisions,
                     resolved_flags_map=resolved_flags_map,
+                    backup_id=b_id,
+                    backup_path=b_path,
+                    server_id=str(backup.id or ""),
+                    rescan_json=False if use_rebuilt_skeletons else rescan_json,
+                    excerpts_map=excerpts_map,
                 )
                 full_sessions.extend(sessions)
                 t.log("info", f"  Found {len(sessions)} chat sessions in chatroom category {category.name}\n")
                 continue
 
             if c.DEBUG_FILES:
-                scenes_dir = Path(c.DATA_FOLDER) / category.path / "Scenes"
+                scenes_dir = Path(data_folder) / category.path / "Scenes"
                 if not scenes_dir.exists():
                     scenes_dir.mkdir(parents=True, exist_ok=True)
 
@@ -733,19 +962,55 @@ def index_scenes(backup_id: Optional[str] = None, backup_path: Optional[str] = N
                 resolved_decisions=resolved_decisions,
                 resolved_flags_map=resolved_flags_map,
                 preserved_flagged_mids=preserved_flagged_mids,
+                backup_id=b_id,
+                backup_path=b_path,
+                server_id=str(backup.id or ""),
+                rescan_json=rescan_json,
+                excerpts_map=excerpts_map,
+                char_list=char_list,
             )
             full_scenes.extend(scenes)
             full_flagged.extend(flagged)
             t.log("info", f"  Found {len(scenes)} scenes in {category.path}, adding up to {len(full_scenes)} total scenes\n")
 
+        if rescan_json and char_list is not None:
+            char_list.save()
+
         event_clusters = []
         if event_cats:
+            if rescan_json:
+                for cat in event_cats:
+                    for ch in cat.channels:
+                        _rescan_json_channel_skeletons(
+                            ch,
+                            (Path(data_folder) / ch.path).as_posix(),
+                            b_id,
+                            b_path,
+                            char_list=char_list,
+                            excerpts_map=excerpts_map,
+                        )
+                        for th in ch.threads:
+                            _rescan_json_channel_skeletons(
+                                th,
+                                (Path(data_folder) / th.path).as_posix(),
+                                b_id,
+                                b_path,
+                                char_list=char_list,
+                                excerpts_map=excerpts_map,
+                            )
+                if char_list is not None:
+                    char_list.save()
             from index_events import index_event_categories
+            use_rebuilt_ev_skeletons = rescan_json and bool(b_id and b_path and has_skeleton_db(b_path, backup_id=b_id))
             event_clusters = index_event_categories(
                 event_categories=event_cats,
-                folder=c.DATA_FOLDER,
+                data_folder=data_folder,
                 resolved_flags_map=resolved_flags_map,
                 resolved_decisions=resolved_decisions,
+                backup_id=b_id,
+                backup_path=b_path,
+                rescan_json=False if use_rebuilt_ev_skeletons else rescan_json,
+                excerpts_map=excerpts_map,
             )
             t.log("info", f"  Found {len(event_clusters)} events across {len(event_cats)} event category(s)\n")
 
@@ -772,19 +1037,20 @@ def index_scenes(backup_id: Optional[str] = None, backup_path: Optional[str] = N
                 b_path,
                 event_clusters,
             )
-            save_flagged_messages(
-                backup_id=b_id,
-                base_path=b_path,
-                flagged_items=full_flagged,
-                debug_files=c.DEBUG_FILES,
-            )
+            if not use_skeletons_mode:
+                save_flagged_messages(
+                    backup_id=b_id,
+                    base_path=b_path,
+                    flagged_items=full_flagged,
+                    debug_files=c.DEBUG_FILES,
+                )
 
         # Update the overall backup model and save to the status file
         backup.save()
         backup.finish_index_scenes(success=True)
 
     except Exception as e:
-        backup.finish_index_scenes(success=False)
+        backup.finish_index_scenes(success=False, error=str(e))
         raise exc.IndexScenesError("Failed to index all scenes") from e
 
     finally:
@@ -795,19 +1061,25 @@ def index_scenes(backup_id: Optional[str] = None, backup_path: Optional[str] = N
             raise e
 
 if __name__ == "__main__":
-    
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Socrates scene/session/event indexer")
+    parser.add_argument("--backup-id", type=str, default=None, help="Backup ID to index")
+    parser.add_argument("--rescan-json", action="store_true", help="Rescan local Data/*.json files into skeletons.sqlite")
+    cli_args = parser.parse_args(sys.argv[1:])
+
     try:
-        index_scenes()
+        if cli_args.backup_id:
+            from models.backup_context import BackupContext
+            with BackupContext.activate(backup_id=cli_args.backup_id):
+                index_scenes(backup_id=cli_args.backup_id, rescan_json=cli_args.rescan_json)
+        else:
+            index_scenes(rescan_json=cli_args.rescan_json)
     except KeyboardInterrupt:
         t.log("error", "\nProcess interrupted by user.\n")
         try:
-            backup = ServerBackup.load(scope="base")
-            if backup.is_updating():
-                update = ServerBackup.load(scope="update")
-                update.set_failed()
-                backup.finish_update(success=False)
-            else:
-                backup.set_failed()
+            backup = load_status(backup_id=cli_args.backup_id)
+            backup.set_failed()
         except Exception:
             pass
         sys.exit(1)

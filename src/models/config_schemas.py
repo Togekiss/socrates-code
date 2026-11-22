@@ -5,7 +5,7 @@ Strict Pydantic v2 validation schemas for global and backup configuration payloa
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -60,6 +60,7 @@ class AdminConfigSchema(BaseModel):
     serverName: Optional[str] = Field(default=None, max_length=200)
     backupName: Optional[str] = Field(default=None, max_length=200)
     path: Optional[str] = Field(default=None, max_length=200)
+    storageMode: Optional[Literal["backupless", "full"]] = None
 
     @field_validator("verbosity")
     @classmethod
@@ -178,6 +179,7 @@ class _BaseConfigSchema(BaseModel):
     export_formats: Optional[List[str]] = None
     timezone: Optional[str] = Field(default=None, max_length=100)
     SceneBreakThreshold: Optional[int] = Field(default=None, ge=1, le=100000)
+    storageMode: Optional[Literal["backupless", "full"]] = None
     admin: Optional[AdminConfigSchema] = None
     user: Optional[UserConfigSchema] = None
     steps: Optional[Dict[str, StepConfigSchema]] = None

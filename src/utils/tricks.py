@@ -86,7 +86,7 @@ def load_from_json(file_path):
                 raise e
             time.sleep(0.1)
 
-def save_json_atomic(data, target_path):
+def save_json_atomic(data, target_path, indent: int = 4, ensure_ascii: bool = True):
     """
     Atomically writes data to a JSON file using a temporary file, fsync, and os.replace().
     Prevents truncated or corrupted files if interrupted mid-write.
@@ -98,7 +98,7 @@ def save_json_atomic(data, target_path):
 
     try:
         with open(temp_path, "w", encoding="utf-8") as file:
-            json.dump(data, file, indent=4)
+            json.dump(data, file, indent=indent, ensure_ascii=ensure_ascii)
             file.flush()
             os.fsync(file.fileno())
     except Exception:
@@ -302,12 +302,13 @@ def _get_file_logger(file_path: str) -> logging.Logger:
 
 
 def write_log_line(file_path: str, level: str, message: str) -> None:
-    """Buffers a formatted log line to the cached file logger for file_path."""
+    """Writes and flushes a formatted log line to the cached file logger for file_path."""
     timestamp = datetime.datetime.now().strftime("%H:%M:%S")
     log_line = f"[{timestamp}]{level}: {clean(str(message))}"
     logger = _get_file_logger(file_path)
     py_level = logging.ERROR if level == "error" else logging.INFO
     logger.log(py_level, log_line)
+    flush_logs(file_path)
 
 
 def flush_logs(file_path: Optional[str] = None) -> None:
@@ -567,6 +568,14 @@ def get_author_id(m: Any) -> Any:
         return int(raw_id)
     except (ValueError, TypeError):
         return None
+
+
+def format_excerpt(text: str) -> str:
+    """Formats a message excerpt, truncating strings >250 chars to 120 head + [...] + 120 tail (247 chars)."""
+    s = str(text or "")
+    if len(s) <= 250:
+        return s
+    return f"{s[:120]}\n[...]\n{s[-120:]}"
 
 
 def parse_datetime(val: Any) -> Any:

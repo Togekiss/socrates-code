@@ -21,6 +21,7 @@ import type {
   FlaggedMessage,
   FlaggedMessagesResponse,
   FlaggedResolution,
+  FullContentResponse,
   GlobalConfig,
   IssueResolution,
   ManualSplitResponse,
@@ -32,7 +33,10 @@ import type {
   ScenesResponse,
   SessionsResponse,
   SceneMergeNeighborsResponse,
+  SeenDiscordUser,
   MergeSceneResponse,
+  AcceptAllWriterSuggestionsResponse,
+  CreateWritersFromDiscordUsersResponse,
   UnassignedCharacter,
   WriterDetailed,
   WriterLinkSuggestion,
@@ -214,6 +218,26 @@ export const api = {
       body: JSON.stringify(config),
     }).then(res => res.json()),
 
+  syncBackup: (
+    backupId: string,
+    data: { mode: 'incremental' | 'resume' | 'rescan_discord' | 'rescan_local_json'; config?: Partial<BackupConfig> }
+  ): Promise<{ status: string; mode: string }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }).then(res => res.json()),
+
+  reindexBackup: (
+    backupId: string,
+    data: { rescan_json?: boolean } = {}
+  ): Promise<{ status: string; rescan_json: boolean }> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/reindex`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }).then(res => res.json()),
+
   runBackup: (backupId: string, config?: Partial<BackupConfig>): Promise<{ status: string }> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/run`, {
       method: 'POST',
@@ -223,9 +247,6 @@ export const api = {
 
   cancelRun: (backupId: string): Promise<{ status: string }> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/cancel`, { method: 'POST' }).then(res => res.json()),
-
-  rerunAction: (backupId: string, action: string): Promise<{ status: string; action: string }> =>
-    fetchWithAuth(`${API_BASE}/backups/${backupId}/rerun/${action}`, { method: 'POST' }).then(res => res.json()),
 
   upgradeBackup: (backupId: string): Promise<{ status: string; message?: string; report?: Record<string, unknown> }> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/upgrade`, { method: 'POST' }).then(res => res.json()),
@@ -400,6 +421,19 @@ export const api = {
   getWriterLinkSuggestions: (backupId: string): Promise<WriterLinkSuggestion[]> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/writers/link-suggestions`).then(res => res.json()),
 
+  acceptAllWriterLinkSuggestions: (backupId: string): Promise<AcceptAllWriterSuggestionsResponse> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/writers/link-suggestions/accept-all`, {
+      method: 'POST',
+    }).then(res => res.json()),
+
+  createWritersFromDiscordUsers: (backupId: string): Promise<CreateWritersFromDiscordUsersResponse> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/writers/create-from-discord-users`, {
+      method: 'POST',
+    }).then(res => res.json()),
+
+  getSeenDiscordUsers: (backupId: string): Promise<SeenDiscordUser[]> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/seen-discord-users`).then(res => res.json()),
+
   getUnassignedCharacters: (backupId: string): Promise<UnassignedCharacter[]> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/characters/unassigned-writers`).then(res => res.json()),
 
@@ -463,10 +497,16 @@ export const api = {
       body: JSON.stringify(data),
     }).then(res => res.json()),
 
+  getFlaggedMessageFullContent: (
+    backupId: string,
+    messageId: string | number
+  ): Promise<FullContentResponse> =>
+    fetchWithAuth(`${API_BASE}/backups/${backupId}/flagged-messages/${messageId}/full-content`).then(res => res.json()),
+
   resolveFlaggedMessage: (
     backupId: string,
     messageId: string,
-    data: { resolution: FlaggedResolution; note?: string; override_content?: string; override_author?: DiscordAuthor }
+    data: { resolution: FlaggedResolution; note?: string; override_content?: string | null; override_author?: DiscordAuthor }
   ): Promise<{ status: string; message_id: string; resolution: string; resolved_at: string }> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/flagged-messages/${messageId}/resolve`, {
       method: 'PUT',
@@ -480,7 +520,7 @@ export const api = {
   promoteFlaggedMessage: (
     backupId: string,
     messageId: string,
-    data: { content?: string; author?: DiscordAuthor } = {}
+    data: { content?: string | null; author?: DiscordAuthor } = {}
   ): Promise<{ status: string; message_id: string; override_id?: number; promoted_at?: string; is_update?: boolean }> =>
     fetchWithAuth(`${API_BASE}/backups/${backupId}/flagged-messages/${messageId}/promote`, {
       method: 'POST',

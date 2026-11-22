@@ -41,6 +41,13 @@ class ServerBackup:
     exported_at: str = ""
     path: str = ""
     scope: str = "base"
+    storage_mode: str = "backupless"
+    sync_status: str = "idle"
+    sync_started_at: Optional[str] = None
+    last_synced_at: Optional[str] = None
+    sync_error: Optional[str] = None
+    channels_total: int = 0
+    channels_done: int = 0
     steps: dict[Step, Status] = field(
         default_factory=lambda: deepcopy(DEFAULT_STEPS),
         repr=False
@@ -129,6 +136,13 @@ class ServerBackup:
             exported_from=data.get("exported_from", ""),
             exported_at=data.get("exported_at", ""),
             scope=scope,
+            storage_mode=data.get("storage_mode", "backupless"),
+            sync_status=data.get("sync_status", "idle"),
+            sync_started_at=data.get("sync_started_at"),
+            last_synced_at=data.get("last_synced_at"),
+            sync_error=data.get("sync_error"),
+            channels_total=int(data.get("channels_total", 0) or 0),
+            channels_done=int(data.get("channels_done", 0) or 0),
             steps=normalized_steps,
             categories=[
                 Category.from_dict(category_data)
@@ -230,6 +244,13 @@ class ServerBackup:
             "updated_at": self.updated_at,
             "exported_from": self.exported_from,
             "exported_at": self.exported_at,
+            "storage_mode": self.storage_mode,
+            "sync_status": self.sync_status,
+            "sync_started_at": self.sync_started_at,
+            "last_synced_at": self.last_synced_at,
+            "sync_error": self.sync_error,
+            "channels_total": self.channels_total,
+            "channels_done": self.channels_done,
             "status": self.status,
             "steps": {st.value if hasattr(st, "value") else str(st): (v.value if hasattr(v, "value") else str(v)) for st, v in self.steps.items()},
             "number_of_categories": self.number_of_categories,
@@ -451,7 +472,7 @@ class ServerBackup:
             self._set_step_status(Step.FIX_MESSAGES, Status.FAILED, error=error)
 
     def can_index_scenes(self) -> bool:
-        return self.steps[Step.FIX_MESSAGES] == Status.SUCCESS
+        return bool(self.categories) or self.steps.get(Step.FIX_MESSAGES) == Status.SUCCESS
 
     def start_index_scenes(self):
         self._set_step_status(Step.INDEX_SCENES, Status.RUNNING)

@@ -1,9 +1,13 @@
+import json
 import os
 import shutil
 import sys
 import tempfile
+import threading
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import re
 
 # Ensure src and project root are in sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -12,17 +16,22 @@ for p in (SRC_DIR.as_posix(), PROJECT_ROOT.as_posix()):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from unittest.mock import patch
+import httpx
 from sqlalchemy import inspect
-from tests.test_env import skip_in_production_or_missing_fixture
+from tests.test_env import skip_in_production_or_missing_fixture, use_socket_free_asyncio
 DATA_ROOT = Path(os.environ.get("SOCRATES_DATA_DIR") or PROJECT_ROOT.as_posix())
 # pyrefly: ignore [missing-import]
-from db.session import get_sqlite_path, db_session, close_all_engines
+from db.skeleton_models import MessageSkeletonModel, SkeletonFlags  # noqa: E402
+from db.session import (  # noqa: E402
+    get_sqlite_path,
+    get_skeleton_sqlite_path,
+    db_session,
+    skeleton_db_session,
+    close_all_engines,
+)
 # pyrefly: ignore [missing-import]
 from db.models import (
     BackupModel,
-    ExportModel,
-    BackupStepModel,
     ChannelModel,
     WriterModel,
     CharacterModel,
@@ -31,6 +40,7 @@ from db.models import (
     SceneParticipantModel,
     SceneIssueModel,
     FlaggedMessageModel,
+    SeenDiscordUserModel,
     SceneKind,
     Step,
     Status,
@@ -49,11 +59,306 @@ from fix_bad_messages import fix_bad_messages
 from index_scenes import index_scenes
 # pyrefly: ignore [missing-import]
 from backup_server import backup_server
+from discord_extractor import (  # noqa: E402
+    DISCORD_EPOCH_MS,
+    DiscordExtractor,
+    extract_inline_emojis,
+    format_content,
+    serialize_message,
+)
 # pyrefly: ignore [missing-import]
 from deprecated.inject_category import inject_category
 from tests.reset_test_backup import reset_test_backup
 # pyrefly: ignore [missing-import]
+import utils.exceptions as exc
 import utils.tricks as t
+
+
+_WEBHOOK_AVATAR_RE = re.compile(r"/avatars/(\d+)/")
+
+
+def _dce_msg_to_raw_discord(msg: dict) -> dict:
+    """Converts a DCE §7 exported message dict into a raw Discord REST API v10 message dict."""
+    author = msg.get("author") or {}
+    author_id = str(author.get("id") or "100000000000000001")
+    is_bot = bool(author.get("isBot", False))
+    if is_bot and author_id.isdigit() and int(author_id) < 100000:
+        m_av = _WEBHOOK_AVATAR_RE.search(str(author.get("avatarUrl") or ""))
+        author_id = m_av.group(1) if m_av else "1020068778626789457"
+
+    raw_author = {
+        "id": author_id,
+        "username": str(author.get("name") or "Unknown"),
+        "discriminator": str(author.get("discriminator") or "0"),
+        "global_name": str(author.get("nickname") or author.get("name") or ""),
+        "bot": is_bot,
+        "avatar": None,
+    }
+    raw_type = 19 if msg.get("type") == "Reply" else 0
+    raw_msg = {
+        "id": str(msg["id"]),
+        "channel_id": str(msg.get("channelId") or ""),
+        "type": raw_type,
+        "timestamp": msg.get("timestamp"),
+        "edited_timestamp": msg.get("timestampEdited"),
+        "pinned": bool(msg.get("isPinned", False)),
+        "content": str(msg.get("content") or ""),
+        "author": raw_author,
+        "attachments": [
+            {
+                "id": str(a.get("id") or ""),
+                "url": str(a.get("url") or ""),
+                "filename": str(a.get("fileName") or "file"),
+                "size": int(a.get("fileSizeBytes", 0) or 0),
+            }
+            for a in (msg.get("attachments") or [])
+        ],
+        "embeds": list(msg.get("embeds") or []),
+        "sticker_items": [
+            {"id": str(s.get("id") or ""), "name": str(s.get("name") or ""), "format_type": 1}
+            for s in (msg.get("stickers") or [])
+        ],
+        "reactions": [],
+        "mentions": [
+            {
+                "id": str(m.get("id") or "100000000000000002"),
+                "username": str(m.get("name") or "user"),
+                "discriminator": str(m.get("discriminator") or "0"),
+                "global_name": str(m.get("nickname") or m.get("name") or "user"),
+                "bot": bool(m.get("isBot", False)),
+            }
+            for m in (msg.get("mentions") or [])
+        ],
+    }
+    if isinstance(msg.get("reference"), dict):
+        ref = msg["reference"]
+        raw_msg["message_reference"] = {
+            "type": 1 if ref.get("type") == "Forward" else 0,
+            "message_id": ref.get("messageId"),
+            "channel_id": ref.get("channelId"),
+            "guild_id": ref.get("guildId"),
+        }
+    return raw_msg
+
+
+class ElysiumMockDiscordServer:
+    """
+    Reusable offline Discord REST API v10 simulator driven by httpx.MockTransport,
+    synthesizing guild, categories, channels, threads, members, and paginated messages
+    from `Backups/Elysium-sql-tests-clean/Data` (and optionally `Update`).
+    """
+
+    GUILD_ID = "857848490683269161"
+
+    def __init__(
+        self,
+        clean_backup_root: Path,
+        *,
+        include_update: bool = True,
+        bot_token_mode: str = "valid",
+        members_403: bool = False,
+        rate_limit_once_429: bool = False,
+    ):
+        self.clean_root = Path(clean_backup_root)
+        self.include_update = include_update
+        self.bot_token_mode = bot_token_mode
+        self.members_403 = members_403
+        self.rate_limit_once_429 = rate_limit_once_429
+        self._429_fired = False
+        self.fetched_channel_history_ids: list[str] = []
+        self.requests_seen: list[str] = []
+
+        self.guild = {
+            "id": self.GUILD_ID,
+            "name": "(+18) Diabolik: Elysium",
+            "icon": "f9774c466fbffcc2b6968b0112d787c5",
+            "roles": [
+                {"id": self.GUILD_ID, "name": "@everyone", "color": 0, "position": 0},
+                {"id": "900000000000000001", "name": "Writer", "color": 0x3498DB, "position": 1},
+            ],
+        }
+
+        self.messages_by_channel: dict[str, list[dict]] = {}
+        self.members: list[dict] = []
+        self.channels: list[dict] = []
+        self.threads: list[dict] = []
+        self._load_fixtures()
+
+    def _load_json_dir_messages(self, base_dir: Path) -> None:
+        if not base_dir.exists():
+            return
+        for jf in sorted(base_dir.rglob("*.json")):
+            data = json.loads(jf.read_text(encoding="utf-8"))
+            ch = data.get("channel") or {}
+            cid = str(ch.get("id") or "")
+            if not cid:
+                continue
+            existing = {str(m["id"]): m for m in self.messages_by_channel.get(cid, [])}
+            for m in data.get("messages") or []:
+                raw_m = _dce_msg_to_raw_discord(m)
+                existing[raw_m["id"]] = raw_m
+            ordered = sorted(existing.values(), key=lambda x: int(x["id"]))
+            self.messages_by_channel[cid] = ordered
+
+    def _load_fixtures(self) -> None:
+        self._load_json_dir_messages(self.clean_root / "Data")
+        if self.include_update:
+            self._load_json_dir_messages(self.clean_root / "Update")
+
+        # Harvest sample non-bot members from loaded messages
+        seen_members: dict[str, dict] = {}
+        for msgs in self.messages_by_channel.values():
+            for rm in msgs:
+                auth = rm.get("author") or {}
+                uid = str(auth.get("id") or "")
+                if not auth.get("bot") and uid.isdigit() and int(uid) >= 100000 and uid not in seen_members:
+                    seen_members[uid] = {
+                        "user": dict(auth),
+                        "nick": auth.get("global_name") or auth.get("username"),
+                        "roles": ["900000000000000001"],
+                    }
+        self.members = sorted(seen_members.values(), key=lambda m: int(m["user"]["id"]))
+
+        # Build 28 ordered categories so relative positions match Data/ & Update/:
+        # 6 -> CURRENT EVENT, 7 -> Group Chats, 14 -> The Twisted Viper Bar, 23 -> NSFW Events, 28 -> EVENT STORAGE
+        real_cats = {
+            6: ("1008065547155558431", "CURRENT EVENT"),
+            7: ("1106268351220678767", "Group Chats"),
+            14: ("1019770957172326470", "The Twisted Viper Bar"),
+            23: ("1345359342970343486", "NSFW Events"),
+            28: ("987749861963214878", "EVENT STORAGE"),
+        }
+        for pos_idx in range(1, 29):
+            if pos_idx in real_cats:
+                cid, cname = real_cats[pos_idx]
+            else:
+                cid, cname = (str(900000000000000100 + pos_idx), "OOC")
+            if not self.include_update and pos_idx == 23:
+                continue
+            self.channels.append({"id": cid, "type": 4, "name": cname, "position": pos_idx - 1})
+
+        def _last_mid(cid: str) -> str | None:
+            msgs = self.messages_by_channel.get(cid) or []
+            return msgs[-1]["id"] if msgs else None
+
+        # Non-category text channels
+        text_specs = [
+            ("1008065681998221352", "1008065547155558431", "hotel-lobby", 0),
+            ("1008065639467982868", "1008065547155558431", "game-booths", 1),
+            ("858215486272962581", "1106268351220678767", "chatroom", 0),
+            ("1013915163423932496", "1019770957172326470", "barside", 0),
+            ("1019771259896205382", "1019770957172326470", "back-of-bar", 1),
+            ("1019771317303644261", "1019770957172326470", "bar-tables", 2),
+            ("1008065664034025533", "987749861963214878", "medical-tent", 0),
+        ]
+        if self.include_update:
+            text_specs.append(("1345360008409518121", "1345359342970343486", "room-9", 0))
+
+        for ch_id, p_id, ch_name, pos in text_specs:
+            self.channels.append(
+                {
+                    "id": ch_id,
+                    "type": 0,
+                    "parent_id": p_id,
+                    "name": ch_name,
+                    "position": pos,
+                    "last_message_id": _last_mid(ch_id),
+                }
+            )
+
+        # Threads
+        thread_specs = [
+            ("1132200643776487524", "1008065639467982868", "Tamina Freaky Hours~"),
+            ("1141818382782574645", "1019771259896205382", "A Toast to Emnity (Shin/Rin)"),
+            ("1158294831097970738", "1019771259896205382", "Conversation"),
+            ("1131989202465210569", "1008065664034025533", "Room 4: Ruki, Aoi, Kaoru"),
+        ]
+        if self.include_update:
+            thread_specs.extend(
+                [
+                    ("1132744421587296397", "1008065639467982868", "Sand Dunes"),
+                    ("1285969286808076360", "1019771317303644261", "Full Moon"),
+                ]
+            )
+        for th_id, p_id, th_name in thread_specs:
+            self.threads.append(
+                {
+                    "id": th_id,
+                    "type": 11,
+                    "parent_id": p_id,
+                    "name": th_name,
+                    "last_message_id": _last_mid(th_id),
+                    "thread_metadata": {"archived": False},
+                }
+            )
+
+    def make_transport(self) -> httpx.MockTransport:
+        def _handler(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            self.requests_seen.append(f"{request.method} {path}")
+
+            if self.rate_limit_once_429 and path == f"/api/v10/guilds/{self.GUILD_ID}" and not self._429_fired:
+                self._429_fired = True
+                return httpx.Response(
+                    429,
+                    json={"message": "You are being rate limited.", "retry_after": 0.01, "global": False},
+                    headers={"Retry-After": "0.01"},
+                )
+
+            if path == "/api/v10/users/@me":
+                if self.bot_token_mode == "unauthorized":
+                    return httpx.Response(401, json={"message": "401: Unauthorized"})
+                is_bot = self.bot_token_mode == "valid"
+                return httpx.Response(200, json={"id": "999999999999999999", "username": "SocratesBot", "bot": is_bot})
+
+            if path == "/api/v10/applications/@me":
+                return httpx.Response(200, json={"id": "999999999999999999", "flags": 262144 | 524288})
+
+            if path == f"/api/v10/guilds/{self.GUILD_ID}":
+                return httpx.Response(200, json=self.guild)
+
+            if path == f"/api/v10/guilds/{self.GUILD_ID}/channels":
+                return httpx.Response(200, json=self.channels)
+
+            if path == f"/api/v10/guilds/{self.GUILD_ID}/threads/active":
+                return httpx.Response(200, json={"threads": self.threads, "has_more": False})
+
+            if path == f"/api/v10/guilds/{self.GUILD_ID}/members":
+                if self.members_403:
+                    return httpx.Response(403, json={"message": "Missing Access"})
+                after = int(request.url.params.get("after") or "0")
+                limit = int(request.url.params.get("limit") or "1000")
+                page = [m for m in self.members if int(m["user"]["id"]) > after][:limit]
+                return httpx.Response(200, json=page)
+
+            if path.endswith("/threads/archived/public") or path.endswith("/threads/archived/private"):
+                return httpx.Response(200, json={"threads": [], "has_more": False})
+
+            if path.startswith("/api/v10/channels/") and path.endswith("/messages"):
+                cid = path.split("/")[4]
+                self.fetched_channel_history_ids.append(cid)
+                after_raw = request.url.params.get("after")
+                limit = int(request.url.params.get("limit") or "100")
+                all_msgs = self.messages_by_channel.get(cid, [])
+                if after_raw is not None:
+                    after = int(after_raw)
+                    msgs = [m for m in all_msgs if int(m["id"]) > after]
+                    # Discord returns up to `limit` oldest-after-cursor messages in descending order
+                    return httpx.Response(200, json=list(reversed(msgs[:limit])))
+                # Without `after`, Discord returns the `limit` most recent messages in descending order
+                return httpx.Response(200, json=list(reversed(all_msgs[-limit:])))
+
+            parts = [p for p in path.split("/") if p]
+            if len(parts) == 6 and parts[0] == "api" and parts[2] == "channels" and parts[4] == "messages":
+                cid, mid = parts[3], parts[5]
+                for m in self.messages_by_channel.get(cid, []):
+                    if str(m["id"]) == mid:
+                        return httpx.Response(200, json=m)
+                return httpx.Response(404, json={"message": "Unknown Message"})
+
+            return httpx.Response(404, json={"message": "Unknown Message"})
+
+        return httpx.MockTransport(_handler)
 
 
 @skip_in_production_or_missing_fixture()
@@ -93,10 +398,10 @@ class TestPipelineIntegration(unittest.TestCase):
             inspector = inspect(session.bind)
             tables = set(inspector.get_table_names())
             expected_tables = {
-                "backups", "exports", "backup_steps", "channels", "writers",
+                "backups", "channels", "writers",
                 "writer_aliases", "character_groups", "group_names", "characters",
                 "character_names", "events", "scenes", "scene_participants", "scene_issues",
-                "flagged_messages"
+                "flagged_messages", "seen_discord_users"
             }
             self.assertTrue(expected_tables.issubset(tables), f"Missing tables: {expected_tables - tables}")
 
@@ -285,10 +590,9 @@ class TestPipelineIntegration(unittest.TestCase):
 
         t.log("console", "SceneManager successfully filtered character scenes from SQLite.")
 
-    @patch("utils.tricks.run_command")
-    def test_06_update_with_backup_server(self, mock_run_cmd):
-        """Phase 6: Test full update pipeline with backup_server() against testing backup including raw event categories."""
-        t.log("console", "Testing full update with backup_server()...")
+    def test_06_update_with_backup_server(self):
+        """Phase 6: Test full update pipeline in 'full' mode using offline MockTransport Discord API."""
+        t.log("console", "Testing full update with native DiscordExtractor backup_server()...")
 
         # Ensure database is migrated
         db_file = get_sqlite_path(self.backup_path)
@@ -299,40 +603,10 @@ class TestPipelineIntegration(unittest.TestCase):
         pre_backup = ServerBackup.load(scope="base", backup_id=self.backup_id, backup_path=self.backup_path)
         original_updated_at = pre_backup.updated_at
 
-        # Mock DCE CLI calls for channels and export (including raw event categories in Update/)
-        def fake_run_command(command: str, show_lines: int = None):
-            if "channels" in command:
-                mock_channels_output = (
-                    "1008065547155558431 \\ 6# CURRENT EVENT\n"
-                    "1008065681998221352 | 1# GuildTextChat / hotel-lobby\n"
-                    "1008065639467982868 | 2# GuildTextChat / game-booths\n"
-                    "* 1132200643776487524 | 1# GuildPublicThread / Tamina Freaky Hours~ | game-booths\n"
-                    "* 1132744421587296397 | 2# GuildPublicThread / Sand Dunes | game-booths\n"
-                    "1106268351220678767 \\ 7# Group Chats\n"
-                    "858215486272962581 | 1# GuildTextChat / chatroom\n"
-                    "1019770957172326470 \\ 14# The Twisted Viper Bar\n"
-                    "1013915163423932496 | 1# GuildTextChat / barside\n"
-                    "1019771259896205382 | 2# GuildTextChat / back-of-bar\n"
-                    "* 1141818382782574645 | 1# GuildPublicThread / A Toast to Emnity (Shin/Rin) | back-of-bar\n"
-                    "* 1158294831097970738 | 2# GuildPublicThread / Conversation | back-of-bar\n"
-                    "1019771317303644261 | 3# GuildTextChat / bar-tables\n"
-                    "* 1285969286808076360 | 1# GuildPublicThread / Full Moon | bar-tables\n"
-                    "1345359342970343486 \\ 23# NSFW Events\n"
-                    "1345360008409518121 | 1# GuildTextChat / room-9\n"
-                    "987749861963214878 \\ 28# EVENT STORAGE\n"
-                    "1008065664034025533 | 1# GuildTextChat / medical-tent\n"
-                    "* 1131989202465210569 | 1# GuildPublicThread / Room 4: Ruki, Aoi, Kaoru | medical-tent\n"
-                )
-                return 0, mock_channels_output
-            elif "export" in command:
-                update_src = DATA_ROOT / "Backups" / "Elysium-sql-tests-clean" / "Update"
-                update_dest = Path(self.backup_path) / "Update"
-                if update_src.exists():
-                    shutil.copytree(update_src, update_dest, dirs_exist_ok=True)
-                return 0, "Export completed successfully"
-            return 0, ""
-
-        mock_run_cmd.side_effect = fake_run_command
+        mock_discord = ElysiumMockDiscordServer(
+            DATA_ROOT / "Backups" / "Elysium-sql-tests-clean",
+            include_update=True,
+        )
 
         ctx = BackupContext.create(
             backup_id=self.backup_id,
@@ -341,36 +615,33 @@ class TestPipelineIntegration(unittest.TestCase):
         ctx.dry_run = False
         ctx.debug_files = False
 
-        with BackupContext.activate(context=ctx):
-            backup_server()
+        with use_socket_free_asyncio():
+            with BackupContext.activate(context=ctx):
+                backup_server(
+                    backup_id=self.backup_id,
+                    backup_path=self.backup_path,
+                    token="test-bot-token",
+                    transport=mock_discord.make_transport(),
+                )
 
         # 1. Verify ServerBackup (scope="base") state
         post_backup = ServerBackup.load(scope="base", backup_id=self.backup_id, backup_path=self.backup_path)
         self.assertEqual(post_backup.status, Status.SUCCESS)
-        self.assertEqual(post_backup.steps[Step.UPDATE], Status.SUCCESS)
         self.assertEqual(post_backup.steps[Step.FIX_MESSAGES], Status.SUCCESS)
         self.assertEqual(post_backup.steps[Step.INDEX_SCENES], Status.SUCCESS)
         self.assertNotEqual(post_backup.updated_at, original_updated_at, "updated_at must be updated after run")
 
         # 2. Verify SQLite database tables
         with db_session(backup_id=self.backup_id, backup_path=self.backup_path) as session:
-            # ExportModel for update scope must be deleted
-            update_export = session.query(ExportModel).filter(
-                ExportModel.backup_id == str(self.backup_id),
-                ExportModel.scope == "update"
+            backup = session.query(BackupModel).filter(
+                BackupModel.backup_id == str(self.backup_id)
             ).first()
-            self.assertIsNone(update_export, "ExportModel for scope='update' must be cleaned up")
-
-            # Base export should exist and be SUCCESS
-            base_export = session.query(ExportModel).filter(
-                ExportModel.backup_id == str(self.backup_id),
-                ExportModel.scope == "base"
-            ).first()
-            self.assertIsNotNone(base_export)
+            self.assertIsNotNone(backup)
+            self.assertEqual(backup.sync_status, "idle")
 
             # New thread 'Full Moon' must be saved in channels table
             full_moon_thread = session.query(ChannelModel).filter(
-                ChannelModel.export_pk == base_export.pk,
+                ChannelModel.backup_id == str(self.backup_id),
                 ChannelModel.discord_id == "1285969286808076360"
             ).first()
             self.assertIsNotNone(full_moon_thread, "New thread 'Full Moon' must be saved in ChannelModel")
@@ -379,7 +650,7 @@ class TestPipelineIntegration(unittest.TestCase):
 
             # New event channel 'room-9' normalized to 'event-4'
             event4_chan = session.query(ChannelModel).filter(
-                ChannelModel.export_pk == base_export.pk,
+                ChannelModel.backup_id == str(self.backup_id),
                 ChannelModel.discord_id == "1345360008409518121"
             ).first()
             self.assertIsNotNone(event4_chan, "New event channel 'event-4' must be saved in ChannelModel")
@@ -490,6 +761,651 @@ class TestPipelineIntegration(unittest.TestCase):
                 backup = ServerBackup.load(scope="base", backup_id="999999999", backup_path=tmp_backup.as_posix())
                 self.assertEqual(backup.steps[Step.INDEX_SCENES], Status.SUCCESS)
 
+            finally:
+                close_all_engines()
+
+
+@skip_in_production_or_missing_fixture()
+class TestNativeDiscordExtractorAndSyncModes(unittest.TestCase):
+    """
+    Phase 2 test suite covering backupless zero-JSON mode, resumable paused sync,
+    24h edit lookback + IS_DELETED skeleton preservation, fail-fast bot verification,
+    403 members fallback + 429 retry_after handling, and DCE §7 formatting/serialization parity.
+    """
+
+    def tearDown(self):
+        SceneManager.clear_cache()
+        close_all_engines()
+
+    def _create_isolated_backup(
+        self,
+        tmp_dir: str,
+        *,
+        storage_mode: str = "backupless",
+        backup_id: str = "777000111",
+    ) -> tuple[str, str]:
+        backup_dir = Path(tmp_dir) / f"backup_{backup_id}"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        clean_cfg_path = DATA_ROOT / "Backups" / "Elysium-sql-tests-clean" / "backup_config.json"
+        cfg = json.loads(clean_cfg_path.read_text(encoding="utf-8"))
+        cfg["admin"]["backupName"] = backup_dir.name
+        cfg["admin"]["path"] = backup_dir.as_posix()
+        cfg["admin"]["storageMode"] = storage_mode
+        (backup_dir / "backup_config.json").write_text(json.dumps(cfg, indent=4), encoding="utf-8")
+        return backup_id, backup_dir.as_posix()
+
+    def test_backupless_initial_sync_zero_json_files(self):
+        mock_discord = ElysiumMockDiscordServer(
+            DATA_ROOT / "Backups" / "Elysium-sql-tests-clean",
+            include_update=False,
+        )
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            try:
+                bid, bpath = self._create_isolated_backup(tmp_dir, storage_mode="backupless", backup_id="777000101")
+                ctx = BackupContext.create(backup_id=bid, backup_path=bpath)
+                ctx.debug_files = False
+                with use_socket_free_asyncio():
+                    with BackupContext.activate(context=ctx):
+                        res = backup_server(
+                            backup_id=bid,
+                            backup_path=bpath,
+                            token="test-bot-token",
+                            transport=mock_discord.make_transport(),
+                        )
+
+                self.assertEqual(res["status"], "idle")
+                data_dir = Path(bpath) / "Data"
+                json_files = list(data_dir.rglob("*.json")) if data_dir.exists() else []
+                self.assertEqual(json_files, [], "backupless mode must write ZERO .json files inside Data/")
+                self.assertTrue(Path(get_skeleton_sqlite_path(bpath)).exists(), "skeletons.sqlite must exist")
+
+                with db_session(backup_id=bid, backup_path=bpath) as session:
+                    b_row = session.query(BackupModel).filter_by(backup_id=bid).first()
+                    self.assertIsNotNone(b_row)
+                    self.assertEqual(b_row.storage_mode, "backupless")
+                    self.assertEqual(b_row.sync_status, "idle")
+                    self.assertEqual(
+                        session.query(SceneModel).filter_by(backup_id=bid, kind=SceneKind.SCENE.value).count(),
+                        13,
+                    )
+                    self.assertEqual(
+                        session.query(SceneModel).filter_by(backup_id=bid, kind=SceneKind.SESSION.value).count(),
+                        121,
+                    )
+                    self.assertGreaterEqual(session.query(EventModel).filter_by(backup_id=bid).count(), 4)
+                    self.assertGreater(session.query(SeenDiscordUserModel).filter_by(backup_id=bid).count(), 0)
+
+                with skeleton_db_session(backup_id=bid, backup_path=bpath) as skel_session:
+                    self.assertGreater(skel_session.query(MessageSkeletonModel).count(), 11000)
+            finally:
+                close_all_engines()
+
+    def test_resumable_interrupted_sync_and_resume(self):
+        mock_discord = ElysiumMockDiscordServer(
+            DATA_ROOT / "Backups" / "Elysium-sql-tests-clean",
+            include_update=False,
+        )
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            try:
+                bid, bpath = self._create_isolated_backup(tmp_dir, storage_mode="backupless", backup_id="777000102")
+                stop_ev = threading.Event()
+                committed_first_run: list[str] = []
+
+                def _on_commit(item, done, total):
+                    committed_first_run.append(item.discord_id)
+                    if done >= 2:
+                        stop_ev.set()
+
+                ctx = BackupContext.create(backup_id=bid, backup_path=bpath)
+                ctx.debug_files = False
+                with use_socket_free_asyncio():
+                    with BackupContext.activate(context=ctx):
+                        res1 = backup_server(
+                            backup_id=bid,
+                            backup_path=bpath,
+                            token="test-bot-token",
+                            transport=mock_discord.make_transport(),
+                            stop_event=stop_ev,
+                            on_channel_committed=_on_commit,
+                        )
+
+                self.assertEqual(res1["status"], "paused")
+                self.assertGreaterEqual(len(committed_first_run), 2)
+
+                with db_session(backup_id=bid, backup_path=bpath) as session:
+                    b_row = session.query(BackupModel).filter_by(backup_id=bid).first()
+                    self.assertEqual(b_row.sync_status, "paused")
+                    synced_ids_before = {
+                        ch.discord_id
+                        for ch in session.query(ChannelModel).filter_by(backup_id=bid, sync_status="synced").all()
+                        if ch.type != "GuildCategory"
+                    }
+                    self.assertTrue(set(committed_first_run).issubset(synced_ids_before))
+
+                mock_discord.fetched_channel_history_ids.clear()
+                with use_socket_free_asyncio():
+                    with BackupContext.activate(context=ctx):
+                        res2 = backup_server(
+                            backup_id=bid,
+                            backup_path=bpath,
+                            token="test-bot-token",
+                            transport=mock_discord.make_transport(),
+                            resume=True,
+                        )
+
+                self.assertEqual(res2["status"], "idle")
+                self.assertEqual(res2["channels_done"], res2["channels_total"])
+                for already_synced in synced_ids_before:
+                    self.assertNotIn(
+                        already_synced,
+                        mock_discord.fetched_channel_history_ids,
+                        f"Resumed sync must skip already-synced channel {already_synced}",
+                    )
+            finally:
+                close_all_engines()
+
+    def test_24h_lookback_edit_to_end_and_deleted_message_preservation(self):
+        now = datetime.now(timezone.utc)
+        def _sf_at(dt: datetime, inc: int) -> str:
+            ms = int(dt.timestamp() * 1000)
+            return str(((ms - DISCORD_EPOCH_MS) << 22) + inc)
+
+        cat_id = "910000000000000001"
+        ch_id = "910000000000000002"
+        m1_dt = now - timedelta(hours=3)
+        m2_dt = now - timedelta(hours=2)
+        m3_dt = now - timedelta(hours=1)
+        m1_id = _sf_at(m1_dt, 1)
+        m2_id = _sf_at(m2_dt, 2)
+        m3_id = _sf_at(m3_dt, 3)
+
+        channel_messages = [
+            {
+                "id": m1_id,
+                "channel_id": ch_id,
+                "type": 0,
+                "timestamp": m1_dt.isoformat(),
+                "edited_timestamp": None,
+                "pinned": False,
+                "content": "Elise stepped quietly into the lantern-lit tavern and ordered spiced wine while scanning the corner booths for familiar faces.",
+                "author": {"id": "880000000000000001", "username": "Elise Rosenberg", "bot": True},
+                "attachments": [], "embeds": [], "sticker_items": [], "reactions": [], "mentions": [],
+            },
+            {
+                "id": m2_id,
+                "channel_id": ch_id,
+                "type": 0,
+                "timestamp": m2_dt.isoformat(),
+                "edited_timestamp": None,
+                "pinned": False,
+                "content": "Kaizer leaned back against the booth cushions, swirling his glass with an amused smirk at the newcomer.",
+                "author": {"id": "880000000000000002", "username": "Kaizer", "bot": True},
+                "attachments": [], "embeds": [], "sticker_items": [], "reactions": [], "mentions": [],
+            },
+            {
+                "id": m3_id,
+                "channel_id": ch_id,
+                "type": 0,
+                "timestamp": m3_dt.isoformat(),
+                "edited_timestamp": None,
+                "pinned": False,
+                "content": "Rain tapped steadily against the stained-glass windows outside as the tavern piano shifted into a slower melody.",
+                "author": {"id": "880000000000000001", "username": "Elise Rosenberg", "bot": True},
+                "attachments": [], "embeds": [], "sticker_items": [], "reactions": [], "mentions": [],
+            },
+        ]
+
+        guild_id = "910000000000000000"
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            p = request.url.path
+            if p == "/api/v10/users/@me":
+                return httpx.Response(200, json={"id": "999", "username": "Bot", "bot": True})
+            if p == f"/api/v10/guilds/{guild_id}":
+                return httpx.Response(200, json={"id": guild_id, "name": "LookbackGuild", "roles": []})
+            if p == f"/api/v10/guilds/{guild_id}/channels":
+                last_mid = channel_messages[-1]["id"] if channel_messages else None
+                return httpx.Response(200, json=[
+                    {"id": cat_id, "type": 4, "name": "The Twisted Viper Bar", "position": 0},
+                    {"id": ch_id, "type": 0, "parent_id": cat_id, "name": "barside", "position": 0, "last_message_id": last_mid},
+                ])
+            if p == f"/api/v10/guilds/{guild_id}/threads/active":
+                return httpx.Response(200, json={"threads": [], "has_more": False})
+            if p.endswith("/threads/archived/public") or p.endswith("/threads/archived/private"):
+                return httpx.Response(200, json={"threads": [], "has_more": False})
+            if p == f"/api/v10/guilds/{guild_id}/members":
+                return httpx.Response(200, json=[])
+            if p == f"/api/v10/channels/{ch_id}/messages":
+                after_raw = request.url.params.get("after")
+                limit = int(request.url.params.get("limit") or "100")
+                if after_raw is not None:
+                    msgs = [m for m in channel_messages if int(m["id"]) > int(after_raw)]
+                    return httpx.Response(200, json=list(reversed(msgs[:limit])))
+                return httpx.Response(200, json=list(reversed(channel_messages[-limit:])))
+            return httpx.Response(404, json={"message": "Not Found"})
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            try:
+                bdir = Path(tmp_dir) / "lookback_full"
+                bdir.mkdir(parents=True, exist_ok=True)
+                cfg = {
+                    "admin": {
+                        "serverName": "LookbackGuild",
+                        "serverId": guild_id,
+                        "storageMode": "full",
+                        "categoriesToKeep": ["The Twisted Viper Bar"],
+                        "keepMode": True,
+                        "categoriesToIgnore": [],
+                        "chatroomCategories": [],
+                        "eventCategories": [],
+                        "dmCategories": [],
+                        "backupName": "lookback_full",
+                        "path": bdir.as_posix(),
+                    },
+                    "user": {},
+                }
+                (bdir / "backup_config.json").write_text(json.dumps(cfg, indent=4), encoding="utf-8")
+
+                ctx = BackupContext.create(backup_id="777000103", backup_path=bdir.as_posix())
+                ctx.debug_files = False
+                with use_socket_free_asyncio():
+                    with BackupContext.activate(context=ctx):
+                        backup_server(
+                            backup_id="777000103",
+                            backup_path=bdir.as_posix(),
+                            token="test-bot-token",
+                            transport=httpx.MockTransport(_handler),
+                        )
+
+                with db_session(backup_id="777000103", backup_path=bdir.as_posix()) as session:
+                    scenes = session.query(SceneModel).filter_by(backup_id="777000103", kind=SceneKind.SCENE.value).all()
+                    self.assertEqual(len(scenes), 1)
+                    self.assertEqual(scenes[0].status, "open")
+
+                # Mutate channel within 24h lookback window: edit m3 to end with [END] and delete m2
+                channel_messages[2]["content"] = (
+                    "Rain tapped steadily against the stained-glass windows outside.\n\n[END]"
+                )
+                channel_messages[2]["edited_timestamp"] = (now - timedelta(minutes=30)).isoformat()
+                channel_messages.pop(1)
+
+                with use_socket_free_asyncio():
+                    with BackupContext.activate(context=ctx):
+                        backup_server(
+                            backup_id="777000103",
+                            backup_path=bdir.as_posix(),
+                            token="test-bot-token",
+                            transport=httpx.MockTransport(_handler),
+                        )
+
+                with db_session(backup_id="777000103", backup_path=bdir.as_posix()) as session:
+                    scenes = session.query(SceneModel).filter_by(backup_id="777000103", kind=SceneKind.SCENE.value).all()
+                    self.assertEqual(len(scenes), 1)
+                    self.assertEqual(scenes[0].status, "closed", "Edited [END] in 24h lookback must close open scene")
+                    self.assertEqual(str(scenes[0].end_message_id), m3_id)
+
+                with skeleton_db_session(backup_id="777000103", backup_path=bdir.as_posix()) as skel_session:
+                    m2_row = skel_session.query(MessageSkeletonModel).filter_by(message_id=int(m2_id)).first()
+                    self.assertIsNotNone(m2_row, "Deleted message skeleton row must be preserved")
+                    self.assertNotEqual(int(m2_row.flags) & int(SkeletonFlags.IS_DELETED), 0)
+
+                json_file = bdir / "Data" / "1# The Twisted Viper Bar" / "1# barside.json"
+                self.assertTrue(json_file.exists())
+                exported = json.loads(json_file.read_text(encoding="utf-8"))
+                by_id = {m["id"]: m for m in exported["messages"]}
+                self.assertTrue(by_id[m2_id].get("is_deleted"))
+                self.assertIn("[END]", by_id[m3_id]["content"])
+            finally:
+                close_all_engines()
+
+    def test_fail_fast_invalid_bot_token(self):
+        for bad_mode in ("user", "unauthorized"):
+            mock_discord = ElysiumMockDiscordServer(
+                DATA_ROOT / "Backups" / "Elysium-sql-tests-clean",
+                include_update=False,
+                bot_token_mode=bad_mode,
+            )
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                try:
+                    bid, bpath = self._create_isolated_backup(tmp_dir, storage_mode="backupless", backup_id="777000104")
+                    ctx = BackupContext.create(backup_id=bid, backup_path=bpath)
+                    with use_socket_free_asyncio():
+                        with BackupContext.activate(context=ctx):
+                            with self.assertRaises(exc.InvalidBotTokenError):
+                                backup_server(
+                                    backup_id=bid,
+                                    backup_path=bpath,
+                                    token="UserToken.invalid",
+                                    transport=mock_discord.make_transport(),
+                                )
+                    # Verify /channels was NEVER requested and sync_status was never flipped to syncing
+                    self.assertFalse(any("/channels" in r for r in mock_discord.requests_seen))
+                    with db_session(backup_id=bid, backup_path=bpath) as session:
+                        b_row = session.query(BackupModel).filter_by(backup_id=bid).first()
+                        self.assertEqual(b_row.sync_status, "idle")
+                finally:
+                    close_all_engines()
+
+    def test_guild_members_403_fallback_and_429_rate_limit_retry(self):
+        mock_discord = ElysiumMockDiscordServer(
+            DATA_ROOT / "Backups" / "Elysium-sql-tests-clean",
+            include_update=False,
+            members_403=True,
+            rate_limit_once_429=True,
+        )
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            try:
+                bid, bpath = self._create_isolated_backup(tmp_dir, storage_mode="backupless", backup_id="777000105")
+                ctx = BackupContext.create(backup_id=bid, backup_path=bpath)
+                ctx.debug_files = False
+                with use_socket_free_asyncio():
+                    with BackupContext.activate(context=ctx):
+                        res = backup_server(
+                            backup_id=bid,
+                            backup_path=bpath,
+                            token="test-bot-token",
+                            transport=mock_discord.make_transport(),
+                        )
+
+                self.assertEqual(res["status"], "idle")
+                self.assertTrue(mock_discord._429_fired, "429 response must have been hit and retried")
+                with db_session(backup_id=bid, backup_path=bpath) as session:
+                    seen_users = session.query(SeenDiscordUserModel).filter_by(backup_id=bid).all()
+                    self.assertGreater(len(seen_users), 0, "Channel-harvested seen_discord_users must populate on 403")
+                    self.assertTrue(all(not u.is_current_member for u in seen_users))
+            finally:
+                close_all_engines()
+
+    def test_single_pass_formatter_and_dce_json_serializer_parity(self):
+        channels_by_id = {"5550001": {"id": "5550001", "name": "general-rp"}}
+        roles_by_id = {"6660001": {"id": "6660001", "name": "Storyteller", "color": 0x1ABC9C, "position": 2}}
+        members_by_id = {
+            "7770001": {
+                "user": {"id": "7770001", "username": "Alice Example", "global_name": "Alice Display", "bot": False},
+                "nick": "Alice Nick",
+                "roles": ["6660001"],
+            }
+        }
+
+        # 1. Single-pass formatter: space-free @username, <#id>, <@&id>, <t:ts:F> UTC, custom emoji
+        raw_text = "Hi <@!7770001> in <#5550001> for <@&6660001> at <t:1700000000:F> <:wave:8880001>"
+        formatted = format_content(
+            raw_text,
+            channels_by_id=channels_by_id,
+            roles_by_id=roles_by_id,
+            members_by_id=members_by_id,
+        )
+        self.assertIn("@AliceExample", formatted)
+        self.assertNotIn("@Alice Nick", formatted)
+        self.assertIn("#general-rp", formatted)
+        self.assertIn("@Storyteller", formatted)
+        self.assertIn("14 November 2023 22:13", formatted)
+        self.assertIn(":wave:", formatted)
+
+        # 2. inlineEmojis codeblock stripping & escape safety
+        emoji_src = "Visible <:grin:12345> ☀️ `ignored <:inCode:99999> 🔥` ```\n<:fenced:77777> ❄️\n``` \\:escaped:"
+        emojis = extract_inline_emojis(emoji_src)
+        emoji_names = [e["name"] for e in emojis]
+        self.assertIn("grin", emoji_names)
+        self.assertIn("☀️", emoji_names)
+        self.assertNotIn("inCode", emoji_names)
+        self.assertNotIn("fenced", emoji_names)
+        self.assertNotIn("🔥", emoji_names)
+        self.assertNotIn("❄️", emoji_names)
+
+        # 3. DCE §7 serializer: Twitter embed merge, conditional color omission, system notifications
+        raw_msg = {
+            "id": "9001",
+            "type": 0,
+            "timestamp": "2024-01-10T12:00:00Z",
+            "edited_timestamp": None,
+            "pinned": False,
+            "content": "Check photos",
+            "author": {"id": "7770001", "username": "Alice Example", "bot": False},
+            "mentions": [],
+            "embeds": [
+                {
+                    "url": "https://twitter.com/example/status/1",
+                    "description": "Tweet caption",
+                    "color": None,
+                    "image": {"url": "https://pbs.twimg.com/media/1.jpg", "width": 100, "height": 100},
+                },
+                {
+                    "url": "https://twitter.com/example/status/1",
+                    "color": None,
+                    "image": {"url": "https://pbs.twimg.com/media/2.jpg", "width": 100, "height": 100},
+                },
+            ],
+        }
+        ser = serialize_message(
+            raw_msg,
+            guild_id="857848490683269161",
+            channels_by_id=channels_by_id,
+            roles_by_id=roles_by_id,
+            members_by_id=members_by_id,
+        )
+        self.assertEqual(ser["author"]["color"], "#1ABC9C")
+        self.assertEqual(len(ser["embeds"]), 1, "Twitter consecutive embeds must merge")
+        self.assertEqual(len(ser["embeds"][0]["images"]), 2)
+        self.assertNotIn("color", ser["embeds"][0], "Embed color must be omitted when null")
+
+        sys_pin = serialize_message(
+            {"id": "9002", "type": 6, "timestamp": "2024-01-10T12:01:00Z", "content": "", "author": {"id": "7770001", "username": "Alice Example"}}
+        )
+        self.assertEqual(sys_pin["type"], "ChannelPinnedMessage")
+        self.assertEqual(sys_pin["content"], "Pinned a message.")
+        self.assertIsNone(sys_pin["author"]["color"], "User color must remain null when absent")
+
+    def test_prefixed_category_names_match_discord_categories(self):
+        """
+        Regression test: category selectors storing DCE position prefixes like '14# The Twisted Viper Bar'
+        must match raw Discord category names ('The Twisted Viper Bar') during topology filtering and indexing.
+        """
+        mock_discord = ElysiumMockDiscordServer(DATA_ROOT / "Backups" / "Elysium-sql-tests-clean", include_update=False)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            try:
+                bid, bpath = self._create_isolated_backup(tmp_dir, storage_mode="backupless", backup_id="777000106")
+                cfg_path = Path(bpath) / "backup_config.json"
+                cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                cfg["admin"]["categoriesToKeep"] = [
+                    "14# The Twisted Viper Bar",
+                    "7# Group Chats",
+                    "6# CURRENT EVENT",
+                    "28# EVENT STORAGE",
+                ]
+                cfg["admin"]["chatroomCategories"] = ["7# Group Chats"]
+                cfg["admin"]["eventCategories"] = ["6# CURRENT EVENT", "28# EVENT STORAGE"]
+                cfg["admin"]["keepMode"] = True
+                cfg_path.write_text(json.dumps(cfg, indent=4), encoding="utf-8")
+
+                ctx = BackupContext.create(backup_id=bid, backup_path=bpath)
+                self.assertEqual(ctx.chatroom_categories, ["Group Chats"])
+                self.assertIn("The Twisted Viper Bar", ctx.categories_to_keep)
+
+                with use_socket_free_asyncio():
+                    with BackupContext.activate(context=ctx):
+                        res = backup_server(
+                            backup_id=bid,
+                            backup_path=bpath,
+                            token="test-bot-token",
+                            transport=mock_discord.make_transport(),
+                        )
+
+                self.assertEqual(res["status"], "idle")
+                self.assertGreater(res["channels_total"], 0)
+                with db_session(backup_id=bid, backup_path=bpath) as session:
+                    rp_cnt = session.query(SceneModel).filter_by(backup_id=bid, kind=SceneKind.SCENE.value).count()
+                    sess_cnt = session.query(SceneModel).filter_by(backup_id=bid, kind=SceneKind.SESSION.value).count()
+                    ev_cnt = session.query(EventModel).filter_by(backup_id=bid).count()
+                    self.assertEqual(rp_cnt, 13)
+                    self.assertEqual(sess_cnt, 121)
+                    self.assertGreater(ev_cnt, 0)
+            finally:
+                close_all_engines()
+
+    def test_rate_limit_and_retry_summary_telemetry(self):
+        """
+        Verifies DiscordExtractor tracks proactive bucket waits, 429s, and transient retries,
+        emits thresholded [Throttle notice] logs on heavy pauses without per-request spam,
+        and backup_server writes 'API wait summary:' to log.txt.
+        """
+        import asyncio
+        from unittest.mock import patch
+        from discord_extractor import DiscordExtractor
+
+        call_seq = []
+
+        async def _no_sleep(_seconds: float) -> None:
+            return None
+
+        def _throttled_handler(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            call_seq.append(path)
+            if path == "/api/v10/users/@me":
+                if call_seq.count(path) == 1:
+                    return httpx.Response(
+                        429,
+                        json={"retry_after": 5.5, "global": True},
+                        headers={"X-RateLimit-Global": "true", "Retry-After": "5.5"},
+                    )
+                return httpx.Response(
+                    200,
+                    json={"id": "999", "username": "bot", "bot": True},
+                    headers={
+                        "X-RateLimit-Bucket": "b-me",
+                        "X-RateLimit-Remaining": "0",
+                        "X-RateLimit-Reset-After": "0.25",
+                    },
+                )
+            if path == "/api/v10/guilds/857848490683269161":
+                if call_seq.count(path) == 1:
+                    return httpx.Response(502, json={"message": "Bad Gateway"})
+                return httpx.Response(200, json={"id": "857848490683269161", "name": "Elysium", "roles": []})
+            return httpx.Response(404, json={"message": "Not Found"})
+
+        logged_notices = []
+
+        async def _exercise_extractor():
+            async with DiscordExtractor(
+                token="test-bot-token",
+                transport=httpx.MockTransport(_throttled_handler),
+                sleep_fn=_no_sleep,
+                throttle_notice_single_s=5.0,
+                throttle_notice_delta_s=15.0,
+                throttle_notice_cooldown_s=15.0,
+            ) as ext:
+                await ext.verify_bot_token()
+                # Reset _bot_verified so a second verify hits the bucket wait (Remaining: 0)
+                ext._bot_verified = False
+                await ext.verify_bot_token()
+                await ext._request_json("GET", "guilds/857848490683269161")
+                return ext.get_telemetry(), ext.format_wait_summary()
+
+        with use_socket_free_asyncio():
+            with patch("discord_extractor.t.log", side_effect=lambda lvl, msg: logged_notices.append((lvl, msg))):
+                stats, summary_line = asyncio.run(_exercise_extractor())
+
+        self.assertEqual(stats["http_429_count"], 1)
+        self.assertEqual(stats["global_429_count"], 1)
+        self.assertAlmostEqual(stats["http_429_wait_seconds"], 5.5, places=2)
+        self.assertGreaterEqual(stats["bucket_waits"], 1)
+        self.assertEqual(stats["retry_count"], 1)
+        self.assertEqual(stats["requests_total"], 5)
+        self.assertIn("API wait summary:", summary_line)
+        self.assertIn("1x 429 [1 global]", summary_line)
+        self.assertIn("1 retry/ies", summary_line)
+        # Only the 5.5s wait triggers [Throttle notice]; routine 0.25s bucket wait & 0.5s retry stay silent
+        self.assertEqual(len(logged_notices), 1)
+        self.assertEqual(logged_notices[0][0], "warning")
+        self.assertIn("[Throttle notice]", logged_notices[0][1])
+
+        # Also verify end-to-end backup_server logs 'Sync complete:' + 'API wait summary:' into log.txt
+        mock_discord = ElysiumMockDiscordServer(DATA_ROOT / "Backups" / "Elysium-sql-tests-clean", include_update=False)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            try:
+                bid, bpath = self._create_isolated_backup(tmp_dir, storage_mode="backupless", backup_id="777000107")
+                ctx = BackupContext.create(backup_id=bid, backup_path=bpath)
+                with use_socket_free_asyncio():
+                    with BackupContext.activate(context=ctx):
+                        backup_server(
+                            backup_id=bid,
+                            backup_path=bpath,
+                            token="test-bot-token",
+                            transport=mock_discord.make_transport(),
+                        )
+                t.flush_logs()
+                log_text = (Path(bpath) / "log.txt").read_text(encoding="utf-8")
+                self.assertIn("Sync complete:", log_text)
+                self.assertIn("msg(s) in", log_text)
+                self.assertIn("API wait summary:", log_text)
+            finally:
+                close_all_engines()
+
+    def test_backupless_to_full_conversion_overwrites_stale_data_only_after_rescan_succeeds(self):
+        """
+        Verifies converting Backupless -> Full with rescan_discord=True:
+        1. Leaves pre-existing Data/*.json untouched if token verification fails before syncing.
+        2. Overwrites stale messages inside existing Data/*.json and prunes orphan JSON files
+           (keeping Data/ itself intact) once rescan_discord=True succeeds.
+        """
+        import utils.exceptions as exc
+
+        mock_discord = ElysiumMockDiscordServer(DATA_ROOT / "Backups" / "Elysium-sql-tests-clean", include_update=False)
+
+        def _bad_token_handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(401, json={"message": "401: Unauthorized"})
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            try:
+                bid, bpath = self._create_isolated_backup(tmp_dir, storage_mode="full", backup_id="777000108")
+                stale_json = Path(bpath) / "Data" / "14# The Twisted Viper Bar" / "1# barside.json"
+                stale_json.parent.mkdir(parents=True, exist_ok=True)
+                stale_json.write_text(
+                    json.dumps({
+                        "messages": [
+                            {"id": "1", "content": "STALE_MESSAGE_THAT_SHOULD_NOT_SURVIVE_RESCAN", "author": {"id": "1", "name": "Old"}},
+                        ]
+                    }),
+                    encoding="utf-8",
+                )
+                orphan_json = Path(bpath) / "Data" / "99# DeletedCategory" / "1# orphan.json"
+                orphan_json.parent.mkdir(parents=True, exist_ok=True)
+                orphan_json.write_text(json.dumps({"messages": []}), encoding="utf-8")
+
+                # 1. Failed token check must leave existing Data/*.json files intact
+                ctx = BackupContext.create(backup_id=bid, backup_path=bpath)
+                with use_socket_free_asyncio():
+                    with BackupContext.activate(context=ctx):
+                        with self.assertRaises(exc.InvalidBotTokenError):
+                            backup_server(
+                                backup_id=bid,
+                                backup_path=bpath,
+                                token="bad-token",
+                                transport=httpx.MockTransport(_bad_token_handler),
+                                rescan_discord=True,
+                            )
+                self.assertTrue(stale_json.exists())
+                self.assertTrue(orphan_json.exists())
+
+                # 2. Successful Full Discord Rescan overwrites stale channel JSONs and prunes orphan JSONs
+                with use_socket_free_asyncio():
+                    with BackupContext.activate(context=ctx):
+                        res = backup_server(
+                            backup_id=bid,
+                            backup_path=bpath,
+                            token="test-bot-token",
+                            transport=mock_discord.make_transport(),
+                            rescan_discord=True,
+                        )
+
+                self.assertEqual(res["status"], "idle")
+                self.assertTrue((Path(bpath) / "Data").is_dir())
+                self.assertFalse(orphan_json.exists(), "Orphan JSON file must be pruned after full rescan")
+                self.assertFalse(orphan_json.parent.exists(), "Empty orphan directory must be removed")
+                self.assertTrue(stale_json.exists())
+                fresh_payload = json.loads(stale_json.read_text(encoding="utf-8"))
+                fresh_ids = {str(m["id"]) for m in fresh_payload.get("messages", [])}
+                self.assertNotIn("1", fresh_ids, "rescan_discord=True must overwrite pre-existing JSON rather than merging stale messages")
             finally:
                 close_all_engines()
 

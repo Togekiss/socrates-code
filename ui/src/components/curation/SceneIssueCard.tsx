@@ -1,5 +1,5 @@
 import React from 'react';
-import { ExternalLink, Check, RotateCcw, ArrowRight, GitMerge, Split } from 'lucide-react';
+import { ExternalLink, Check, RotateCcw, ArrowRight, GitMerge, Split, AlertTriangle } from 'lucide-react';
 import { DataCard, Badge, Button } from '../ui';
 import type { SceneIssue } from '../../types';
 import { safeDiscordUrl } from '../../utils/rbac';
@@ -7,6 +7,7 @@ import { safeDiscordUrl } from '../../utils/rbac';
 interface SceneIssueCardProps {
   issue: SceneIssue;
   isReopening: boolean;
+  mutationDisabled?: boolean;
   onResolve: (issue: SceneIssue) => void;
   onReopen: (issueId: number) => void;
   onOppositeAction?: (action: 'merge' | 'split', issue: SceneIssue) => void;
@@ -15,11 +16,13 @@ interface SceneIssueCardProps {
 export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
   issue,
   isReopening,
+  mutationDisabled = false,
   onResolve,
   onReopen,
   onOppositeAction,
 }) => {
   const isResolved = issue.resolved_at !== null && issue.resolved_at !== undefined;
+  const syncLockedTitle = mutationDisabled ? 'Curation edits are disabled while sync is in progress.' : undefined;
 
   const cardAccent = isResolved
     ? 'resolved'
@@ -94,6 +97,13 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
               </Badge>
             )}
 
+            {(issue.is_deleted || issue.channel_is_deleted || issue.candidate_is_deleted) && (
+              <Badge variant="danger" className="text-sm font-semibold" title="Channel or candidate message was deleted on Discord">
+                <AlertTriangle size={11} />
+                <span>Deleted on Discord</span>
+              </Badge>
+            )}
+
             {safeDiscordUrl(issue.discord_link) && (
               <a
                 href={safeDiscordUrl(issue.discord_link)!}
@@ -143,8 +153,9 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
               variant="secondary"
               size="sm"
               onClick={() => onReopen(issue.id)}
-              disabled={isReopening}
+              disabled={isReopening || mutationDisabled}
               loading={isReopening}
+              title={syncLockedTitle}
               icon={<RotateCcw size={12} />}
             >
               Reopen Issue
@@ -154,8 +165,9 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
               <Button
                 variant="secondary"
                 size="sm"
+                disabled={mutationDisabled}
                 onClick={() => handleOpposite('merge')}
-                title="Merge these two scenes back together"
+                title={syncLockedTitle || 'Merge these two scenes back together'}
                 icon={<GitMerge size={14} />}
               >
                 Merge
@@ -163,8 +175,9 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
               <Button
                 variant="success"
                 size="sm"
+                disabled={mutationDisabled}
                 onClick={() => onResolve(issue)}
-                title="Accept Socrates' split into two scenes"
+                title={syncLockedTitle || "Accept Socrates' split into two scenes"}
                 icon={<Check size={14} />}
               >
                 Accept Split
@@ -175,8 +188,9 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
               <Button
                 variant="success"
                 size="sm"
+                disabled={mutationDisabled}
                 onClick={() => onResolve(issue)}
-                title="Accept keeping this as a single continuous scene"
+                title={syncLockedTitle || 'Accept keeping this as a single continuous scene'}
                 icon={<Check size={14} />}
               >
                 Accept Merge
@@ -184,8 +198,9 @@ export const SceneIssueCard: React.FC<SceneIssueCardProps> = ({
               <Button
                 variant="secondary"
                 size="sm"
+                disabled={mutationDisabled}
                 onClick={() => handleOpposite('split')}
-                title="Split this scene at the split point"
+                title={syncLockedTitle || 'Split this scene at the split point'}
                 icon={<Split size={14} />}
               >
                 Split

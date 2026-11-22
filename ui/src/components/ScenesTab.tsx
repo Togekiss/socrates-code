@@ -279,9 +279,12 @@ export const ScenesTab = ({
         />
       }
       banners={
-        byMe && !myWriter ? (
-          <UnlinkedWriterBanner onNavigateToWriters={onNavigateToWriters} />
-        ) : undefined
+        <>
+          <BackupStatusGuard title="Scenes" guard={statusGuard} />
+          {byMe && !myWriter && (
+            <UnlinkedWriterBanner onNavigateToWriters={onNavigateToWriters} />
+          )}
+        </>
       }
       countText={
         !error && (!loading || totalItems > 0) ? (
@@ -347,7 +350,8 @@ export const ScenesTab = ({
               allCharacters={allCharacters}
               charactersFilter={charactersFilter}
               setCharactersFilter={setCharactersFilter}
-              onEdit={canCurate ? item => setEditingScene(item) : undefined}
+              onEdit={canCurate ? item => { if (statusGuard.canMutate) setEditingScene(item); } : undefined}
+              editDisabled={!statusGuard.canMutate}
             />
           ))}
         </div>

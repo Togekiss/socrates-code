@@ -1,5 +1,7 @@
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -158,8 +160,9 @@ class TestSceneCurationOperations(unittest.TestCase):
             self.assertIsNotNone(scene)
             s_pk = scene.pk
             channel_pk = scene.channel_pk
-            orig_s_start = scene.start_index
-            orig_s_end = scene.end_index
+            orig_s_start_mid = scene.start_message_id
+            orig_s_end_mid = scene.end_message_id
+            orig_msg_count = scene.message_count
 
             # Candidate index 210
             cand_idx = 210
@@ -195,19 +198,19 @@ class TestSceneCurationOperations(unittest.TestCase):
         new_scene_pk = res["next_scene_pk"]
 
         with db_session(backup_id=self.BACKUP_ID, backup_path=self.backup_path) as session:
-            # Verify Scene 1 was truncated
+            # Verify Scene 1 was truncated via Snowflake ordering
             truncated_s1 = session.query(SceneModel).filter_by(pk=s_pk).first()
             self.assertIsNotNone(truncated_s1)
-            self.assertEqual(truncated_s1.start_index, orig_s_start)
-            self.assertLess(truncated_s1.end_index, cand_idx)
+            self.assertEqual(truncated_s1.start_message_id, orig_s_start_mid)
+            self.assertLess(int(truncated_s1.end_message_id), int(cand_mid))
             self.assertEqual(truncated_s1.status, SceneStatus.NO_END_TAG.value)
 
-            # Verify Scene 2 was inserted starting at cand_idx
+            # Verify Scene 2 was inserted starting at cand_mid
             inserted_s2 = session.query(SceneModel).filter_by(pk=new_scene_pk).first()
             self.assertIsNotNone(inserted_s2)
-            self.assertEqual(inserted_s2.start_index, cand_idx)
             self.assertEqual(inserted_s2.start_message_id, cand_mid)
-            self.assertEqual(inserted_s2.end_index, orig_s_end)
+            self.assertEqual(inserted_s2.end_message_id, orig_s_end_mid)
+            self.assertEqual(truncated_s1.message_count + inserted_s2.message_count, orig_msg_count)
 
             # Verify total scenes in channel increased by 1
             after_count = session.query(SceneModel).filter_by(channel_pk=channel_pk).count()
@@ -462,8 +465,8 @@ class TestSceneCurationOperations(unittest.TestCase):
             s1, s2 = scenes[0], scenes[1]
             s1.status = SceneStatus.NO_END_TAG.value
             session.commit()
-            orig_s1_bounds = (s1.scene_key, s1.start_index, s1.end_index, s1.start_message_id, s1.end_message_id, s1.status)
-            orig_s2_bounds = (s2.scene_key, s2.start_index, s2.end_index, s2.start_message_id, s2.end_message_id, s2.status)
+            orig_s1_bounds = (s1.scene_key, s1.start_message_id, s1.end_message_id, s1.message_count, s1.status)
+            orig_s2_bounds = (s2.scene_key, s2.start_message_id, s2.end_message_id, s2.message_count, s2.status)
             orig_s1_parts = {p.character_pk for p in s1.participants}
             orig_s2_parts = {p.character_pk for p in s2.participants}
 
@@ -503,8 +506,8 @@ class TestSceneCurationOperations(unittest.TestCase):
             self.assertIsNotNone(cur_s1)
             self.assertIsNotNone(cur_s2)
 
-            cur_s1_bounds = (cur_s1.scene_key, cur_s1.start_index, cur_s1.end_index, cur_s1.start_message_id, cur_s1.end_message_id, cur_s1.status)
-            cur_s2_bounds = (cur_s2.scene_key, cur_s2.start_index, cur_s2.end_index, cur_s2.start_message_id, cur_s2.end_message_id, cur_s2.status)
+            cur_s1_bounds = (cur_s1.scene_key, cur_s1.start_message_id, cur_s1.end_message_id, cur_s1.message_count, cur_s1.status)
+            cur_s2_bounds = (cur_s2.scene_key, cur_s2.start_message_id, cur_s2.end_message_id, cur_s2.message_count, cur_s2.status)
 
             self.assertEqual(cur_s1_bounds, orig_s1_bounds)
             self.assertEqual(cur_s2_bounds, orig_s2_bounds)
@@ -651,6 +654,10 @@ class TestSceneCurationOperations(unittest.TestCase):
 
     def test_11_split_left_half_always_no_end_tag(self):
         """Tests that splitting a scene always sets status='no_end_tag' on the left half."""
+        close_all_engines()
+        reset_test_backup()
+        migrate_for_tests(self.BACKUP_ID)
+
         with db_session(backup_id=self.BACKUP_ID, backup_path=self.backup_path) as session:
             scene = (
                 session.query(SceneModel)
@@ -911,6 +918,167 @@ class TestSceneCurationOperations(unittest.TestCase):
             self.assertEqual(iss2.resolution, "split")
 
         mem_engine.dispose()
+
+
+@skip_in_production_or_missing_fixture()
+class TestSkeletonParityAndRescanJson(unittest.TestCase):
+    """
+    Phase 2 parity test verifying index_scenes / index_sessions / index_events produce
+    identical scenes, sessions, events, movements, and SceneModel.message_count from
+    message_skeletons (rescan_json=False, with no Data/ JSONs) vs raw DCE JSONs (rescan_json=True).
+    """
+
+    def tearDown(self):
+        SceneManager.clear_cache()
+        close_all_engines()
+
+    def _snapshot_indexed_state(self, backup_id: str, backup_path: str) -> dict:
+        from db.models import EventModel, SceneKind
+
+        with db_session(backup_id=backup_id, backup_path=backup_path) as session:
+            rp_rows = (
+                session.query(SceneModel)
+                .filter_by(backup_id=backup_id, kind=SceneKind.SCENE.value)
+                .order_by(SceneModel.scene_key.asc())
+                .all()
+            )
+            sess_rows = (
+                session.query(SceneModel)
+                .filter_by(backup_id=backup_id, kind=SceneKind.SESSION.value)
+                .order_by(SceneModel.scene_key.asc())
+                .all()
+            )
+            ev_seg_rows = (
+                session.query(SceneModel)
+                .filter_by(backup_id=backup_id, kind=SceneKind.EVENT.value)
+                .order_by(SceneModel.scene_key.asc())
+                .all()
+            )
+            ev_rows = (
+                session.query(EventModel)
+                .filter_by(backup_id=backup_id)
+                .order_by(EventModel.event_key.asc())
+                .all()
+            )
+
+            parts_by_scene: dict[int, list] = {}
+            for p in (
+                session.query(SceneParticipantModel)
+                .join(SceneModel, SceneParticipantModel.scene_pk == SceneModel.pk)
+                .filter(SceneModel.backup_id == backup_id)
+                .order_by(SceneParticipantModel.position.asc(), SceneParticipantModel.character_pk.asc())
+                .all()
+            ):
+                parts_by_scene.setdefault(p.scene_pk, []).append(
+                    (p.character_pk, p.message_count, p.first_message_id, p.last_message_id)
+                )
+
+            def _norm_sec_dt(val):
+                dt = t.parse_datetime(val)
+                return dt.replace(microsecond=0) if dt is not None else val
+
+            def _norm_movements(mv):
+                if isinstance(mv, list):
+                    return [_norm_movements(x) for x in mv]
+                if isinstance(mv, dict):
+                    out = {}
+                    for k, v in mv.items():
+                        if (k == "timestamp" or k.endswith("_at")) and isinstance(v, str):
+                            dt = t.parse_datetime(v)
+                            out[k] = dt.replace(microsecond=0).isoformat() if dt else v
+                        else:
+                            out[k] = _norm_movements(v)
+                    return out
+                return mv
+
+            return {
+                "rp": [
+                    (r.scene_key, r.start_message_id, r.end_message_id, r.status, r.message_count, parts_by_scene.get(r.pk, []))
+                    for r in rp_rows
+                ],
+                "sessions": [
+                    (r.scene_key, r.start_message_id, r.end_message_id, r.message_count, parts_by_scene.get(r.pk, []))
+                    for r in sess_rows
+                ],
+                "events": [
+                    (
+                        e.event_key,
+                        e.status,
+                        _norm_sec_dt(e.start_at),
+                        _norm_sec_dt(e.end_at),
+                        e.message_count,
+                        _norm_movements(e.character_movements),
+                    )
+                    for e in ev_rows
+                ],
+                "event_segments": [
+                    (r.scene_key, r.start_message_id, r.end_message_id, r.message_count)
+                    for r in ev_seg_rows
+                ],
+            }
+
+    def test_skeleton_vs_json_indexing_parity_and_rescan_json(self):
+        from db.migrate import migrate_single_backup
+        from db.session import get_skeleton_sqlite_path, get_sqlite_path
+
+        clean_src = DATA_ROOT / "Backups" / "Elysium-sql-tests-clean"
+        bid = "888000111"
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            try:
+                full_dir = Path(tmp_dir) / "full_copy"
+                shutil.copytree(clean_src, full_dir)
+                if (full_dir / "Update").exists():
+                    shutil.rmtree(full_dir / "Update")
+
+                migrate_single_backup(
+                    {
+                        "path": full_dir.as_posix(),
+                        "backup_id": bid,
+                        "backup_name": "ParityTest",
+                        "server_id": "857848490683269161",
+                        "server_name": "Diabolik: Elysium",
+                    },
+                    dry_run=False,
+                    skip_snapshots=True,
+                )
+
+                ctx_full = BackupContext.create(backup_id=bid, backup_path=full_dir.as_posix())
+                with BackupContext.activate(context=ctx_full):
+                    index_scenes(backup_id=bid, backup_path=full_dir.as_posix(), rescan_json=True)
+
+                self.assertTrue(
+                    Path(get_skeleton_sqlite_path(full_dir.as_posix())).exists(),
+                    "rescan_json=True must populate skeletons.sqlite from Data/*.json",
+                )
+                json_snap = self._snapshot_indexed_state(bid, full_dir.as_posix())
+                self.assertEqual(len(json_snap["rp"]), 13)
+                self.assertEqual(len(json_snap["sessions"]), 121)
+                self.assertEqual(len(json_snap["events"]), 4)
+                self.assertEqual(len(json_snap["event_segments"]), 7)
+                close_all_engines()
+
+                # Copy ONLY DBs + backup_config.json (NO Data/ JSONs) to verify 100% skeleton execution
+                skel_dir = Path(tmp_dir) / "skeleton_only_copy"
+                skel_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(full_dir / "backup_config.json", skel_dir / "backup_config.json")
+                shutil.copy2(get_sqlite_path(full_dir.as_posix()), skel_dir / "backup.sqlite")
+                shutil.copy2(get_skeleton_sqlite_path(full_dir.as_posix()), skel_dir / "skeletons.sqlite")
+
+                ctx_skel = BackupContext.create(backup_id=bid, backup_path=skel_dir.as_posix())
+                with BackupContext.activate(context=ctx_skel):
+                    with self.assertRaises(exc.IndexScenesError):
+                        index_scenes(backup_id=bid, backup_path=skel_dir.as_posix(), rescan_json=True)
+
+                    index_scenes(backup_id=bid, backup_path=skel_dir.as_posix(), rescan_json=False)
+
+                skel_snap = self._snapshot_indexed_state(bid, skel_dir.as_posix())
+                self.assertEqual(skel_snap["rp"], json_snap["rp"])
+                self.assertEqual(skel_snap["sessions"], json_snap["sessions"])
+                self.assertEqual(skel_snap["events"], json_snap["events"])
+                self.assertEqual(skel_snap["event_segments"], json_snap["event_segments"])
+            finally:
+                close_all_engines()
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ for p in (SRC_DIR.as_posix(), PROJECT_ROOT.as_posix()):
 
 import utils.tricks as t
 from sqlalchemy.orm import selectinload
-from db.models import FlaggedMessageModel, WriterModel
+from db.models import FlaggedMessageModel, SeenDiscordUserModel, WriterModel
 from db.session import db_session, has_db
 
 t.set_path()
@@ -58,15 +58,34 @@ def find_writer_link_suggestions(
         if not unlinked_writers:
             return []
 
-        # 2. Collect candidates from flagged messages (author JSON column only, avoiding large content blobs)
+        # 2. Collect candidates from SeenDiscordUserModel and merge with FlaggedMessageModel.author
+        seen_users = (
+            session.query(SeenDiscordUserModel)
+            .filter(SeenDiscordUserModel.backup_id == str(backup_id))
+            .all()
+        )
         flagged_authors = (
             session.query(FlaggedMessageModel.author)
             .filter(FlaggedMessageModel.backup_id == str(backup_id))
             .all()
         )
 
-        # author_id -> {username, nickname, count}
+        # author_id -> {username, global_name, nickname, flagged_count, message_count, is_current_member}
         candidates: Dict[str, Dict[str, Any]] = {}
+
+        for u in seen_users:
+            aid = str(u.discord_user_id or "").strip()
+            if not aid or aid == "None":
+                continue
+            candidates[aid] = {
+                "discord_user_id": aid,
+                "username": str(u.username or ""),
+                "global_name": str(u.global_name or ""),
+                "nickname": str(u.nickname or u.global_name or ""),
+                "flagged_count": 0,
+                "message_count": int(u.message_count or 0),
+                "is_current_member": bool(u.is_current_member),
+            }
 
         for (author,) in flagged_authors:
             if not isinstance(author, dict):
@@ -82,10 +101,15 @@ def find_writer_link_suggestions(
                 candidates[aid] = {
                     "discord_user_id": aid,
                     "username": username,
+                    "global_name": "",
                     "nickname": nickname,
                     "flagged_count": 0,
+                    "message_count": 0,
+                    "is_current_member": False,
                 }
             candidates[aid]["flagged_count"] += 1
+            if not candidates[aid]["username"] and username:
+                candidates[aid]["username"] = username
             if not candidates[aid]["nickname"] and nickname:
                 candidates[aid]["nickname"] = nickname
 
@@ -102,12 +126,16 @@ def find_writer_link_suggestions(
 
             for aid, cand in candidates.items():
                 username = cand["username"]
+                global_name = cand["global_name"]
                 nickname = cand["nickname"]
 
-                cand_tokens = normalize_tokens(username) | normalize_tokens(
-                    nickname
+                cand_tokens = (
+                    normalize_tokens(username)
+                    | normalize_tokens(global_name)
+                    | normalize_tokens(nickname)
                 )
-                cand_full_text = f"{username} {nickname}".lower()
+                cand_full_text = f"{username} {global_name} {nickname}".lower()
+                evidence_count = max(cand["message_count"], cand["flagged_count"], 1 if cand["is_current_member"] else 0)
 
                 matched_alias = None
                 confidence = None
@@ -116,9 +144,11 @@ def find_writer_link_suggestions(
                 for alias in clean_aliases:
                     alias_tokens = normalize_tokens(alias)
 
-                    # Case A: Exact username or nickname match
-                    if alias == username.lower() or (
-                        nickname and alias == nickname.lower()
+                    # Case A: Exact username, global_name, or nickname match
+                    if (
+                        alias == username.lower()
+                        or (global_name and alias == global_name.lower())
+                        or (nickname and alias == nickname.lower())
                     ):
                         matched_alias = alias
                         confidence = 0.95
@@ -160,7 +190,8 @@ def find_writer_link_suggestions(
                     )
                     score = (
                         (2 if conf_level == "high" else 1) * 100
-                        + cand["flagged_count"]
+                        + (10 if cand["is_current_member"] else 0)
+                        + evidence_count
                     )
                     if best_match is None or score > best_match["_score"]:
                         best_match = {
@@ -175,7 +206,9 @@ def find_writer_link_suggestions(
                             "confidence": confidence,
                             "confidence_level": conf_level,
                             "reason": reason,
-                            "evidence_count": cand["flagged_count"],
+                            "evidence_count": evidence_count,
+                            "message_count": cand["message_count"],
+                            "is_current_member": cand["is_current_member"],
                             "_score": score,
                         }
 

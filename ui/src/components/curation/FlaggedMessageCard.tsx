@@ -1,5 +1,5 @@
 import React from 'react';
-import { ExternalLink, Check, RotateCcw, Sparkles, EyeOff, CheckCheck, ArrowRight } from 'lucide-react';
+import { ExternalLink, Check, RotateCcw, Sparkles, EyeOff, CheckCheck, ArrowRight, AlertTriangle } from 'lucide-react';
 import { DataCard, Badge, Button } from '../ui';
 import type { FlaggedMessage, FlaggedResolution } from '../../types';
 import { safeDiscordUrl } from '../../utils/rbac';
@@ -8,6 +8,7 @@ interface FlaggedMessageCardProps {
   message: FlaggedMessage;
   isResolving: boolean;
   isReopening: boolean;
+  mutationDisabled?: boolean;
   onPromote: (msg: FlaggedMessage) => void;
   onResolve: (msg: FlaggedMessage, resolution: FlaggedResolution) => void;
   onReopen: (messageId: string) => void;
@@ -17,6 +18,7 @@ export const FlaggedMessageCard: React.FC<FlaggedMessageCardProps> = ({
   message,
   isResolving,
   isReopening,
+  mutationDisabled = false,
   onPromote,
   onResolve,
   onReopen,
@@ -28,8 +30,12 @@ export const FlaggedMessageCard: React.FC<FlaggedMessageCardProps> = ({
   const currentAuthorName = currentAuthor?.name || currentAuthor?.nickname || 'Unknown Author';
   const originalAuthor = message.author || {};
   const originalAuthorName = originalAuthor?.nickname || originalAuthor?.name || 'Unknown Author';
-  const isMessageOverridden = isOverridden && message.content !== message.override_content;
+  const isMessageOverridden =
+    isOverridden &&
+    message.override_content != null &&
+    message.content !== message.override_content;
   const suggested = message.suggested_character;
+  const syncLockedTitle = mutationDisabled ? 'Curation edits are disabled while sync is in progress.' : undefined;
 
   const cardAccent = isResolved
     ? 'resolved'
@@ -85,6 +91,13 @@ export const FlaggedMessageCard: React.FC<FlaggedMessageCardProps> = ({
             <span className="text-secondary text-md">
               #{message.channel_name || 'unknown-channel'}
             </span>
+
+            {message.is_deleted && (
+              <Badge variant="danger" className="text-sm font-semibold" title="Channel or message was deleted on Discord">
+                <AlertTriangle size={11} />
+                Deleted on Discord
+              </Badge>
+            )}
           </div>
 
           <div className="flex-row items-center gap-xs flex-wrap text-muted text-sm mt-xs">
@@ -126,8 +139,9 @@ export const FlaggedMessageCard: React.FC<FlaggedMessageCardProps> = ({
               variant="danger"
               size="sm"
               onClick={() => onReopen(message.message_id)}
-              disabled={isReopening}
+              disabled={isReopening || mutationDisabled}
               loading={isReopening}
+              title={syncLockedTitle}
               icon={<RotateCcw size={12} />}
             >
               Reopen
@@ -138,7 +152,8 @@ export const FlaggedMessageCard: React.FC<FlaggedMessageCardProps> = ({
                 variant="primary"
                 size="sm"
                 onClick={() => onPromote(message)}
-                disabled={isResolving}
+                disabled={isResolving || mutationDisabled}
+                title={syncLockedTitle}
                 icon={<Check size={13} />}
               >
                 Override
@@ -148,7 +163,8 @@ export const FlaggedMessageCard: React.FC<FlaggedMessageCardProps> = ({
                 variant="warning"
                 size="sm"
                 onClick={() => onResolve(message, 'ignored')}
-                disabled={isResolving}
+                disabled={isResolving || mutationDisabled}
+                title={syncLockedTitle}
                 icon={<EyeOff size={13} />}
               >
                 Ignore (OOC)
@@ -158,7 +174,8 @@ export const FlaggedMessageCard: React.FC<FlaggedMessageCardProps> = ({
                 variant="success"
                 size="sm"
                 onClick={() => onResolve(message, 'kept')}
-                disabled={isResolving}
+                disabled={isResolving || mutationDisabled}
+                title={syncLockedTitle}
                 icon={<CheckCheck size={13} />}
               >
                 Keep As-Is
@@ -196,6 +213,8 @@ export const FlaggedMessageCard: React.FC<FlaggedMessageCardProps> = ({
           <Button
             variant="secondary"
             size="xs"
+            disabled={isResolving || mutationDisabled}
+            title={syncLockedTitle}
             onClick={() => onPromote(message)}
           >
             Apply Suggestion

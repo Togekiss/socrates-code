@@ -202,13 +202,15 @@ export const FlaggedMessagesTab = ({
         <Button
           variant="secondary"
           size="md"
+          disabled={!statusGuard.canMutate}
           onClick={() => setIsAddModalOpen(true)}
           icon={<Plus size={14} />}
-          title="Add flagged message manually"
+          title={!statusGuard.canMutate ? 'Curation edits are disabled while sync is in progress.' : 'Add flagged message manually'}
         >
           Add Message
         </Button>
       }
+      banners={<BackupStatusGuard title="Flagged Messages" guard={statusGuard} />}
       filterBar={
         <FlaggedMessagesFilters
           statusFilter={statusFilter}
@@ -311,9 +313,10 @@ export const FlaggedMessagesTab = ({
               message={msg}
               isResolving={resolvingId === msg.message_id}
               isReopening={reopeningId === msg.message_id}
-              onPromote={m => setPromotingMsg(m)}
-              onResolve={handleResolve}
-              onReopen={handleReopen}
+              mutationDisabled={!statusGuard.canMutate}
+              onPromote={m => { if (statusGuard.canMutate) setPromotingMsg(m); }}
+              onResolve={(m, res) => { if (statusGuard.canMutate) handleResolve(m, res); }}
+              onReopen={id => { if (statusGuard.canMutate) handleReopen(id); }}
             />
           ))}
         </div>

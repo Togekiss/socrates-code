@@ -6,6 +6,12 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import utils.tricks as t
 import utils.exceptions as exc
 from find_character_scenes import EXCERPT_MAX_LEN
+from db.skeleton_models import (
+    STRICT_EVENT_END_PAT,
+    MOD_END_PAT,
+    SkeletonFlags,
+    is_event_end_tag,
+)
 
 t.set_path()
 from res import constants as c
@@ -15,44 +21,63 @@ EVENT_BANNER_GAP_HOURS = 12.0
 EVENT_SETUP_MERGE_HOURS = 72.0
 EVENT_CLUSTER_PROXIMITY_HOURS = 18.0
 
-STRICT_EVENT_END_PAT = re.compile(r"(?:`{1,3}\s*EVENT\s+END\b|\[\s*EVENT\s+END\b)", re.IGNORECASE)
-MOD_END_PAT = re.compile(r"(?:`{1,3}\s*(?:EVENT\s+END|END)\b|\[\s*(?:EVENT\s+END|END)\b)", re.IGNORECASE)
-
 
 def is_tupper_Id(author_id: Any) -> bool:
     """Returns True if author_id represents a Tupperbox character ID (< 10000)."""
     return t.is_tupper(author_id)
 
 
-def is_event_end_tag(msg: Dict[str, Any]) -> bool:
-    """
-    Detects whether a message is a moderator/Janitor event end marker.
-    Ignores standard [END] tags posted by Tupperbox characters.
-    """
+def _msg_dt(msg: Dict[str, Any]) -> Optional[datetime]:
+    if not isinstance(msg, dict):
+        return None
+    if msg.get("timestamp_dt") is not None:
+        dt_val = msg["timestamp_dt"]
+        return dt_val if dt_val.tzinfo else dt_val.replace(tzinfo=timezone.utc)
+    ts = msg.get("timestamp")
+    if ts:
+        parsed = t.parse_datetime(ts)
+        if parsed is not None:
+            return parsed
+    ts_unix = msg.get("timestamp_unix")
+    if ts_unix:
+        try:
+            return datetime.fromtimestamp(int(ts_unix), tz=timezone.utc)
+        except Exception:
+            pass
+    return None
+
+
+def _is_default_event_msg(msg: Dict[str, Any]) -> bool:
     if not isinstance(msg, dict):
         return False
-    content = str(msg.get("content", "") or "").strip()
-    if not content:
+    if "flags" in msg:
+        return bool(int(msg["flags"]) & SkeletonFlags.IS_DEFAULT)
+    return msg.get("type", "Default") == "Default"
+
+
+def _is_event_end_msg(msg: Dict[str, Any]) -> bool:
+    if not isinstance(msg, dict):
         return False
+    if "flags" in msg:
+        return bool(int(msg["flags"]) & SkeletonFlags.IS_EVENT_END)
+    return is_event_end_tag(msg)
 
-    if len(content) <= 120 and STRICT_EVENT_END_PAT.search(content):
-        return True
 
-    author = msg.get("author") or {}
-    author_id = author.get("id")
-    author_name = str(author.get("name", "") or "").strip()
-
-    if (not is_tupper_Id(author_id) or author_name == "Janitor") and len(content) <= 80:
-        if MOD_END_PAT.search(content):
-            return True
-
-    return False
+def _is_mod_end_msg(msg: Dict[str, Any]) -> bool:
+    if not isinstance(msg, dict):
+        return False
+    if "flags" in msg:
+        return bool(int(msg["flags"]) & SkeletonFlags.IS_MOD_END)
+    m_content = str(msg.get("content", "") or "").strip()
+    return bool(m_content and MOD_END_PAT.search(m_content))
 
 
 def is_banner_message(msg: Dict[str, Any]) -> bool:
     """Returns True if msg is a non-tupper image/attachment banner message."""
     if not isinstance(msg, dict):
         return False
+    if "flags" in msg:
+        return bool(int(msg["flags"]) & SkeletonFlags.IS_BANNER)
     author = msg.get("author") or {}
     author_id = author.get("id")
     if is_tupper_Id(author_id):
@@ -110,7 +135,7 @@ def _build_segment_from_messages(
             continue
         cid = int(aid)
         msg_id_str = str(m.get("id", ""))
-        msg_dt = t.parse_datetime(m.get("timestamp"))
+        msg_dt = _msg_dt(m)
         author_name = str((m.get("author") or {}).get("name") or f"Character #{cid}")
         if cid not in participant_map:
             participant_map[cid] = EventDictObject({
@@ -139,8 +164,8 @@ def _build_segment_from_messages(
     start_idx = int(first_msg.get("raw_index", first_raw_idx))
     end_idx = start_idx + msg_count - 1
 
-    start_dt = t.parse_datetime(first_msg.get("timestamp")) or datetime.now(timezone.utc)
-    end_dt = t.parse_datetime(last_msg.get("timestamp")) or start_dt
+    start_dt = _msg_dt(first_msg) or datetime.now(timezone.utc)
+    end_dt = _msg_dt(last_msg) or start_dt
 
     first_content = str(first_msg.get("content", "") or "")
     last_content = str(last_msg.get("content", "") or "")
@@ -227,7 +252,7 @@ def find_all_event_segments_in_channel(
     default_msgs: List[Tuple[int, Dict[str, Any]]] = [
         (idx, msg)
         for idx, msg in enumerate(raw_messages)
-        if isinstance(msg, dict) and msg.get("type", "Default") == "Default"
+        if _is_default_event_msg(msg)
     ]
     if not default_msgs:
         return []
@@ -309,7 +334,7 @@ def find_all_event_segments_in_channel(
                         # Suppress the silence-gap split so that a previously resolved merge is preserved across re-indexing
                         current_res_inside.append(msg_id)
                     else:
-                        prev_is_end = is_event_end_tag(current_msgs[-1][1])
+                        prev_is_end = _is_event_end_msg(current_msgs[-1][1])
                         if not prev_is_end and not is_banner:
                             # Automated silence-gap cut without explicit narrative ending or start
                             prev_chars = sorted({
@@ -324,8 +349,8 @@ def find_all_event_segments_in_channel(
                                     nxt_id = str(m_next.get("id", ""))
                                     if (resolved_decisions and resolved_decisions.get(nxt_id) == "split") or nxt_id in manual_splits:
                                         break
-                                    dt_j = t.parse_datetime(m_next.get("timestamp"))
-                                    dt_p = t.parse_datetime(default_msgs[j - 1][1].get("timestamp"))
+                                    dt_j = _msg_dt(m_next)
+                                    dt_p = _msg_dt(default_msgs[j - 1][1])
                                     g = ((dt_j - dt_p).total_seconds() / 3600.0) if (dt_j and dt_p) else 0.0
                                     if g >= EVENT_CHANNEL_GAP_HOURS and not (resolved_decisions and resolved_decisions.get(nxt_id) == "merged"):
                                         break
@@ -361,7 +386,7 @@ def find_all_event_segments_in_channel(
                         current_res_inside = []
                         current_issues = []
 
-        if not current_msgs and is_event_end_tag(msg):
+        if not current_msgs and _is_event_end_msg(msg):
             # Delayed cleanup end tag closes the previous finalized segment in this channel
             if raw_segments:
                 raw_segments[-1]["status"] = "closed"
@@ -369,7 +394,7 @@ def find_all_event_segments_in_channel(
 
         current_msgs.append((idx, msg))
 
-        if is_event_end_tag(msg) or msg_id in manual_splits:
+        if _is_event_end_msg(msg) or msg_id in manual_splits:
             raw_segments.append({
                 "msgs": current_msgs,
                 "status": "closed",
@@ -430,7 +455,7 @@ def find_all_event_segments_in_channel(
             if not is_tupper_Id(m_aid):
                 continue
             m_content = str(m.get("content", "") or "").strip()
-            if MOD_END_PAT.search(m_content):
+            if _is_mod_end_msg(m):
                 m_id = str(m.get("id", ""))
                 if resolved_decisions and resolved_decisions.get(m_id) == "merged":
                     if m_id not in seg_res_inside:
@@ -782,7 +807,7 @@ def compute_event_movements(event_cluster: Dict[str, Any]) -> Dict[str, List[Dic
                 msg_id_int = int(msg_id_str)
             except (ValueError, TypeError):
                 msg_id_int = 0
-            dt = t.parse_datetime(m.get("timestamp")) or datetime.min.replace(tzinfo=timezone.utc)
+            dt = _msg_dt(m) or datetime.min.replace(tzinfo=timezone.utc)
             dt_iso = dt.isoformat()
             char_messages.setdefault(char_key, []).append(
                 (dt, msg_id_int, msg_id_str, dt_iso, seg_key, chan_id, chan_name)
@@ -823,14 +848,25 @@ def index_event_categories(
     manual_splits_by_channel: Optional[Dict[str, Set[str]]] = None,
     resolved_decisions: Optional[Dict[str, str]] = None,
     folder: Optional[str] = None,
+    *,
+    backup_id: Optional[str] = None,
+    backup_path: Optional[str] = None,
+    rescan_json: bool = False,
+    excerpts_map: Optional[Dict[str, str]] = None,
 ) -> List[EventCluster]:
     """
-    Loads all channel and thread JSON files across event_categories, runs Stage 1 segmentation,
-    Stage 2 multi-channel clustering & thread attachment, and Stage 3 character movement calculation.
+    Runs Stage 1 segmentation across event_categories (from `skeletons.sqlite` when available
+    and `rescan_json=False`, else from channel/thread JSON files), Stage 2 multi-channel
+    clustering & thread attachment, and Stage 3 character movement calculation.
     """
-    from fix_bad_messages import prepare_channel_messages
+    from fix_bad_messages import prepare_channel_messages, prepare_channel_skeletons
+    from db.session import has_skeleton_db
+    from db.scene_service import load_channel_skeletons
 
     data_folder = data_folder or folder or c.DATA_FOLDER
+    b_id = backup_id or getattr(c, "BACKUP_ID", None)
+    b_path = backup_path or getattr(c, "BACKUP_BASE", None)
+    use_skeletons = (not rescan_json) and bool(b_id and b_path and has_skeleton_db(b_path, backup_id=b_id))
 
     resolved_flags_map = resolved_flags_map or {}
     manual_splits_by_channel = manual_splits_by_channel or {}
@@ -841,18 +877,34 @@ def index_event_categories(
 
     for cat in event_categories:
         for ch in cat.channels:
-            ch_file = (Path(data_folder) / ch.path).as_posix()
-            if not Path(ch_file).exists():
-                continue
-            raw_ch_data = t.load_from_json(ch_file)
-            prepared_msgs = prepare_channel_messages(raw_ch_data.get("messages", []), resolved_flags_map)
-            ch_data = dict(raw_ch_data)
-            ch_data["messages"] = prepared_msgs
-            if "channel" in ch_data and isinstance(ch_data["channel"], dict):
-                ch_data["channel"] = dict(ch_data["channel"])
-                ch_data["channel"]["id"] = str(ch.id)
-                ch_data["channel"]["name"] = str(ch.name)
-                ch_data["channel"]["category"] = str(cat.name)
+            ch_data: Optional[Dict[str, Any]] = None
+            if use_skeletons:
+                skels = load_channel_skeletons(b_id, b_path, ch.id)
+                if skels:
+                    prepared_msgs = prepare_channel_skeletons(skels, resolved_flags_map, excerpts_map=excerpts_map)
+                    ch_data = {
+                        "channel": {
+                            "id": str(ch.id),
+                            "name": str(ch.name),
+                            "type": "GuildTextChat",
+                            "category": str(cat.name),
+                        },
+                        "messages": prepared_msgs,
+                    }
+
+            if ch_data is None:
+                ch_file = (Path(data_folder) / ch.path).as_posix() if ch.path else ""
+                if not ch_file or not Path(ch_file).exists():
+                    continue
+                raw_ch_data = t.load_from_json(ch_file)
+                prepared_msgs = prepare_channel_messages(raw_ch_data.get("messages", []), resolved_flags_map)
+                ch_data = dict(raw_ch_data)
+                ch_data["messages"] = prepared_msgs
+                if "channel" in ch_data and isinstance(ch_data["channel"], dict):
+                    ch_data["channel"] = dict(ch_data["channel"])
+                    ch_data["channel"]["id"] = str(ch.id)
+                    ch_data["channel"]["name"] = str(ch.name)
+                    ch_data["channel"]["category"] = str(cat.name)
 
             ch_splits = manual_splits_by_channel.get(str(ch.id), set())
             segs = find_all_event_segments_in_channel(
@@ -863,19 +915,36 @@ def index_event_categories(
             all_text_segments.extend(segs)
 
             for th in ch.threads:
-                th_file = (Path(data_folder) / th.path).as_posix()
-                if not Path(th_file).exists():
-                    continue
-                raw_th_data = t.load_from_json(th_file)
-                prepared_th_msgs = prepare_channel_messages(raw_th_data.get("messages", []), resolved_flags_map)
-                th_data = dict(raw_th_data)
-                th_data["messages"] = prepared_th_msgs
-                if "channel" in th_data and isinstance(th_data["channel"], dict):
-                    th_data["channel"] = dict(th_data["channel"])
-                    th_data["channel"]["id"] = str(th.id)
-                    th_data["channel"]["name"] = str(th.name)
-                    th_data["channel"]["categoryId"] = str(ch.id)
-                    th_data["channel"]["category"] = str(ch.name)
+                th_data: Optional[Dict[str, Any]] = None
+                if use_skeletons:
+                    th_skels = load_channel_skeletons(b_id, b_path, th.id)
+                    if th_skels:
+                        prepared_th_msgs = prepare_channel_skeletons(th_skels, resolved_flags_map, excerpts_map=excerpts_map)
+                        th_data = {
+                            "channel": {
+                                "id": str(th.id),
+                                "name": str(th.name),
+                                "type": "GuildPublicThread",
+                                "categoryId": str(ch.id),
+                                "category": str(ch.name),
+                            },
+                            "messages": prepared_th_msgs,
+                        }
+
+                if th_data is None:
+                    th_file = (Path(data_folder) / th.path).as_posix() if th.path else ""
+                    if not th_file or not Path(th_file).exists():
+                        continue
+                    raw_th_data = t.load_from_json(th_file)
+                    prepared_th_msgs = prepare_channel_messages(raw_th_data.get("messages", []), resolved_flags_map)
+                    th_data = dict(raw_th_data)
+                    th_data["messages"] = prepared_th_msgs
+                    if "channel" in th_data and isinstance(th_data["channel"], dict):
+                        th_data["channel"] = dict(th_data["channel"])
+                        th_data["channel"]["id"] = str(th.id)
+                        th_data["channel"]["name"] = str(th.name)
+                        th_data["channel"]["categoryId"] = str(ch.id)
+                        th_data["channel"]["category"] = str(ch.name)
 
                 th_splits = manual_splits_by_channel.get(str(th.id), set())
                 th_segs = find_all_event_segments_in_channel(

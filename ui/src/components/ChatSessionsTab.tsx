@@ -279,9 +279,12 @@ export const ChatSessionsTab = ({
         />
       }
       banners={
-        byMe && !myWriter ? (
-          <UnlinkedWriterBanner onNavigateToWriters={onNavigateToWriters} />
-        ) : undefined
+        <>
+          <BackupStatusGuard title="Chat Sessions" guard={statusGuard} />
+          {byMe && !myWriter && (
+            <UnlinkedWriterBanner onNavigateToWriters={onNavigateToWriters} />
+          )}
+        </>
       }
       countText={
         !error && (!loading || totalItems > 0) ? (
@@ -347,7 +350,8 @@ export const ChatSessionsTab = ({
               allCharacters={allCharacters}
               charactersFilter={charactersFilter}
               setCharactersFilter={setCharactersFilter}
-              onEdit={canCurate ? item => setEditingSession(item as ChatSession) : undefined}
+              onEdit={canCurate ? item => { if (statusGuard.canMutate) setEditingSession(item as ChatSession); } : undefined}
+              editDisabled={!statusGuard.canMutate}
             />
           ))}
         </div>

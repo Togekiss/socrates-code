@@ -1,12 +1,14 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Trash2 } from 'lucide-react';
 import { api } from '../../api';
-import type { WriterDetailed } from '../../types';
+import type { SeenDiscordUser, WriterDetailed } from '../../types';
+import { formatDiscordUserDisplayNames } from '../../utils/formatters';
 import { Modal, ChipInput, Button } from '../ui';
 
 interface WriterEditModalProps {
   backupId: string;
   writer?: WriterDetailed | null;
+  seenDiscordUsers?: SeenDiscordUser[];
   isParticipantSelfEdit?: boolean;
   onClose: () => void;
   onSaved: () => void;
@@ -15,6 +17,7 @@ interface WriterEditModalProps {
 export const WriterEditModal: React.FC<WriterEditModalProps> = ({
   backupId,
   writer,
+  seenDiscordUsers,
   isParticipantSelfEdit = false,
   onClose,
   onSaved,
@@ -23,8 +26,50 @@ export const WriterEditModal: React.FC<WriterEditModalProps> = ({
   const [displayName, setDisplayName] = useState(writer?.display_name || '');
   const [aliases, setAliases] = useState<string[]>(writer?.aliases || []);
   const [discordUserId, setDiscordUserId] = useState(writer?.discord_user_id || '');
+  const [fetchedUsers, setFetchedUsers] = useState<SeenDiscordUser[]>([]);
+  const [loadingUsers, setLoadingUsers] = useState(
+    !isParticipantSelfEdit && seenDiscordUsers === undefined
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isParticipantSelfEdit || seenDiscordUsers !== undefined) return;
+    let cancelled = false;
+    api
+      .getSeenDiscordUsers(backupId)
+      .then(data => {
+        if (!cancelled) {
+          setFetchedUsers(Array.isArray(data) ? data : []);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setFetchedUsers([]);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingUsers(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [backupId, isParticipantSelfEdit, seenDiscordUsers]);
+
+  const availableDiscordUsers = useMemo(() => {
+    const source = seenDiscordUsers ?? fetchedUsers;
+    return source.filter(
+      u => !u.linked_writer_id || (writer?.id != null && u.linked_writer_id === writer.id)
+    );
+  }, [seenDiscordUsers, fetchedUsers, writer]);
+
+  const selectedDropdownValue = useMemo(() => {
+    const trimmed = discordUserId.trim();
+    if (!trimmed) return '';
+    return availableDiscordUsers.some(u => u.discord_user_id === trimmed) ? trimmed : '';
+  }, [availableDiscordUsers, discordUserId]);
 
   const handleSave = async () => {
     if (!displayName.trim()) {
@@ -154,19 +199,41 @@ export const WriterEditModal: React.FC<WriterEditModalProps> = ({
         {/* Discord User Snowflake */}
         {!isParticipantSelfEdit && (
           <div className="form-group">
-            <label htmlFor="writer-discord-id" className="form-label">
+            <label htmlFor="writer-discord-user-select" className="form-label">
               Discord User ID (Snowflake)
             </label>
+            <select
+              id="writer-discord-user-select"
+              aria-label="Select unlinked Discord user"
+              className="select"
+              value={selectedDropdownValue}
+              disabled={loadingUsers || availableDiscordUsers.length === 0}
+              onChange={e => setDiscordUserId(e.target.value)}
+            >
+              <option value="">
+                {loadingUsers
+                  ? 'Loading Discord users...'
+                  : availableDiscordUsers.length > 0
+                    ? 'Select an unlinked Discord user...'
+                    : 'No unlinked Discord users available'}
+              </option>
+              {availableDiscordUsers.map(u => (
+                <option key={u.discord_user_id} value={u.discord_user_id}>
+                  {formatDiscordUserDisplayNames(u)} — {u.discord_user_id}
+                </option>
+              ))}
+            </select>
             <input
               id="writer-discord-id"
+              aria-label="Manual Discord User ID (Snowflake)"
               type="text"
               className="input"
               value={discordUserId}
               onChange={e => setDiscordUserId(e.target.value)}
-              placeholder="e.g. 123456789012345678"
+              placeholder="Or enter Discord User ID manually (e.g. 123456789012345678)"
             />
             <span className="form-hint">
-              Links this profile to a Discord user ID for &quot;★ By Me&quot; character filtering.
+              Links this profile to a Discord user ID for &quot;★ By Me&quot; character filtering. Pick an unlinked Discord user or enter a snowflake ID manually.
             </span>
           </div>
         )}

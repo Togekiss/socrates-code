@@ -293,6 +293,7 @@ export const CharactersTab = ({
 
   const canEditCharacter = useCallback(
     (char: Character, parent?: Character): boolean => {
+      if (!statusGuard.canMutate) return false;
       if (canCurate) return true;
       if (!isParticipant || selfWriterId == null) return false;
       if (selfCharacterIds.has(char.id)) return true;
@@ -310,7 +311,7 @@ export const CharactersTab = ({
       }
       return false;
     },
-    [canCurate, isParticipant, selfWriterId, selfCharacterIds, selfWriterNames]
+    [statusGuard.canMutate, canCurate, isParticipant, selfWriterId, selfCharacterIds, selfWriterNames]
   );
 
   if (!statusGuard.isReady) {
@@ -327,6 +328,8 @@ export const CharactersTab = ({
           <Button
             variant="secondary"
             size="md"
+            disabled={!statusGuard.canMutate}
+            title={!statusGuard.canMutate ? 'Editing is disabled while sync is in progress.' : undefined}
             onClick={() => setIsCreatingGroup(true)}
             icon={<Plus size={14} />}
           >
@@ -351,9 +354,12 @@ export const CharactersTab = ({
         />
       }
       banners={
-        byMe && !myWriter ? (
-          <UnlinkedWriterBanner onNavigateToWriters={onNavigateToWriters} />
-        ) : undefined
+        <>
+          <BackupStatusGuard title="Characters & Groups" guard={statusGuard} />
+          {byMe && !myWriter && (
+            <UnlinkedWriterBanner onNavigateToWriters={onNavigateToWriters} />
+          )}
+        </>
       }
       countText={
         <span>
@@ -437,10 +443,10 @@ export const CharactersTab = ({
         <div className="character-list-stack">
           <VirtualScrollList
             items={displayItems}
-            onEdit={canCurate || isParticipant ? (char, parent) => setEditingChar({ char, parent }) : undefined}
+            onEdit={(canCurate || isParticipant) && statusGuard.canMutate ? (char, parent) => setEditingChar({ char, parent }) : undefined}
             canEdit={canEditCharacter}
-            onEditGroup={canCurate ? g => setEditingGroup(g) : undefined}
-            onAssignWriter={canCurate ? setAssigningChar : undefined}
+            onEditGroup={canCurate && statusGuard.canMutate ? g => setEditingGroup(g) : undefined}
+            onAssignWriter={canCurate && statusGuard.canMutate ? setAssigningChar : undefined}
             onAddTagFilter={tag => {
               if (!tagsFilter.includes(tag)) setTagsFilter([...tagsFilter, tag]);
             }}

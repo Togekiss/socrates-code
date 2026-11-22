@@ -18,6 +18,11 @@ from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import Pool
 from .models import Base, SchemaVersionModel, CURRENT_SCHEMA_VERSION
 from .audit_models import AuditBase
+from .skeleton_models import (
+    SkeletonBase,
+    SkeletonSchemaVersionModel,
+    CURRENT_SKELETON_SCHEMA_VERSION,
+)
 from utils import exceptions as exc
 
 
@@ -43,8 +48,9 @@ def is_sqlite_tmp_cache_enabled() -> bool:
 def _resolve_source_sqlite_path(
     backup_id: Optional[str] = None,
     backup_path: Optional[str] = None,
+    filename: str = "backup.sqlite",
 ) -> str:
-    """Resolves the canonical source backup.sqlite path on disk/GCS FUSE."""
+    """Resolves the canonical source SQLite path (backup.sqlite / skeletons.sqlite) on disk/GCS FUSE."""
     if not backup_path:
         if not backup_id:
             raise exc.DatabaseConnectionError("Either backup_id or backup_path must be provided for SQLite database.")
@@ -53,7 +59,15 @@ def _resolve_source_sqlite_path(
             backup_path = get_backup_path(backup_id)
         except Exception as e:
             raise exc.DatabaseConnectionError(f"Failed to resolve path for backup_id '{backup_id}': {e}") from e
-    return os.path.realpath(os.path.abspath(os.path.join(backup_path, "backup.sqlite"))).replace("\\", "/")
+    return os.path.realpath(os.path.abspath(os.path.join(backup_path, filename))).replace("\\", "/")
+
+
+def _resolve_source_skeleton_sqlite_path(
+    backup_id: Optional[str] = None,
+    backup_path: Optional[str] = None,
+) -> str:
+    """Resolves the canonical source skeletons.sqlite path on disk/GCS FUSE."""
+    return _resolve_source_sqlite_path(backup_id=backup_id, backup_path=backup_path, filename="skeletons.sqlite")
 
 
 def get_tmp_sqlite_path(source_sqlite_path: str) -> str:
@@ -62,7 +76,8 @@ def get_tmp_sqlite_path(source_sqlite_path: str) -> str:
     cache_root = os.environ.get("SOCRATES_SQLITE_TMP_DIR") or os.path.join(tempfile.gettempdir(), "socrates_sqlite")
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
     parent_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", os.path.basename(os.path.dirname(canonical))) or "backup"
-    return os.path.join(cache_root, f"{parent_name}_{digest}", "backup.sqlite").replace("\\", "/")
+    leaf_name = os.path.basename(canonical) or "backup.sqlite"
+    return os.path.join(cache_root, f"{parent_name}_{digest}", leaf_name).replace("\\", "/")
 
 
 def _get_source_meta_path(tmp_sqlite_path: str) -> str:
@@ -321,23 +336,17 @@ def sync_dirty_sqlite_dbs(
     return synced
 
 
-def sync_sqlite_db(
-    backup_id: Optional[str] = None,
-    backup_path: Optional[str] = None,
+def _sync_single_source_if_needed(
+    source_path: str,
     force: bool = False,
     min_interval: Optional[float] = None,
 ) -> bool:
-    """Syncs a specific backup's /tmp SQLite database to its source/GCS path if dirty (or if force=True)."""
-    if not is_sqlite_tmp_cache_enabled():
-        return False
-
     if min_interval is None:
         try:
             min_interval = float(os.environ.get("SOCRATES_SQLITE_SYNC_INTERVAL", DEFAULT_SYNC_DEBOUNCE_SECONDS))
         except ValueError:
             min_interval = DEFAULT_SYNC_DEBOUNCE_SECONDS
 
-    source_path = _resolve_source_sqlite_path(backup_id=backup_id, backup_path=backup_path)
     with _sync_lock:
         info = _dirty_dbs.get(source_path)
         if info is None:
@@ -372,12 +381,24 @@ def sync_sqlite_db(
     return did_sync
 
 
-def invalidate_sqlite_tmp_cache(
+def sync_sqlite_db(
     backup_id: Optional[str] = None,
     backup_path: Optional[str] = None,
-) -> None:
-    """Clears the /tmp SQLite cache files and dirty tracking for a backup."""
+    force: bool = False,
+    min_interval: Optional[float] = None,
+) -> bool:
+    """Syncs a specific backup's /tmp SQLite databases (backup.sqlite and skeletons.sqlite) to GCS if dirty."""
+    if not is_sqlite_tmp_cache_enabled():
+        return False
+
     source_path = _resolve_source_sqlite_path(backup_id=backup_id, backup_path=backup_path)
+    skel_path = _resolve_source_skeleton_sqlite_path(backup_id=backup_id, backup_path=backup_path)
+    main_synced = _sync_single_source_if_needed(source_path, force=force, min_interval=min_interval)
+    skel_synced = _sync_single_source_if_needed(skel_path, force=force, min_interval=min_interval)
+    return main_synced or skel_synced
+
+
+def _invalidate_tmp_cache_for_source(source_path: str) -> None:
     tmp_path = get_tmp_sqlite_path(source_path)
     with _sync_lock:
         _dirty_dbs.pop(source_path, None)
@@ -393,6 +414,17 @@ def invalidate_sqlite_tmp_cache(
                 os.remove(path)
             except OSError:
                 pass
+
+
+def invalidate_sqlite_tmp_cache(
+    backup_id: Optional[str] = None,
+    backup_path: Optional[str] = None,
+) -> None:
+    """Clears the /tmp SQLite cache files and dirty tracking for a backup (backup.sqlite and skeletons.sqlite)."""
+    source_path = _resolve_source_sqlite_path(backup_id=backup_id, backup_path=backup_path)
+    skel_path = _resolve_source_skeleton_sqlite_path(backup_id=backup_id, backup_path=backup_path)
+    _invalidate_tmp_cache_for_source(source_path)
+    _invalidate_tmp_cache_for_source(skel_path)
 
 
 ALLOWED_WAL_MODES = frozenset({"PASSIVE", "FULL", "RESTART", "TRUNCATE"})
@@ -486,10 +518,13 @@ def _checkpoint_sqlite_on_checkin(dbapi_connection, connection_record):
 
 
 _central_engine = None
+_central_skeleton_initialized = False
 _engine_cache = {}
 _initialized_engines = {}  # id(engine) -> bool (True if check_version=True passed)
 _audit_initialized_paths: Set[str] = set()
 _audit_init_lock = threading.RLock()
+_skeleton_initialized_paths: Set[str] = set()
+_skeleton_init_lock = threading.RLock()
 _unittest_audit_tmpdir: Optional[str] = None
 _unittest_audit_cleanup_registered = False
 
@@ -581,6 +616,102 @@ def _ensure_audit_engine(source_sqlite_path: str) -> Engine:
             AuditBase.metadata.create_all(bind=eng)
             _audit_initialized_paths.add(canonical)
         return eng
+
+
+def resolve_backup_skeletons_db_path(backup_dir: str) -> str:
+    return _canonical_sqlite_path(os.path.join(backup_dir, "skeletons.sqlite"))
+
+
+def get_skeleton_sqlite_path(backup_path: str) -> str:
+    """Returns the path to skeletons.sqlite in the specified backup folder."""
+    if not backup_path:
+        return ""
+    return resolve_backup_skeletons_db_path(backup_path)
+
+
+def _ensure_skeleton_schema(eng: Engine, cache_key: Optional[str] = None) -> None:
+    global _central_skeleton_initialized
+    from sqlalchemy import inspect
+    with _skeleton_init_lock:
+        if cache_key is None:
+            if _central_skeleton_initialized:
+                return
+        elif cache_key in _skeleton_initialized_paths:
+            return
+
+        inspector = inspect(eng)
+        existing_tables = set(inspector.get_table_names())
+        SkeletonBase.metadata.create_all(bind=eng)
+        if "skeleton_schema_version" not in existing_tables:
+            with Session(eng) as s:
+                s.add(SkeletonSchemaVersionModel(
+                    version=CURRENT_SKELETON_SCHEMA_VERSION,
+                    applied_at=datetime.now(timezone.utc),
+                    description="Initial skeleton schema creation",
+                ))
+                s.commit()
+        if cache_key is None:
+            _central_skeleton_initialized = True
+        else:
+            _skeleton_initialized_paths.add(cache_key)
+
+
+def get_skeleton_engine(backup_id: Optional[str] = None, backup_path: Optional[str] = None) -> Engine:
+    """
+    Returns the SQLAlchemy engine for skeletons.sqlite (or _central_engine if DATABASE_URL is set),
+    auto-initializing SkeletonBase tables once.
+    """
+    global _central_engine
+    database_url = os.environ.get("DATABASE_URL")
+    if database_url:
+        if _central_engine is None:
+            connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
+            _central_engine = create_engine(database_url, pool_pre_ping=True, connect_args=connect_args)
+        _ensure_skeleton_schema(_central_engine, cache_key=None)
+        return _central_engine
+
+    source_skeleton_path = _resolve_source_skeleton_sqlite_path(backup_id=backup_id, backup_path=backup_path)
+    if backup_id:
+        _source_to_backup_id[source_skeleton_path] = str(backup_id)
+
+    eng = _get_sqlite_engine_for_source(source_skeleton_path)
+    _ensure_skeleton_schema(eng, cache_key=source_skeleton_path)
+    return eng
+
+
+def get_skeleton_db_session(backup_id: Optional[str] = None, backup_path: Optional[str] = None) -> Session:
+    """Creates a new SQLAlchemy session for <backup_dir>/skeletons.sqlite (or central DB)."""
+    eng = get_skeleton_engine(backup_id=backup_id, backup_path=backup_path)
+    return sessionmaker(autocommit=False, autoflush=False, bind=eng)()
+
+
+@contextmanager
+def skeleton_db_session(backup_id: Optional[str] = None, backup_path: Optional[str] = None):
+    """Transactional context manager for <backup_dir>/skeletons.sqlite (or central DB)."""
+    session = get_skeleton_db_session(backup_id=backup_id, backup_path=backup_path)
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def has_skeleton_db(backup_path: Optional[str] = None, backup_id: Optional[str] = None) -> bool:
+    """Returns True if skeletons.sqlite exists (or DATABASE_URL is configured)."""
+    if os.environ.get("DATABASE_URL"):
+        return True
+    try:
+        source_path = _resolve_source_skeleton_sqlite_path(backup_id=backup_id, backup_path=backup_path)
+    except Exception:
+        return False
+    if os.path.exists(source_path):
+        return True
+    if is_sqlite_tmp_cache_enabled():
+        return os.path.exists(get_tmp_sqlite_path(source_path))
+    return False
 
 
 def resolve_backup_audit_db_path(backup_dir: str) -> str:
@@ -827,25 +958,34 @@ def close_engine(
     sync: bool = True,
     invalidate_cache: bool = False,
 ) -> None:
-    """Syncs (if dirty), checkpoints WAL, and disposes the cached SQLite engine for a single backup."""
+    """Syncs (if dirty), checkpoints WAL, and disposes cached SQLite engines (backup.sqlite + skeletons.sqlite)."""
     if os.environ.get("DATABASE_URL"):
         return
     source_sqlite_path = _resolve_source_sqlite_path(backup_id=backup_id, backup_path=backup_path)
+    source_skel_path = _resolve_source_skeleton_sqlite_path(backup_id=backup_id, backup_path=backup_path)
+
     if sync and is_sqlite_tmp_cache_enabled():
-        sync_sqlite_db(backup_id=backup_id, backup_path=backup_path, force=True)
-    eng = _engine_cache.pop(source_sqlite_path, None)
-    if eng is not None:
-        checkpoint_wal(eng)
-        eng.dispose()
-        _initialized_engines.pop(id(eng), None)
-        _engine_to_source.pop(id(eng), None)
+        _sync_single_source_if_needed(source_sqlite_path, force=True)
+        if source_skel_path in _dirty_dbs:
+            _sync_single_source_if_needed(source_skel_path, force=True)
+
+    for src_path in (source_sqlite_path, source_skel_path):
+        eng = _engine_cache.pop(src_path, None)
+        if eng is not None:
+            checkpoint_wal(eng)
+            eng.dispose()
+            _initialized_engines.pop(id(eng), None)
+            _engine_to_source.pop(id(eng), None)
+    with _skeleton_init_lock:
+        _skeleton_initialized_paths.discard(source_skel_path)
+
     if invalidate_cache:
         invalidate_sqlite_tmp_cache(backup_id=backup_id, backup_path=backup_path)
 
 
 def close_all_engines() -> None:
     """Syncs dirty /tmp SQLite DBs, checkpoints active WALs, disposes cached engines, and closes log handlers."""
-    global _central_engine, _engine_cache
+    global _central_engine, _central_skeleton_initialized, _engine_cache
     _cancel_sync_timer()
     if is_sqlite_tmp_cache_enabled():
         sync_dirty_sqlite_dbs(force=True)
@@ -853,6 +993,7 @@ def close_all_engines() -> None:
         checkpoint_wal(_central_engine)
         _central_engine.dispose()
         _central_engine = None
+    _central_skeleton_initialized = False
     for eng in list(_engine_cache.values()):
         checkpoint_wal(eng)
         eng.dispose()
@@ -861,6 +1002,8 @@ def close_all_engines() -> None:
     _engine_to_source.clear()
     with _audit_init_lock:
         _audit_initialized_paths.clear()
+    with _skeleton_init_lock:
+        _skeleton_initialized_paths.clear()
     try:
         from utils.tricks import close_log_handlers
         close_log_handlers()

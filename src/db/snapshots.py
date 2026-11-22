@@ -93,8 +93,8 @@ def export_curation_snapshots(
     ).all()
     fixed_messages_data = {
         str(o.message_id): {
-            "content": o.override_content or o.content,
-            "author": o.override_author or o.author,
+            "content": o.override_content if o.override_content is not None else o.content,
+            "author": o.override_author if o.override_author is not None else o.author,
         }
         for o in overrides
     }
