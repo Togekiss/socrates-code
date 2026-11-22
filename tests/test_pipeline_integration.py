@@ -1409,6 +1409,44 @@ class TestNativeDiscordExtractorAndSyncModes(unittest.TestCase):
             finally:
                 close_all_engines()
 
+    def test_gcsfuse_copymode_copystat_safe_bootstrap_and_reset(self):
+        """Ensure _ensure_backup_bootstrap and reset_test_backup_dir never invoke chmod/copymode/copystat."""
+        import shutil
+        from unittest.mock import patch
+        from backup_server import _ensure_backup_bootstrap
+        from db.test_backup_service import reset_test_backup_dir
+        from res import constants as c
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_root = Path(tmp_dir)
+            global_cfg = tmp_root / "global_config.json"
+            global_cfg.write_text(json.dumps({"admin": {"storageMode": "full"}}), encoding="utf-8")
+            backup_dir = tmp_root / "Backups" / "Elysium-full"
+
+            clean_dir = tmp_root / "Backups" / "Elysium-sql-tests-clean"
+            clean_dir.mkdir(parents=True, exist_ok=True)
+            (clean_dir / "backup_config.json").write_text("{}", encoding="utf-8")
+
+            def _raise_eperm(*args, **kwargs):
+                raise PermissionError(1, "Operation not permitted")
+
+            with (
+                patch.object(shutil, "copymode", side_effect=_raise_eperm),
+                patch.object(shutil, "copystat", side_effect=_raise_eperm),
+                patch.object(c, "GLOBAL_CONFIG", global_cfg.as_posix()),
+            ):
+                b_id, b_path = _ensure_backup_bootstrap(backup_id="777000999", backup_path=backup_dir.as_posix())
+                self.assertEqual(b_id, "777000999")
+                self.assertEqual(b_path, backup_dir.as_posix())
+                self.assertTrue((backup_dir / "backup_config.json").is_file())
+                self.assertEqual(
+                    json.loads((backup_dir / "backup_config.json").read_text(encoding="utf-8")),
+                    {"admin": {"storageMode": "full"}},
+                )
+
+                self.assertTrue(reset_test_backup_dir(tmp_root))
+                self.assertTrue((tmp_root / "Backups" / "Elysium-sql-tests" / "backup_config.json").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

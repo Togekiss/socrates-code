@@ -200,11 +200,11 @@ def reset_test_backup_dir(data_root: Optional[Union[str, Path]] = None) -> bool:
             src_f = Path(root) / f
             dst_f = dest_root / f
             try:
-                shutil.copy2(src_f, dst_f)
+                shutil.copyfile(src_f, dst_f)
             except OSError:
                 time.sleep(0.05)
                 try:
-                    shutil.copy2(src_f, dst_f)
+                    shutil.copyfile(src_f, dst_f)
                 except OSError:
                     pass
 

@@ -264,7 +264,7 @@ def _ensure_backup_bootstrap(
 
     cfg_path = b_dir / "backup_config.json"
     if not cfg_path.is_file() and Path(c.GLOBAL_CONFIG).is_file():
-        shutil.copy(c.GLOBAL_CONFIG, cfg_path.as_posix())
+        shutil.copyfile(c.GLOBAL_CONFIG, cfg_path.as_posix())
 
     if not b_id:
         rel_path = b_path
