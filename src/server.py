@@ -4375,8 +4375,8 @@ def reset_testing_backup(user = Depends(require_instance_admin)):
     t.global_log("info", "API: Resetting testing backup (Elysium-sql-tests)...")
     _release_db_locks()
     try:
-        from tests.reset_test_backup import reset_test_backup
-        ok = reset_test_backup()
+        from db.test_backup_service import reset_test_backup_dir
+        ok = reset_test_backup_dir(get_data_root())
         clear_runtime_step_overrides(TEST_BACKUP_ID)
         _release_db_locks()
         if not ok:
@@ -4406,7 +4406,7 @@ def migrate_testing_backup(user = Depends(require_instance_admin)):
     t.global_log("info", f"API: Migrating testing backup (ID: {TEST_BACKUP_ID}) to SQLite...")
     _release_db_locks()
     try:
-        from db.migrate import migrate_single_backup
+        from db.test_backup_service import seed_test_backup
         from models.backup_context import BackupContext
 
         index = t.get_backups_index()
@@ -4416,8 +4416,17 @@ def migrate_testing_backup(user = Depends(require_instance_admin)):
             t.global_log("error", f"API: {msg}")
             raise HTTPException(status_code=404, detail=msg)
 
-        with BackupContext.activate(backup_id=TEST_BACKUP_ID):
-            report = migrate_single_backup(backup, dry_run=False, skip_snapshots=False)
+        data_root = get_data_root()
+        backup_path = ensure_safe_backup_path(backup.get("path", ""), data_root).as_posix()
+        ctx = BackupContext.create(backup_id=TEST_BACKUP_ID, backup_path=backup_path)
+        with BackupContext.activate(context=ctx):
+            report = seed_test_backup(
+                backup_id=TEST_BACKUP_ID,
+                backup_path=backup_path,
+                backup=backup,
+                skip_snapshots=False,
+                data_root=data_root,
+            )
 
         clear_runtime_step_overrides(TEST_BACKUP_ID)
         _release_db_locks()
@@ -4551,9 +4560,7 @@ def run_python_tests(user = Depends(require_instance_admin)):
             paths.append(existing_pythonpath)
         env["PYTHONPATH"] = os.pathsep.join(paths)
 
-        if project_root not in sys.path:
-            sys.path.insert(0, project_root)
-        from tests.test_env import stage_tmp_test_data_root
+        from db.test_backup_service import stage_tmp_test_data_root
 
         with tempfile.TemporaryDirectory(prefix="socrates_test_data_") as tmp_data_dir:
             stage_tmp_test_data_root(get_data_root(), tmp_data_dir)

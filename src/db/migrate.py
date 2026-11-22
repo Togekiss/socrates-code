@@ -20,7 +20,7 @@ def migrate_single_backup(
     )
     if not dry_run:
         try:
-            from tests.seed_test_backup import seed_test_backup
+            from db.test_backup_service import seed_test_backup
             return seed_test_backup(
                 backup_id=str(backup["backup_id"]),
                 backup=backup,
@@ -33,11 +33,11 @@ def migrate_single_backup(
 
 
 def migrate_for_tests(backup_id: str) -> Dict[str, Any]:
-    """Deprecated compatibility wrapper delegating to tests.seed_test_backup.seed_test_backup."""
+    """Deprecated compatibility wrapper delegating to db.test_backup_service.seed_test_backup."""
     warnings.warn(
-        "db.migrate.migrate_for_tests is deprecated; use tests.seed_test_backup.seed_test_backup.",
+        "db.migrate.migrate_for_tests is deprecated; use db.test_backup_service.seed_test_backup.",
         DeprecationWarning,
         stacklevel=2,
     )
-    from tests.seed_test_backup import seed_test_backup
+    from db.test_backup_service import seed_test_backup
     return seed_test_backup(backup_id=str(backup_id), skip_snapshots=True)

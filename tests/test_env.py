@@ -1,8 +1,6 @@
 import asyncio
 import atexit
 from contextlib import contextmanager
-import hashlib
-import json
 import os
 import selectors
 import shutil
@@ -10,9 +8,9 @@ import sys
 import tempfile
 import threading
 _UNITTEST_PRELOADED = "unittest" in sys.modules
-import unittest
+_IS_TEST_RUNNER = _UNITTEST_PRELOADED or os.environ.get("SOCRATES_TEST_SUITE", "").strip() == "1"
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SRC_DIR = PROJECT_ROOT / "src"
@@ -20,7 +18,8 @@ for _p in (SRC_DIR.as_posix(), PROJECT_ROOT.as_posix()):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-_TEST_FIXTURE_CACHE_LOCK = threading.Lock()
+from db.test_backup_service import stage_tmp_test_data_root  # noqa: E402, F401
+
 _staged_tmp_data_dir: Optional[str] = None
 
 _INITIAL_IS_PROD = (
@@ -30,7 +29,7 @@ _INITIAL_IS_PROD = (
 )
 
 if (
-    "unittest" in sys.modules
+    _IS_TEST_RUNNER
     and not os.environ.get("JWT_SECRET", "").strip()
     and (bool(os.environ.get("K_SERVICE", "").strip()) or os.environ.get("SOCRATES_ENV", "").strip().lower() == "production")
 ):
@@ -48,70 +47,6 @@ def is_production_test_run() -> bool:
 def get_active_data_root() -> Path:
     raw = os.environ.get("SOCRATES_DATA_DIR", "").strip()
     return Path(raw or PROJECT_ROOT.as_posix())
-
-
-def stage_tmp_test_data_root(source_data_root: Union[str, Path], target_data_root: Union[str, Path]) -> Path:
-    """
-    Stages isolated `/tmp` test fixtures and `backups_index.json` from `source_data_root`
-    into `target_data_root` so test suites never mutate live backups or hit GCS FUSE 429s.
-    """
-    src_root = Path(source_data_root)
-    dst_root = Path(target_data_root)
-    backups_dir = dst_root / "Backups"
-    out_dir = dst_root / "out"
-    backups_dir.mkdir(parents=True, exist_ok=True)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    src_clean = src_root / "Backups" / "Elysium-sql-tests-clean"
-    if src_clean.exists():
-        digest = hashlib.sha256(os.path.realpath(src_clean).encode("utf-8")).hexdigest()[:16]
-        cache_dir = Path(tempfile.gettempdir()) / "socrates_test_fixture_cache" / f"clean_{digest}"
-        with _TEST_FIXTURE_CACHE_LOCK:
-            if not ((cache_dir / "backup_config.json").exists() or (cache_dir / "Info").exists()):
-                shutil.rmtree(cache_dir, ignore_errors=True)
-                cache_dir.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(src_clean, cache_dir)
-
-        dst_clean = backups_dir / "Elysium-sql-tests-clean"
-        dst_test = backups_dir / "Elysium-sql-tests"
-        shutil.copytree(cache_dir, dst_clean, dirs_exist_ok=True)
-        shutil.copytree(cache_dir, dst_test, dirs_exist_ok=True)
-        update_dir = dst_test / "Update"
-        if update_dir.exists():
-            shutil.rmtree(update_dir, ignore_errors=True)
-
-    for live_name in ("Elysium", "el_meu_server"):
-        if (src_root / "Backups" / live_name).exists():
-            (backups_dir / live_name).mkdir(parents=True, exist_ok=True)
-
-    index_entries = [
-        {
-            "backup_id": "1",
-            "backup_name": "Elysium",
-            "server_id": "857848490683269161",
-            "server_name": "(+18) Diabolik: Elysium",
-            "path": "Backups/Elysium",
-        },
-        {
-            "backup_id": "1789899843",
-            "backup_name": "el meu server",
-            "server_id": "442481942794076161",
-            "server_name": "el meu server",
-            "path": "Backups/el_meu_server",
-        },
-        {
-            "backup_id": "1791895360",
-            "backup_name": "Elysium-sql-tests",
-            "server_id": "857848490683269161",
-            "server_name": "(+18) Diabolik: Elysium",
-            "path": "Backups/Elysium-sql-tests",
-        },
-    ]
-    (backups_dir / "backups_index.json").write_text(
-        json.dumps(index_entries, indent=4),
-        encoding="utf-8",
-    )
-    return dst_root
 
 
 def _is_sqlite_fixture_locked(data_root: Path) -> bool:
@@ -196,11 +131,11 @@ def _cleanup_staged_tmp_data_dir() -> None:
 
 _should_stage_isolated_root = (
     os.environ.get("SOCRATES_TEST_DATA_STAGE_DONE") != "1"
+    and _IS_TEST_RUNNER
     and (
-        ("unittest" in sys.modules and is_production_test_run())
+        is_production_test_run()
         or (
             not os.environ.get("SOCRATES_DATA_DIR", "").strip()
-            and (_UNITTEST_PRELOADED or os.environ.get("SOCRATES_TEST_SUITE", "").strip() == "1")
             and (
                 os.environ.get("SOCRATES_ISOLATE_TESTS", "").strip().lower() in ("1", "true", "yes")
                 or _is_sqlite_fixture_locked(get_active_data_root())
@@ -235,16 +170,19 @@ def has_local_live_backup_fixture() -> bool:
 def skip_in_production_or_missing_fixture(
     reason: str = "Skipped when Backups/Elysium-sql-tests-clean fixture is unavailable",
 ):
+    import unittest
     return unittest.skipUnless(has_local_test_backup_fixture(), reason)
 
 
 def skip_in_production_or_missing_live_backups(
     reason: str = "Skipped when Backups/Elysium or Backups/el_meu_server is unavailable",
 ):
+    import unittest
     return unittest.skipUnless(has_local_live_backup_fixture(), reason)
 
 
 def skip_in_production(reason: str = "Skipped in production environment"):
+    import unittest
     return unittest.skipIf(is_production_test_run(), reason)
 
 

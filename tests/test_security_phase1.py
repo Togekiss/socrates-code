@@ -824,6 +824,171 @@ class TestRouteAuthAndBOLA(unittest.TestCase):
                 self.assertFalse(has_local_test_backup_fixture())
                 self.assertFalse(has_local_live_backup_fixture())
 
+    def test_production_admin_test_endpoints_do_not_hijack_data_dir_or_import_unittest(self):
+        with tempfile.TemporaryDirectory() as tmp_root_str:
+            tmp_root = Path(tmp_root_str)
+            clean_dir = tmp_root / "Backups" / "Elysium-sql-tests-clean"
+            (clean_dir / "Info").mkdir(parents=True, exist_ok=True)
+            (clean_dir / "backup_config.json").write_text("{}", encoding="utf-8")
+            (clean_dir / "Info" / "backup_info.json").write_text(
+                json.dumps({
+                    "id": GUILD_ELYSIUM,
+                    "name": "Elysium",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                    "categories": [],
+                }),
+                encoding="utf-8",
+            )
+            (clean_dir / "Info" / "character_list.json").write_text("[]", encoding="utf-8")
+            (tmp_root / "Backups" / "backups_index.json").write_text(
+                json.dumps([
+                    {
+                        "backup_id": BACKUP_ELYSIUM,
+                        "backup_name": "Elysium-sql-tests",
+                        "server_id": GUILD_ELYSIUM,
+                        "server_name": "Elysium",
+                        "path": "Backups/Elysium-sql-tests",
+                    }
+                ]),
+                encoding="utf-8",
+            )
+            stale_dir = tmp_root / "Backups" / "Elysium-sql-tests"
+            stale_dir.mkdir(parents=True, exist_ok=True)
+            (stale_dir / "stale.txt").write_text("old", encoding="utf-8")
+
+            admin_tok = _make_jwt(
+                {
+                    "sub": INSTANCE_ADMIN_DISCORD_ID,
+                    "username": "inst-admin",
+                    "auth_method": "discord",
+                    "guilds": [GUILD_ELYSIUM],
+                }
+            )
+            prod_env = dict(os.environ)
+            for k in (
+                "SOCRATES_TEST_SUITE",
+                "SOCRATES_PRODUCTION_TESTS_ONLY",
+                "SOCRATES_TEST_DATA_STAGE_DONE",
+                "SOCRATES_GLOBAL_AUDIT_DB_PATH",
+                "SOCRATES_SQLITE_TMP_DIR",
+                "K_SERVICE",
+            ):
+                prod_env.pop(k, None)
+            prod_env["SOCRATES_ENV"] = "production"
+            prod_env["JWT_SECRET"] = STRONG_TEST_SECRET
+            prod_env["SOCRATES_INSTANCE_ADMINS"] = INSTANCE_ADMIN_DISCORD_ID
+            prod_env["SOCRATES_DATA_DIR"] = tmp_root.as_posix()
+            prod_env["SOCRATES_SQLITE_TMP_CACHE"] = "1"
+            prod_env["SOCRATES_SQLITE_TMP_DIR"] = (tmp_root / "_tmp_sqlite").as_posix()
+            prod_env["PYTHONPATH"] = os.pathsep.join([SRC_DIR.as_posix(), PROJECT_ROOT.as_posix()])
+
+            clean_script = (
+                "import asyncio, json, os, selectors, sys, threading\n"
+                "import server\n"
+                "from res import constants as c\n"
+                "from db.session import resolve_global_audit_db_path\n"
+                "from fastapi.testclient import TestClient\n"
+                "class _W(selectors.BaseSelector):\n"
+                "    def __init__(self):\n"
+                "        self._c = threading.Condition()\n"
+                "        self._w = False\n"
+                "        self._m = {}\n"
+                "    def register(self, f, e, d=None): return selectors.SelectorKey(f, 0, e, d)\n"
+                "    def unregister(self, f): return None\n"
+                "    def modify(self, f, e, d=None): return None\n"
+                "    def select(self, timeout=None):\n"
+                "        with self._c:\n"
+                "            if not self._w: self._c.wait(timeout=timeout)\n"
+                "            self._w = False\n"
+                "        return []\n"
+                "    def close(self):\n"
+                "        with self._c:\n"
+                "            self._w = True\n"
+                "            self._c.notify_all()\n"
+                "    def get_map(self): return self._m\n"
+                "class _L(asyncio.SelectorEventLoop):\n"
+                "    def __init__(self):\n"
+                "        self._ws = _W()\n"
+                "        super().__init__(selector=self._ws)\n"
+                "    def _make_self_pipe(self): pass\n"
+                "    def _close_self_pipe(self): pass\n"
+                "    def _write_to_self(self):\n"
+                "        with self._ws._c:\n"
+                "            self._ws._w = True\n"
+                "            self._ws._c.notify_all()\n"
+                "client = TestClient(server.app, headers={'X-Requested-With': 'Socrates-UI'}, backend_options={'loop_factory': _L})\n"
+                f"client.cookies.set('__session', {admin_tok!r})\n"
+                "hdrs = {'X-CSRF-Token': 'phase1-csrf'}\n"
+                "r1 = client.post('/api/admin/test-backup/reset', headers=hdrs)\n"
+                "r2 = client.post('/api/admin/test-backup/migrate', headers=hdrs)\n"
+                "orig_run = server.subprocess.run\n"
+                "server.subprocess.run = lambda *a, **kw: type('P', (), {'returncode': 0, 'stdout': 'OK', 'stderr': ''})()\n"
+                "try:\n"
+                "    r3 = client.post('/api/admin/tests/run', headers=hdrs)\n"
+                "finally:\n"
+                "    server.subprocess.run = orig_run\n"
+                "import tests.test_env\n"
+                "out = {\n"
+                "    'r1': r1.status_code, 'r2': r2.status_code, 'r3': r3.status_code,\n"
+                "    'data_dir': os.environ.get('SOCRATES_DATA_DIR'),\n"
+                "    'const_root': c.DATA_ROOT,\n"
+                "    'tmp_cache': os.environ.get('SOCRATES_SQLITE_TMP_CACHE'),\n"
+                "    'stage_done': os.environ.get('SOCRATES_TEST_DATA_STAGE_DONE'),\n"
+                "    'audit_path': resolve_global_audit_db_path(),\n"
+                "    'unittest_loaded': 'unittest' in sys.modules,\n"
+                "}\n"
+                "print(json.dumps(out))\n"
+            )
+            proc = subprocess.run(
+                [sys.executable, "-c", clean_script],
+                cwd=PROJECT_ROOT.as_posix(),
+                env=prod_env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            res = json.loads(proc.stdout.strip().splitlines()[-1])
+            self.assertEqual(res["r1"], 200)
+            self.assertEqual(res["r2"], 200)
+            self.assertEqual(res["r3"], 200)
+            self.assertFalse(res["unittest_loaded"])
+            self.assertEqual(Path(res["data_dir"]).resolve(), tmp_root.resolve())
+            self.assertEqual(Path(res["const_root"]).resolve(), tmp_root.resolve())
+            self.assertEqual(res["tmp_cache"], "1")
+            self.assertIsNone(res["stage_done"])
+            self.assertEqual(
+                Path(res["audit_path"]).resolve(),
+                (tmp_root / "out" / "global_audit.sqlite").resolve(),
+            )
+            self.assertFalse((stale_dir / "stale.txt").exists())
+            self.assertTrue((stale_dir / "backup.sqlite").exists())
+            self.assertTrue((stale_dir / "backup_config.json").exists())
+
+            # Verify python -m unittest in production STILL stages isolated /tmp
+            ut_script = (
+                "import json, os, unittest\n"
+                "from pathlib import Path\n"
+                "import tests.test_env\n"
+                "class T(unittest.TestCase):\n"
+                "    def test_isolated(self):\n"
+                "        self.assertEqual(os.environ.get('SOCRATES_TEST_DATA_STAGE_DONE'), '1')\n"
+                "        self.assertNotEqual(Path(os.environ['SOCRATES_DATA_DIR']).resolve(), Path("
+                f"{tmp_root.as_posix()!r}"
+                ").resolve())\n"
+                "res = unittest.main(exit=False)\n"
+                "assert res.result.wasSuccessful()\n"
+            )
+            ut_proc = subprocess.run(
+                [sys.executable, "-c", ut_script],
+                cwd=PROJECT_ROOT.as_posix(),
+                env=prod_env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(ut_proc.returncode, 0, ut_proc.stderr + "\n" + ut_proc.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
