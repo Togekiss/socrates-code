@@ -37,6 +37,7 @@ from db.skeleton_models import (
     compute_skeleton_flags,
 )
 from db.scene_service import (
+    assign_channel_scene_keys,
     snowflake_int,
     resolve_effective_skeleton,
     load_channel_skeletons,
@@ -1098,12 +1099,13 @@ def _merge_scenes(
             .all()
         )
         key_prefix = s1_key.rsplit("-", 1)[0]
-        for sc in channel_scenes:
-            sc.scene_key = f"tmp-{sc.pk}"
-        session.flush()
-        for idx, sc in enumerate(channel_scenes):
-            sc.scene_key = f"{key_prefix}-{idx + 1}"
-        session.flush()
+        assign_channel_scene_keys(
+            session,
+            str(backup_id),
+            int(s1.channel_pk),
+            key_prefix,
+            channel_scenes=channel_scenes,
+        )
 
     # Clear SceneManager cache
     try:
@@ -1437,12 +1439,13 @@ def _split_scene_at(
             .all()
         )
         key_prefix = orig_scene_key.rsplit("-", 1)[0]
-        for sc in channel_scenes:
-            sc.scene_key = f"tmp-{sc.pk}"
-        session.flush()
-        for idx, sc in enumerate(channel_scenes):
-            sc.scene_key = f"{key_prefix}-{idx + 1}"
-        session.flush()
+        assign_channel_scene_keys(
+            session,
+            str(backup_id),
+            int(scene.channel_pk),
+            key_prefix,
+            channel_scenes=channel_scenes,
+        )
 
     # Re-link other issues that were on Scene 1 at or after cand_sf to Scene 2
     relink_q = session.query(SceneIssueModel).filter(
@@ -1913,12 +1916,13 @@ def _renumber_channel_scenes(session, backup_id: str, channel_pk: int) -> None:
     if not channel_scenes:
         return
     key_prefix = channel_scenes[0].scene_key.rsplit("-", 1)[0]
-    for sc in channel_scenes:
-        sc.scene_key = f"tmp-{sc.pk}"
-    session.flush()
-    for idx, sc in enumerate(channel_scenes):
-        sc.scene_key = f"{key_prefix}-{idx + 1}"
-    session.flush()
+    assign_channel_scene_keys(
+        session,
+        str(backup_id),
+        int(channel_pk),
+        key_prefix,
+        channel_scenes=channel_scenes,
+    )
 
 
 def _sync_scene_after_message_resolution(

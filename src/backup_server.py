@@ -44,6 +44,7 @@ from db.models import (
 )
 from db.scene_service import (
     load_channel_skeletons,
+    reconcile_backup_scene_keys,
     save_channel_indexed_scenes,
     upsert_channel_skeletons,
 )
@@ -734,6 +735,7 @@ async def _run_sync_async(
                         is_resume=is_resume,
                         storage_mode=storage_mode,
                     )
+                    reconcile_backup_scene_keys(session, backup_id)
                     if members_by_id:
                         _upsert_guild_members_to_seen_users(session, backup_id, members_by_id)
 

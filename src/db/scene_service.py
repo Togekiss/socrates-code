@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from sqlalchemy import BigInteger, cast, func, or_
-from sqlalchemy.orm import selectinload, joinedload
+from sqlalchemy.orm import Session, selectinload, joinedload
 
 from db.session import db_session, require_db, init_db, skeleton_db_session, has_skeleton_db
 from db.models import (
@@ -328,6 +328,188 @@ def _channel_key_prefix(chan_model: ChannelModel, chan_by_pk: Dict[int, ChannelM
     return category_pk, key_prefix
 
 
+def reconcile_backup_scene_keys(session: Session, backup_id: str) -> int:
+    """
+    Reconciles non-event `SceneModel.scene_key` values across `backup_id` against current
+    `ChannelModel` positions and deletion state so channel/category reorders or deletions
+    never leave stale prefixes that collide with active channels.
+    """
+    channels = session.query(ChannelModel).filter(ChannelModel.backup_id == str(backup_id)).all()
+    chan_by_pk = {ch.pk: ch for ch in channels}
+
+    non_event_scenes = (
+        session.query(SceneModel)
+        .filter(
+            SceneModel.backup_id == str(backup_id),
+            SceneModel.event_pk.is_(None),
+        )
+        .order_by(
+            SceneModel.channel_pk.asc(),
+            cast(SceneModel.start_message_id, BigInteger).asc(),
+            SceneModel.start_at.asc(),
+            SceneModel.pk.asc(),
+        )
+        .all()
+    )
+    if not non_event_scenes:
+        return 0
+
+    scenes_by_chan: Dict[int, List[SceneModel]] = {}
+    for sc in non_event_scenes:
+        scenes_by_chan.setdefault(int(sc.channel_pk), []).append(sc)
+
+    reserved_keys: Set[str] = {
+        str(r[0])
+        for r in session.query(SceneModel.scene_key).filter(
+            SceneModel.backup_id == str(backup_id),
+            SceneModel.event_pk.isnot(None),
+        ).all()
+        if r[0]
+    }
+
+    claimed_prefixes: Set[str] = set()
+    target_prefix_by_chan: Dict[int, str] = {}
+
+    for ch_pk in sorted(scenes_by_chan):
+        ch = chan_by_pk.get(ch_pk)
+        if ch is not None and not ch.is_deleted:
+            _, raw_prefix = _channel_key_prefix(ch, chan_by_pk)
+            prefix = f"{raw_prefix}-c{ch_pk}" if raw_prefix in claimed_prefixes else raw_prefix
+            claimed_prefixes.add(prefix)
+            target_prefix_by_chan[ch_pk] = prefix
+
+    for ch_pk in sorted(scenes_by_chan):
+        if ch_pk in target_prefix_by_chan:
+            continue
+        ch_scenes = scenes_by_chan[ch_pk]
+        first_key = str(ch_scenes[0].scene_key or "")
+        existing_prefix = first_key.rsplit("-", 1)[0] if "-" in first_key else ""
+        expected_existing = [f"{existing_prefix}-{i}" for i in range(1, len(ch_scenes) + 1)]
+        can_keep_existing = (
+            bool(existing_prefix)
+            and not existing_prefix.startswith("tmp-")
+            and existing_prefix not in claimed_prefixes
+            and [sc.scene_key for sc in ch_scenes] == expected_existing
+            and not any(k in reserved_keys for k in expected_existing)
+        )
+        prefix = existing_prefix if can_keep_existing else f"del-{ch_pk}"
+        if not can_keep_existing and prefix in claimed_prefixes:
+            prefix = f"del-{ch_pk}-s"
+        claimed_prefixes.add(prefix)
+        target_prefix_by_chan[ch_pk] = prefix
+
+    dirty_chans: List[Tuple[int, List[SceneModel], List[str]]] = []
+    dirty_chan_pks: Set[int] = set()
+    desired_keys_all: Set[str] = set()
+
+    for ch_pk in sorted(scenes_by_chan):
+        ch_scenes = scenes_by_chan[ch_pk]
+        prefix = target_prefix_by_chan[ch_pk]
+        desired_keys: List[str] = []
+        for idx, _sc in enumerate(ch_scenes, start=1):
+            candidate = f"{prefix}-{idx}"
+            if candidate in reserved_keys:
+                candidate = f"{prefix}-c{ch_pk}-{idx}"
+            desired_keys.append(candidate)
+        if [sc.scene_key for sc in ch_scenes] != desired_keys:
+            dirty_chans.append((ch_pk, ch_scenes, desired_keys))
+            dirty_chan_pks.add(ch_pk)
+            desired_keys_all.update(desired_keys)
+
+    if not dirty_chans:
+        return 0
+
+    # Ensure no untouched channel still holds any key claimed by dirty_chans
+    for ch_pk, ch_scenes in scenes_by_chan.items():
+        if ch_pk in dirty_chan_pks:
+            continue
+        if any(sc.scene_key in desired_keys_all for sc in ch_scenes):
+            prefix = target_prefix_by_chan[ch_pk]
+            desired = [f"{prefix}-{i}" for i in range(1, len(ch_scenes) + 1)]
+            dirty_chans.append((ch_pk, ch_scenes, desired))
+            dirty_chan_pks.add(ch_pk)
+
+    updated_count = 0
+    for _ch_pk, ch_scenes, _desired in dirty_chans:
+        for sc in ch_scenes:
+            sc.scene_key = f"tmp-topo-{sc.pk}"
+    session.flush()
+
+    for _ch_pk, ch_scenes, desired in dirty_chans:
+        for sc, final_key in zip(ch_scenes, desired):
+            sc.scene_key = final_key
+            updated_count += 1
+    session.flush()
+    return updated_count
+
+
+def assign_channel_scene_keys(
+    session: Session,
+    backup_id: str,
+    channel_pk: int,
+    key_prefix: str,
+    *,
+    channel_scenes: Optional[List[SceneModel]] = None,
+) -> List[SceneModel]:
+    """
+    Deterministically assigns `<key_prefix>-1..N` to `channel_scenes` (or all non-event scenes
+    in `channel_pk`) using two-phase temporary keys and automatic collision reconciliation.
+    """
+    if channel_scenes is None:
+        channel_scenes = (
+            session.query(SceneModel)
+            .filter(
+                SceneModel.backup_id == str(backup_id),
+                SceneModel.channel_pk == int(channel_pk),
+                SceneModel.event_pk.is_(None),
+            )
+            .order_by(
+                cast(SceneModel.start_message_id, BigInteger).asc(),
+                SceneModel.start_at.asc(),
+                SceneModel.pk.asc(),
+            )
+            .all()
+        )
+    if not channel_scenes:
+        return []
+
+    for sc in channel_scenes:
+        sc.scene_key = f"tmp-renum-{sc.pk}"
+    session.flush()
+
+    desired_keys = [f"{key_prefix}-{idx}" for idx in range(1, len(channel_scenes) + 1)]
+    colliding = (
+        session.query(SceneModel.scene_key, SceneModel.event_pk)
+        .filter(
+            SceneModel.backup_id == str(backup_id),
+            SceneModel.channel_pk != int(channel_pk),
+            SceneModel.scene_key.in_(desired_keys),
+        )
+        .all()
+    )
+    if colliding and any(row[1] is None for row in colliding):
+        reconcile_backup_scene_keys(session, backup_id)
+        # Re-read colliding set in case an event or duplicate active channel still holds a key
+        colliding = (
+            session.query(SceneModel.scene_key, SceneModel.event_pk)
+            .filter(
+                SceneModel.backup_id == str(backup_id),
+                SceneModel.channel_pk != int(channel_pk),
+                SceneModel.scene_key.in_(desired_keys),
+            )
+            .all()
+        )
+
+    still_taken = {str(row[0]) for row in colliding}
+    for idx, (sc, target_key) in enumerate(zip(channel_scenes, desired_keys), start=1):
+        if target_key in still_taken:
+            sc.scene_key = f"{key_prefix}-c{channel_pk}-{idx}"
+        else:
+            sc.scene_key = target_key
+    session.flush()
+    return channel_scenes
+
+
 def _insert_channel_scenes_in_session(
     session,
     backup_id: str,
@@ -631,12 +813,13 @@ def save_channel_indexed_scenes(
             .all()
         )
         _, key_prefix = _channel_key_prefix(chan_model, chan_by_pk)
-        for sc in all_chan_scenes:
-            sc.scene_key = f"tmp-renum-{sc.pk}"
-        session.flush()
-        for idx, sc in enumerate(all_chan_scenes, start=1):
-            sc.scene_key = f"{key_prefix}-{idx}"
-        session.flush()
+        all_chan_scenes = assign_channel_scene_keys(
+            session,
+            backup_id,
+            int(channel_pk),
+            key_prefix,
+            channel_scenes=all_chan_scenes,
+        )
 
         # Re-link surviving resolved issues for this channel (including across frozen/affected boundary)
         scene_by_pk = {sc.pk: (idx, sc) for idx, sc in enumerate(all_chan_scenes)}

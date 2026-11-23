@@ -1447,6 +1447,132 @@ class TestNativeDiscordExtractorAndSyncModes(unittest.TestCase):
                 self.assertTrue(reset_test_backup_dir(tmp_root))
                 self.assertTrue((tmp_root / "Backups" / "Elysium-sql-tests" / "backup_config.json").is_file())
 
+    def test_scene_key_collision_reconciled_on_reorder_and_deletion(self):
+        """Ensure channel reorders and deleted channels holding stale scene_keys never raise IntegrityError."""
+        from db.models import ChannelModel, SceneKind, SceneModel, SceneStatus
+        from db.scene_service import reconcile_backup_scene_keys, save_channel_indexed_scenes
+        from db.status_service import init_backup_export
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bid = "777000998"
+            bpath = (Path(tmp_dir) / "reconcile-test").as_posix()
+            try:
+                init_backup_export(backup_id=bid, backup_path=bpath, backup_name="ReconcileTest")
+                with db_session(backup_id=bid, backup_path=bpath) as session:
+                    cat = ChannelModel(
+                        backup_id=bid,
+                        discord_id="1001",
+                        type="GuildCategory",
+                        parent_pk=None,
+                        name="DORM LUNE",
+                        position=11,
+                        path="11# DORM LUNE",
+                        is_deleted=False,
+                    )
+                    session.add(cat)
+                    session.flush()
+
+                    # Deleted channel still holding 11-2-1 and 11-2-2
+                    ch_deleted = ChannelModel(
+                        backup_id=bid,
+                        discord_id="2001",
+                        type="GuildTextChat",
+                        parent_pk=cat.pk,
+                        name="old-room",
+                        position=2,
+                        path="11# DORM LUNE/2# old-room.json",
+                        is_deleted=True,
+                    )
+                    # Active channel now at 11-2 (previously had 12-5-1, 12-5-2)
+                    ch_active = ChannelModel(
+                        backup_id=bid,
+                        discord_id="2002",
+                        type="GuildTextChat",
+                        parent_pk=cat.pk,
+                        name="lune-kitchen",
+                        position=2,
+                        path="11# DORM LUNE/2# lune-kitchen.json",
+                        is_deleted=False,
+                    )
+                    # Active channel moved from 11-3 -> 11-4 (swap/shift test)
+                    ch_moved = ChannelModel(
+                        backup_id=bid,
+                        discord_id="2003",
+                        type="GuildTextChat",
+                        parent_pk=cat.pk,
+                        name="baras-room",
+                        position=4,
+                        path="11# DORM LUNE/4# baras-room.json",
+                        is_deleted=False,
+                    )
+                    session.add_all([ch_deleted, ch_active, ch_moved])
+                    session.flush()
+
+                    now_dt = datetime.now(timezone.utc)
+                    session.add_all([
+                        SceneModel(
+                            backup_id=bid, scene_key="11-2-1", channel_pk=ch_deleted.pk, category_pk=cat.pk,
+                            kind=SceneKind.SCENE.value, status=SceneStatus.CLOSED.value,
+                            start_message_id="100", end_message_id="105", start_index=0, end_index=1,
+                            message_count=2, start_at=now_dt, end_at=now_dt,
+                            start_author_id="1", end_author_id="1",
+                        ),
+                        SceneModel(
+                            backup_id=bid, scene_key="12-5-1", channel_pk=ch_active.pk, category_pk=cat.pk,
+                            kind=SceneKind.SCENE.value, status=SceneStatus.CLOSED.value,
+                            start_message_id="200", end_message_id="205", start_index=0, end_index=1,
+                            message_count=2, start_at=now_dt, end_at=now_dt,
+                            start_author_id="1", end_author_id="1",
+                        ),
+                        SceneModel(
+                            backup_id=bid, scene_key="12-5-2", channel_pk=ch_active.pk, category_pk=cat.pk,
+                            kind=SceneKind.SCENE.value, status=SceneStatus.CLOSED.value,
+                            start_message_id="210", end_message_id="215", start_index=2, end_index=3,
+                            message_count=2, start_at=now_dt, end_at=now_dt,
+                            start_author_id="1", end_author_id="1",
+                        ),
+                        SceneModel(
+                            backup_id=bid, scene_key="11-3-1", channel_pk=ch_moved.pk, category_pk=cat.pk,
+                            kind=SceneKind.SCENE.value, status=SceneStatus.CLOSED.value,
+                            start_message_id="300", end_message_id="305", start_index=0, end_index=1,
+                            message_count=2, start_at=now_dt, end_at=now_dt,
+                            start_author_id="1", end_author_id="1",
+                        ),
+                    ])
+                    session.flush()
+                    ch_del_pk = ch_deleted.pk
+                    ch_act_pk = ch_active.pk
+                    ch_mov_pk = ch_moved.pk
+
+                # 1. Calling save_channel_indexed_scenes directly without prior reconcile must still succeed
+                new_scene = {
+                    "status": "closed",
+                    "start": {"id": "220", "index": 4, "timestamp": "2026-01-01T00:00:00Z", "authorID": "1", "content": "start"},
+                    "end": {"id": "225", "index": 5, "timestamp": "2026-01-01T00:01:00Z", "authorID": "1", "content": "end"},
+                    "message_count": 2,
+                    "character_ids": [],
+                    "issues": [],
+                }
+                save_channel_indexed_scenes(bid, bpath, ch_act_pk, [new_scene], min_affected_message_id=220)
+
+                with db_session(backup_id=bid, backup_path=bpath) as session:
+                    act_keys = [
+                        s.scene_key for s in session.query(SceneModel).filter_by(backup_id=bid, channel_pk=ch_act_pk).order_by(SceneModel.start_message_id).all()
+                    ]
+                    del_keys = [
+                        s.scene_key for s in session.query(SceneModel).filter_by(backup_id=bid, channel_pk=ch_del_pk).all()
+                    ]
+                    mov_keys = [
+                        s.scene_key for s in session.query(SceneModel).filter_by(backup_id=bid, channel_pk=ch_mov_pk).all()
+                    ]
+                    self.assertEqual(act_keys, ["11-2-1", "11-2-2", "11-2-3"])
+                    self.assertEqual(del_keys, [f"del-{ch_del_pk}-1"])
+                    self.assertEqual(mov_keys, ["11-4-1"])
+                    # Idempotent second pass
+                    self.assertEqual(reconcile_backup_scene_keys(session, bid), 0)
+            finally:
+                close_all_engines()
+
 
 if __name__ == "__main__":
     unittest.main()
