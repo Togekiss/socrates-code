@@ -141,14 +141,14 @@ class TestAuditDatabaseIsolationAndFormatting(unittest.TestCase):
             self.assertEqual(global_audit_path, data_root / "out" / "global_audit.sqlite")
 
             try:
-                # Verify backup.sqlite has current schema v6 and NO audit_logs table
+                # Verify backup.sqlite has current schema v7 and NO audit_logs table
                 conn = sqlite3.connect(backup_sqlite_path.as_posix())
                 try:
                     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
                     self.assertNotIn("audit_logs", tables)
                     version_row = conn.execute("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1").fetchone()
                     self.assertEqual(version_row[0], CURRENT_SCHEMA_VERSION)
-                    self.assertEqual(CURRENT_SCHEMA_VERSION, 6)
+                    self.assertEqual(CURRENT_SCHEMA_VERSION, 7)
                 finally:
                     conn.close()
             finally:

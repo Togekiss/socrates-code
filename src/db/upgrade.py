@@ -1,7 +1,7 @@
 """
 Database schema upgrade utility for Socrates SQLite databases.
 Rebuilds the schema cleanly using Base.metadata and preserves curated data.
-Supports upgrading Schema v1-v5 -> Schema v6 + populating skeletons.sqlite.
+Supports upgrading Schema v1-v6 -> Schema v7 + populating skeletons.sqlite.
 """
 
 import argparse
@@ -41,6 +41,8 @@ from utils import tricks as t
 from db.models import (
     Base,
     BackupModel,
+    BackupCategoryConfigModel,
+    BackupRbacEntryModel,
     ChannelModel,
     WriterModel,
     WriterAliasModel,
@@ -65,6 +67,11 @@ from db.skeleton_models import (
     TUPPER_ID_MAX,
     compute_skeleton_flags,
 )
+from db.config_service import (
+    build_category_name_to_id_map,
+    populate_config_models_from_dict,
+    upgrade_category_names_to_ids,
+)
 from db.scene_service import compute_scene_counts_from_skeletons, snowflake_int
 from db.session import (
     get_engine,
@@ -80,7 +87,11 @@ from db.session import (
     sync_sqlite_db,
     invalidate_sqlite_tmp_cache,
 )
-from db.snapshots import export_backup_info_snapshot, export_character_list_snapshot
+from db.snapshots import (
+    export_backup_config_snapshot,
+    export_backup_info_snapshot,
+    export_character_list_snapshot,
+)
 
 
 def parse_datetime(val: Any) -> Optional[datetime]:
@@ -139,6 +150,8 @@ def extract_database_data(engine) -> Dict[str, List[Dict[str, Any]]]:
     data: Dict[str, List[Dict[str, Any]]] = {}
     target_tables = [
         "backups",
+        "backup_category_configs",
+        "backup_rbac_entries",
         "exports",
         "backup_steps",
         "channels",
@@ -299,6 +312,120 @@ def _populate_skeletons_and_collect_users(
     return skeletons_by_channel, seen_users_agg
 
 
+def _populate_backup_configs_and_rbac(
+    session: Session,
+    backup_models_by_id: Dict[str, BackupModel],
+    resolved_storage_modes: Dict[str, str],
+    b_row_paths: Dict[str, Optional[str]],
+    created_channels: List[ChannelModel],
+    data: Dict[str, List[Dict[str, Any]]],
+    backup_id: str,
+    backup_path: Optional[str],
+    old_version: int = 5,
+) -> Tuple[int, int]:
+    """
+    Populates BackupCategoryConfigModel and BackupRbacEntryModel for each BackupModel
+    (from extracted v7 rows with legacy category name promotion, or from backup_config.json),
+    ensures BackupModel.path is populated, and returns (category_configs_count, rbac_entries_count).
+    """
+    channels_by_backup: Dict[str, List[ChannelModel]] = {}
+    for ch in created_channels:
+        channels_by_backup.setdefault(ch.backup_id, []).append(ch)
+
+    cat_rows_by_backup: Dict[str, List[Dict[str, Any]]] = {}
+    for r in data.get("backup_category_configs", []):
+        cat_rows_by_backup.setdefault(str(r.get("backup_id", "")), []).append(r)
+
+    rbac_rows_by_backup: Dict[str, List[Dict[str, Any]]] = {}
+    for r in data.get("backup_rbac_entries", []):
+        rbac_rows_by_backup.setdefault(str(r.get("backup_id", "")), []).append(r)
+
+    cfg_file = Path(backup_path) / "backup_config.json" if backup_path else None
+    total_cat_configs = 0
+    total_rbac_entries = 0
+
+    for b_id, backup_model in backup_models_by_id.items():
+        name_to_id_map = build_category_name_to_id_map(channels_by_backup.get(b_id, []))
+        extracted_cats = cat_rows_by_backup.get(b_id, [])
+        extracted_rbac = rbac_rows_by_backup.get(b_id, [])
+
+        if extracted_cats or extracted_rbac:
+            seen_cats: Set[Tuple[str, str]] = set()
+            for r in extracted_cats:
+                kind_val = str(r.get("kind") or "").strip()
+                ref_val = str(r.get("category_ref") or "").strip()
+                if not kind_val or not ref_val or (kind_val, ref_val) in seen_cats:
+                    continue
+                seen_cats.add((kind_val, ref_val))
+                session.add(
+                    BackupCategoryConfigModel(
+                        backup_id=b_id,
+                        kind=kind_val,
+                        category_ref=ref_val,
+                    )
+                )
+
+            seen_rbac: Set[Tuple[str, str, str]] = set()
+            for r in extracted_rbac:
+                t_type = str(r.get("target_type") or "").strip()
+                a_level = str(r.get("access_level") or "").strip()
+                d_id = str(r.get("discord_id") or "").strip()
+                if not t_type or not a_level or not d_id or (t_type, a_level, d_id) in seen_rbac:
+                    continue
+                seen_rbac.add((t_type, a_level, d_id))
+                session.add(
+                    BackupRbacEntryModel(
+                        backup_id=b_id,
+                        target_type=t_type,
+                        access_level=a_level,
+                        discord_id=d_id,
+                    )
+                )
+
+            session.flush()
+            upgrade_category_names_to_ids(session, b_id, name_to_id_map)
+        elif old_version < 7 and cfg_file is not None and cfg_file.is_file() and (not backup_id or b_id == str(backup_id)):
+            raw_cfg = t.load_from_json(cfg_file.as_posix())
+            if isinstance(raw_cfg, dict):
+                admin_cfg = raw_cfg.get("admin") if isinstance(raw_cfg.get("admin"), dict) else {}
+                explicit_cfg_mode = admin_cfg.get("storageMode") or raw_cfg.get("storageMode")
+                prev_server_id = backup_model.server_id
+                prev_server_name = backup_model.server_name
+                populate_config_models_from_dict(
+                    session,
+                    backup_model,
+                    raw_cfg,
+                    name_to_id_map=name_to_id_map,
+                )
+                if not backup_model.server_id and prev_server_id:
+                    backup_model.server_id = prev_server_id
+                if not backup_model.server_name and prev_server_name:
+                    backup_model.server_name = prev_server_name
+                if explicit_cfg_mode not in (StorageMode.FULL.value, StorageMode.BACKUPLESS.value):
+                    backup_model.storage_mode = resolved_storage_modes[b_id]
+
+        if not backup_model.path:
+            if b_row_paths.get(b_id):
+                backup_model.path = b_row_paths[b_id]
+            elif backup_path:
+                bp = Path(backup_path)
+                backup_model.path = f"Backups/{bp.name}" if bp.parent.name == "Backups" else bp.as_posix()
+
+        session.flush()
+        total_cat_configs += (
+            session.query(BackupCategoryConfigModel)
+            .filter(BackupCategoryConfigModel.backup_id == b_id)
+            .count()
+        )
+        total_rbac_entries += (
+            session.query(BackupRbacEntryModel)
+            .filter(BackupRbacEntryModel.backup_id == b_id)
+            .count()
+        )
+
+    return total_cat_configs, total_rbac_entries
+
+
 def populate_schema(
     target_engine,
     data: Dict[str, List[Dict[str, Any]]],
@@ -309,12 +436,14 @@ def populate_schema(
     build_skeletons: bool = False,
 ) -> Dict[str, int]:
     """
-    Populates a fresh Schema v6 database from extracted data, resolving all foreign keys,
-    backfilling SceneModel/SceneParticipantModel message_count, SeenDiscordUserModel,
-    and optionally building skeletons.sqlite from Data/*.json.
+    Populates a fresh Schema v7 database from extracted data, resolving all foreign keys,
+    migrating/preserving backup config & RBAC rows, backfilling SceneModel/SceneParticipantModel
+    message_count and SeenDiscordUserModel, and optionally building skeletons.sqlite from Data/*.json.
     """
     metrics: Dict[str, int] = {
         "backups": 0,
+        "category_configs_count": 0,
+        "rbac_entries_count": 0,
         "channels": 0,
         "writers": 0,
         "writer_aliases": 0,
@@ -331,7 +460,12 @@ def populate_schema(
     }
 
     has_data_jsons = bool(_find_data_channel_json_files(backup_path))
-    inferred_storage_mode = StorageMode.FULL.value if has_data_jsons else StorageMode.BACKUPLESS.value
+    has_data_dir = bool(backup_path and (Path(backup_path) / "Data").is_dir())
+    inferred_storage_mode = (
+        StorageMode.FULL.value
+        if (has_data_jsons or (old_version < 6 and has_data_dir))
+        else StorageMode.BACKUPLESS.value
+    )
 
     exports_list = data.get("exports", [])
     export_by_pk: Dict[int, Dict[str, Any]] = {e["pk"]: e for e in exports_list if "pk" in e}
@@ -345,9 +479,16 @@ def populate_schema(
 
     with Session(target_engine) as session:
         # 0. Schema Version
-        stamp_schema_version(session, target_schema_version, description="Upgraded schema to v6")
+        stamp_schema_version(
+            session,
+            target_schema_version,
+            description=f"Upgraded from schema v{old_version} to v{target_schema_version}",
+        )
 
         # 1. Backups
+        backup_models_by_id: Dict[str, BackupModel] = {}
+        resolved_storage_modes: Dict[str, str] = {}
+        b_row_paths: Dict[str, Optional[str]] = {}
         for b in data.get("backups", []):
             b_id = str(b["backup_id"])
             base_exp = base_export_by_backup.get(b_id)
@@ -355,23 +496,40 @@ def populate_schema(
             if last_synced is None and base_exp:
                 last_synced = parse_datetime(base_exp.get("updated_at") or base_exp.get("exported_at"))
 
-            storage_mode = b.get("storage_mode") or inferred_storage_mode
+            explicit_mode = b.get("storage_mode")
+            storage_mode = (
+                str(explicit_mode)
+                if explicit_mode in (StorageMode.FULL.value, StorageMode.BACKUPLESS.value)
+                else inferred_storage_mode
+            )
             sync_status = b.get("sync_status") or SyncStatus.IDLE.value
+            b_path_col = str(b["path"]).strip() if b.get("path") else None
 
-            session.add(BackupModel(
+            backup_model = BackupModel(
                 backup_id=b_id,
                 backup_name=str(b["backup_name"]),
                 server_id=str(b.get("server_id")) if b.get("server_id") else None,
                 server_name=str(b.get("server_name")) if b.get("server_name") else None,
+                path=b_path_col,
                 created_at=parse_datetime(b.get("created_at")),
-                storage_mode=str(storage_mode),
+                storage_mode=storage_mode,
+                keep_mode=bool(b.get("keep_mode", False)),
+                log_info=bool(b["log_info"]) if b.get("log_info") is not None else True,
+                log_debug=bool(b["log_debug"]) if b.get("log_debug") is not None else True,
+                log_console=bool(b["log_console"]) if b.get("log_console") is not None else True,
+                log_file=bool(b["log_file"]) if b.get("log_file") is not None else True,
+                debug_files=bool(b["debug_files"]) if b.get("debug_files") is not None else False,
                 sync_status=str(sync_status),
                 sync_started_at=parse_datetime(b.get("sync_started_at")),
                 last_synced_at=last_synced,
                 sync_error=b.get("sync_error"),
                 channels_total=int(b.get("channels_total") or 0),
                 channels_done=int(b.get("channels_done") or 0),
-            ))
+            )
+            session.add(backup_model)
+            backup_models_by_id[b_id] = backup_model
+            resolved_storage_modes[b_id] = storage_mode
+            b_row_paths[b_id] = b_path_col
             metrics["backups"] += 1
         session.flush()
 
@@ -439,6 +597,21 @@ def populate_schema(
                 chan_by_backup_discord[(c_backup_id, d_id)] = chan.pk
                 created_channels.append(chan)
                 metrics["channels"] += 1
+
+        # 2b. Backup Category Configs & RBAC (Schema v7)
+        cat_cfg_count, rbac_count = _populate_backup_configs_and_rbac(
+            session=session,
+            backup_models_by_id=backup_models_by_id,
+            resolved_storage_modes=resolved_storage_modes,
+            b_row_paths=b_row_paths,
+            created_channels=created_channels,
+            data=data,
+            backup_id=backup_id,
+            backup_path=backup_path,
+            old_version=old_version,
+        )
+        metrics["category_configs_count"] = cat_cfg_count
+        metrics["rbac_entries_count"] = rbac_count
 
         # 3. Writers & Aliases
         writer_pk_map: Dict[int, int] = {}
@@ -932,9 +1105,10 @@ def upgrade_single_backup(
     reindex_scenes: bool = False,
 ) -> Dict[str, Any]:
     """
-    Upgrades a single backup database to CURRENT_SCHEMA_VERSION (v6).
-    Preserves all curated writers, characters, groups, overrides, and scene decisions,
-    populates skeletons.sqlite when Data/*.json exist, and rolls back both SQLite files on failure.
+    Upgrades a single backup database to CURRENT_SCHEMA_VERSION (v7).
+    Preserves all curated writers, characters, groups, overrides, scene decisions,
+    and backup config/RBAC rows, populates skeletons.sqlite when Data/*.json exist,
+    and rolls back both SQLite files on failure.
     """
     backup_id = str(backup["backup_id"])
     backup_name = str(backup["backup_name"])
@@ -1044,8 +1218,9 @@ def upgrade_single_backup(
         # 7. Post-upgrade Snapshots
         try:
             with Session(engine) as s:
-                export_character_list_snapshot(s, backup_id)
-                export_backup_info_snapshot(s, backup_id)
+                export_character_list_snapshot(s, backup_id, backup_path=backup_path)
+                export_backup_info_snapshot(s, backup_id, backup_path=backup_path)
+                export_backup_config_snapshot(s, backup_id, backup_path=backup_path)
         except Exception as e:
             t.log("debug", f"Post-upgrade snapshot note: {e}")
 

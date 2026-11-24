@@ -30,7 +30,7 @@ import httpx
 import utils.exceptions as exc
 import utils.tricks as t
 from utils.path_safety import (
-    category_name_matches,
+    category_matches,
     expand_category_names,
     strip_category_prefix,
     validate_snowflake,
@@ -1801,12 +1801,16 @@ class DiscordExtractor:
         keep_set = expand_category_names(categories_to_keep)
         event_cat_names = expand_category_names(event_categories)
 
-        def _is_cat_selected(cat_name: str) -> bool:
+        def _is_cat_selected(cat_id: str, cat_name: str) -> bool:
             if keep_mode:
-                return category_name_matches(cat_name, keep_set)
-            return not category_name_matches(cat_name, ignore_set)
+                return category_matches(cat_id, cat_name, keep_set)
+            return not category_matches(cat_id, cat_name, ignore_set)
 
-        selected_cats = [c_obj for c_obj in raw_categories if _is_cat_selected(str(c_obj.get("name") or ""))]
+        selected_cats = [
+            c_obj
+            for c_obj in raw_categories
+            if _is_cat_selected(str(c_obj.get("id") or ""), str(c_obj.get("name") or ""))
+        ]
         selected_cat_ids = {str(c_obj["id"]) for c_obj in selected_cats}
 
         # Eligible parent channels for thread discovery (selected categories, non-voice, non-empty)
@@ -1880,7 +1884,7 @@ class DiscordExtractor:
 
         matched_event_cats = [
             c_obj for c_obj in selected_cats
-            if category_name_matches(str(c_obj.get("name") or ""), event_cat_names)
+            if category_matches(str(c_obj.get("id") or ""), str(c_obj.get("name") or ""), event_cat_names)
             or str(c_obj.get("id") or "") == faux_cat_id
             or str(c_obj.get("name") or "") == faux_cat_name
         ]

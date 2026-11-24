@@ -38,6 +38,16 @@ def category_name_matches(cat_name: Any, targets: Set[str]) -> bool:
     stripped = strip_category_prefix(raw_s)
     return bool(stripped and stripped in targets)
 
+
+def category_matches(cat_id: Any, cat_name: Any, targets: Set[str]) -> bool:
+    """Returns True if cat_id matches an entry in targets, or cat_name matches via category_name_matches."""
+    if not targets:
+        return False
+    cid = str(cat_id or "").strip()
+    if cid and (cid in targets or any(str(x or "").strip() == cid for x in targets)):
+        return True
+    return category_name_matches(cat_name, targets)
+
 SNOWFLAKE_RE = re.compile(r"^\d{15,22}$")
 CHANNEL_ID_RE = re.compile(r"^\d{1,20}$")
 BACKUP_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")

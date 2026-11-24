@@ -56,6 +56,7 @@ from db.session import (
     sync_dirty_sqlite_dbs,
 )
 from db.snapshots import export_backup_info_snapshot, export_character_list_snapshot
+from db.config_service import build_category_name_to_id_map, populate_config_models_from_dict
 from db.upgrade import _populate_skeletons_and_collect_users, parse_datetime
 from deprecated.migrate import (
     cluster_writers,
@@ -216,6 +217,7 @@ def reset_test_backup_dir(data_root: Optional[Union[str, Path]] = None) -> bool:
         except OSError:
             pass
 
+    t.invalidate_backups_index_cache()
     t.global_log("info", "Successfully restored Backups/Elysium-sql-tests from pristine copy.")
     return True
 
@@ -358,18 +360,30 @@ def seed_test_backup(
     data_root: Optional[Union[str, Path]] = None,
 ) -> Dict[str, Any]:
     """
-    Directly seeds a Schema v6 backup.sqlite + skeletons.sqlite + seen_discord_users + scenes
-    for the target backup directory from Info/*.json and Data/*.json fixtures.
+    Directly seeds a Schema v7 backup.sqlite + skeletons.sqlite + seen_discord_users + scenes
+    for the target backup directory from Info/*.json, Data/*.json, and backup_config.json fixtures.
     """
+    resolved_root = _resolve_data_root(data_root)
     if backup is None:
         backup = next((b for b in t.get_backups_index() if str(b["backup_id"]) == str(backup_id)), None)
+        if (
+            not backup
+            and str(backup_id) == "1791895360"
+            and (resolved_root / "Backups" / "Elysium-sql-tests").exists()
+        ):
+            backup = {
+                "backup_id": "1791895360",
+                "backup_name": "Elysium-sql-tests",
+                "server_id": "857848490683269161",
+                "server_name": "(+18) Diabolik: Elysium",
+                "path": "Backups/Elysium-sql-tests",
+            }
         if not backup and not backup_path:
             raise exc.BackupError(f"Backup ID '{backup_id}' not found in index")
 
     b_id = str(backup_id)
     b_name = str((backup or {}).get("backup_name") or f"Backup {b_id}")
     if backup_path is None:
-        resolved_root = _resolve_data_root(data_root)
         backup_path = (resolved_root / backup["path"]).as_posix()
     b_path = Path(backup_path)
 
@@ -389,6 +403,11 @@ def seed_test_backup(
 
     bad_end_file = resolve_info_file(b_path, "bad_end_messages.json")
     bad_end_messages = t.load_from_json(bad_end_file.as_posix()) if bad_end_file else {}
+
+    cfg_file = (b_path / "backup_config.json") if (b_path / "backup_config.json").is_file() else resolve_info_file(b_path, "backup_config.json")
+    raw_cfg = t.load_from_json(cfg_file.as_posix()) if cfg_file else {}
+    if not isinstance(raw_cfg, dict):
+        raw_cfg = {}
 
     resolved_mode = storage_mode or (
         StorageMode.FULL.value if (b_path / "Data").is_dir() else StorageMode.BACKUPLESS.value
@@ -423,7 +442,7 @@ def seed_test_backup(
         session.add(SchemaVersionModel(
             version=CURRENT_SCHEMA_VERSION,
             applied_at=datetime.now(timezone.utc),
-            description="Seeded Schema v6 test backup",
+            description=f"Seeded Schema v{CURRENT_SCHEMA_VERSION} test backup",
         ))
 
         created_at = parse_datetime(backup_info.get("updated_at") or backup_info.get("exported_at")) or datetime.now(timezone.utc)
@@ -435,6 +454,7 @@ def seed_test_backup(
             backup_name=b_name,
             server_id=server_id,
             server_name=server_name,
+            path=str((backup or {}).get("path") or "") or None,
             created_at=created_at,
             last_synced_at=created_at,
             storage_mode=resolved_mode,
@@ -444,6 +464,17 @@ def seed_test_backup(
         session.flush()
 
         channel_map = migrate_channels(session, b_id, backup_info.get("categories", []))
+        name_to_id_map = build_category_name_to_id_map(channel_map.values())
+        populate_config_models_from_dict(
+            session,
+            backup_model,
+            raw_cfg,
+            name_to_id_map=name_to_id_map,
+        )
+        if storage_mode is not None:
+            backup_model.storage_mode = resolved_mode
+        if backup is not None and backup.get("backup_name"):
+            backup_model.backup_name = b_name
         report_metrics["categories_count"] = sum(1 for ch in channel_map.values() if ch.type == "GuildCategory")
         report_metrics["channels_count"] = sum(
             1 for ch in channel_map.values() if ch.type not in ("GuildCategory", "GuildPublicThread")
@@ -548,6 +579,8 @@ def seed_test_backup(
             ))
             report_metrics["seen_discord_users_count"] += 1
 
+    t.invalidate_backups_index_cache()
+
     if include_scenes and (b_path / "Data").is_dir():
         from models.backup_context import BackupContext
         from index_scenes import index_scenes
@@ -577,4 +610,5 @@ def seed_test_backup(
     if is_sqlite_tmp_cache_enabled():
         sync_dirty_sqlite_dbs(force=True)
 
+    t.invalidate_backups_index_cache()
     return report_metrics

@@ -65,6 +65,7 @@ from server import (
     NestCharacterRequest,
     get_backup_config,
     update_backup_config,
+    create_new_backup,
     run_backup,
     cancel_backup_action,
     run_script_in_background,
@@ -887,28 +888,116 @@ class TestBackupConfigEndpoints(unittest.TestCase):
         reset_test_backup()
 
     def test_update_backup_config_and_run(self):
-        from unittest.mock import MagicMock
-        
-        orig_config = get_backup_config("1791895360")
-        modified_config = dict(orig_config)
-        modified_config["timezone"] = "Europe/Paris"
+        import copy
+        import tempfile
+        from unittest.mock import MagicMock, patch
+        from db.models import BackupCategoryConfigModel, CategoryConfigKind
 
+        orig_config = get_backup_config("1791895360")
+        self.assertNotIn("rbac", orig_config)
+        modified_config = copy.deepcopy(orig_config)
+        modified_config["admin"]["keepMode"] = True
+        modified_config["admin"]["categoriesToKeep"] = ["1019770957172326470"]
+        modified_config["admin"]["chatroomCategories"] = ["1106268351220678767"]
+        modified_config["admin"]["eventCategories"] = ["1106268351220678999"]
+        modified_config["admin"]["verbosity"]["debugFiles"] = False
+
+        backup_path = t.get_backup_path("1791895360")
         try:
-            # 1. Test updating backup config succeeds without TypeError
+            # 1. Test updating backup config succeeds and persists to SQLite
             res = update_backup_config("1791895360", modified_config)
             self.assertEqual(res["status"], "success")
 
-            # 2. Test reading back modified config
+            # 2. Test reading back modified config from SQLite
             saved = get_backup_config("1791895360")
-            self.assertEqual(saved.get("timezone"), "Europe/Paris")
+            self.assertNotIn("rbac", saved)
+            self.assertTrue(saved["admin"]["keepMode"])
+            self.assertEqual(saved["admin"]["categoriesToKeep"], ["1019770957172326470"])
+            self.assertEqual(saved["admin"]["chatroomCategories"], ["1106268351220678767"])
+            self.assertEqual(saved["admin"]["eventCategories"], ["1106268351220678999"])
+            self.assertFalse(saved["admin"]["verbosity"]["debugFiles"])
 
-            # 3. Test run_backup without config passed (uses existing saved config)
+            with db_session(backup_id="1791895360", backup_path=backup_path) as session:
+                b_row = session.query(BackupModel).filter_by(backup_id="1791895360").one()
+                self.assertTrue(b_row.keep_mode)
+                self.assertFalse(b_row.debug_files)
+                cat_rows = (
+                    session.query(BackupCategoryConfigModel)
+                    .filter_by(backup_id="1791895360")
+                    .all()
+                )
+                by_kind = {(r.kind, r.category_ref) for r in cat_rows}
+                self.assertIn((CategoryConfigKind.KEEP.value, "1019770957172326470"), by_kind)
+                self.assertIn((CategoryConfigKind.CHATROOM.value, "1106268351220678767"), by_kind)
+                self.assertIn((CategoryConfigKind.EVENT.value, "1106268351220678999"), by_kind)
+
+            # 3. Verify SQLite config read/write works even when backup_config.json is absent
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                tmp_backup_dir = Path(tmp_dir) / "Backups" / "NoJsonConfig"
+                tmp_backup_dir.mkdir(parents=True, exist_ok=True)
+                init_db(backup_id="777000301", backup_path=tmp_backup_dir.as_posix())
+                with db_session(backup_id="777000301", backup_path=tmp_backup_dir.as_posix()) as session:
+                    session.add(
+                        BackupModel(
+                            backup_id="777000301",
+                            backup_name="NoJsonBackup",
+                            server_id="857848490683269161",
+                            server_name="NoJson Guild",
+                            path="Backups/NoJsonConfig",
+                        )
+                    )
+                self.assertFalse((tmp_backup_dir / "backup_config.json").exists())
+                with patch(
+                    "server.resolve_authorized_backup",
+                    return_value=(tmp_backup_dir.as_posix(), {"sub": "1"}, "server_admin", 4, {"server_id": "857848490683269161"}),
+                ), patch(
+                    "server.get_authorized_backup_path",
+                    return_value=tmp_backup_dir.as_posix(),
+                ):
+                    upd_res = update_backup_config(
+                        "777000301",
+                        {
+                            "admin": {
+                                "backupName": "UpdatedNoJson",
+                                "keepMode": True,
+                                "categoriesToKeep": ["999888777666555444"],
+                            }
+                        },
+                    )
+                    self.assertEqual(upd_res["status"], "success")
+                    self.assertFalse((tmp_backup_dir / "backup_config.json").exists())
+                    loaded_no_json = get_backup_config("777000301")
+                    self.assertEqual(loaded_no_json["admin"]["backupName"], "UpdatedNoJson")
+                    self.assertTrue(loaded_no_json["admin"]["keepMode"])
+                    self.assertEqual(loaded_no_json["admin"]["categoriesToKeep"], ["999888777666555444"])
+
+                    # Verify update_backup_config preserves existing RBAC even if payload contains rbac
+                    from db.config_service import load_rbac_config_dict, save_rbac_config_dict
+                    save_rbac_config_dict(
+                        backup_id="777000301",
+                        backup_path=tmp_backup_dir.as_posix(),
+                        rbac_data={"adminRoleIds": ["123456789012345678"]},
+                    )
+                    update_backup_config(
+                        "777000301",
+                        {
+                            "admin": {"backupName": "UpdatedWithRbacKey"},
+                            "rbac": {"adminRoleIds": []},
+                        },
+                    )
+                    self.assertEqual(
+                        load_rbac_config_dict(backup_id="777000301", backup_path=tmp_backup_dir.as_posix())["adminRoleIds"],
+                        ["123456789012345678"],
+                    )
+                close_all_engines()
+
+            # 4. Test run_backup without config passed (uses existing saved config)
             bg = MagicMock()
             res_run = run_backup("1791895360", bg, config=None)
             self.assertEqual(res_run["status"], "started")
             bg.add_task.assert_called_once()
 
-            # 4. Test run_backup with config dict passed (saves config without error and starts)
+            # 5. Test run_backup with config dict passed (saves config without error and starts)
             bg2 = MagicMock()
             res_run2 = run_backup("1791895360", bg2, config=modified_config)
             self.assertEqual(res_run2["status"], "started")
@@ -916,6 +1005,109 @@ class TestBackupConfigEndpoints(unittest.TestCase):
         finally:
             # Clean up
             update_backup_config("1791895360", orig_config)
+
+    def test_create_new_backup_initializes_sql_and_does_not_touch_global_config(self):
+        import asyncio
+        import tempfile
+        from fastapi import BackgroundTasks
+        from unittest.mock import patch
+        from db.models import BackupCategoryConfigModel, BackupRbacEntryModel, CategoryConfigKind, SyncStatus
+        from tests.test_env import use_socket_free_asyncio
+
+        global_cfg_path = PROJECT_ROOT / "res" / "config.json"
+        global_cfg_before = global_cfg_path.read_text(encoding="utf-8") if global_cfg_path.exists() else None
+        global_mtime_before = global_cfg_path.stat().st_mtime_ns if global_cfg_path.exists() else None
+
+        payload = {
+            "admin": {
+                "serverId": "857848490683269161",
+                "serverName": "Create Test Guild",
+                "backupName": "My New SQL Backup!",
+                "storageMode": "full",
+                "keepMode": True,
+                "categoriesToKeep": ["1019770957172326470"],
+                "chatroomCategories": ["1106268351220678767"],
+                "eventCategories": ["1106268351220678999"],
+                "verbosity": {
+                    "info": True,
+                    "debug": False,
+                    "console": True,
+                    "log": True,
+                    "debugFiles": False,
+                },
+            },
+            "rbac": {
+                "adminRoleIds": ["100000000000000001"],
+                "curatorRoleIds": ["100000000000000002"],
+                "participantRoleIds": [],
+                "restrictedUserIds": [],
+                "blockedUserIds": [],
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            try:
+                t.invalidate_backups_index_cache()
+                bg = BackgroundTasks()
+                with patch.dict(os.environ, {"SOCRATES_DATA_DIR": tmp_dir}, clear=False):
+                    with patch("server.run_script_in_background") as mock_bg_run:
+                        res = create_new_backup(payload, bg)
+                        with use_socket_free_asyncio():
+                            asyncio.run(bg())
+
+                self.assertEqual(res["status"], "started")
+                created_id = res["backup_id"]
+                rel_path = res["path"]
+                self.assertTrue(created_id)
+                self.assertTrue(rel_path.startswith("Backups/"))
+                mock_bg_run.assert_called_once_with("backup_server.py", created_id)
+
+                # Verify res/config.json was NOT touched
+                if global_cfg_before is not None:
+                    self.assertEqual(global_cfg_path.read_text(encoding="utf-8"), global_cfg_before)
+                    self.assertEqual(global_cfg_path.stat().st_mtime_ns, global_mtime_before)
+
+                # Verify backup.sqlite exists and has BackupModel, BackupCategoryConfigModel, and BackupRbacEntryModel
+                new_backup_dir = Path(tmp_dir) / rel_path
+                self.assertTrue((new_backup_dir / "backup.sqlite").is_file())
+                with db_session(backup_id=created_id, backup_path=new_backup_dir.as_posix()) as session:
+                    b_row = session.query(BackupModel).filter_by(backup_id=created_id).one()
+                    self.assertEqual(b_row.backup_name, "My New SQL Backup!")
+                    self.assertEqual(b_row.server_id, "857848490683269161")
+                    self.assertEqual(b_row.storage_mode, "full")
+                    self.assertTrue(b_row.keep_mode)
+                    self.assertFalse(b_row.log_debug)
+                    self.assertEqual(b_row.sync_status, SyncStatus.SYNCING.value)
+
+                    cats = session.query(BackupCategoryConfigModel).filter_by(backup_id=created_id).all()
+                    cat_pairs = {(c.kind, c.category_ref) for c in cats}
+                    self.assertEqual(
+                        cat_pairs,
+                        {
+                            (CategoryConfigKind.KEEP.value, "1019770957172326470"),
+                            (CategoryConfigKind.CHATROOM.value, "1106268351220678767"),
+                            (CategoryConfigKind.EVENT.value, "1106268351220678999"),
+                        },
+                    )
+
+                    rbac_rows = session.query(BackupRbacEntryModel).filter_by(backup_id=created_id).all()
+                    rbac_tuples = {(r.target_type, r.access_level, r.discord_id) for r in rbac_rows}
+                    self.assertEqual(
+                        rbac_tuples,
+                        {
+                            ("role", "admin", "100000000000000001"),
+                            ("role", "curator", "100000000000000002"),
+                        },
+                    )
+
+                # Verify t.get_backups_index() immediately discovers the newly created backup
+                with patch.dict(os.environ, {"SOCRATES_DATA_DIR": tmp_dir}, clear=False):
+                    t.invalidate_backups_index_cache()
+                    idx = t.get_backups_index()
+                self.assertTrue(any(str(item.get("backup_id")) == created_id for item in idx))
+            finally:
+                close_all_engines()
+                t.invalidate_backups_index_cache()
 
     def test_get_backup_logs(self):
         logs_res = get_backup_logs("1791895360", lines=5)
@@ -1029,7 +1221,8 @@ class TestOutdatedSchemaEndpoint(unittest.TestCase):
         self.assertIsInstance(info, dict)
         self.assertTrue(info.get("is_schema_outdated"))
         self.assertEqual(info.get("schema_version"), 3)
-        self.assertEqual(info.get("current_schema_version"), 6)
+        from db.models import CURRENT_SCHEMA_VERSION
+        self.assertEqual(info.get("current_schema_version"), CURRENT_SCHEMA_VERSION)
         self.assertGreater(info.get("number_of_scenes", 0), 0)
 
     def test_outdated_schema_curation_summary_does_not_fail(self):

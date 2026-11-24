@@ -221,3 +221,12 @@ class BackupConfigSchema(_BaseConfigSchema):
 
 class GlobalConfigSchema(_BaseConfigSchema):
     model_config = ConfigDict(extra="forbid")
+
+
+def validate_backup_config_payload(payload: Any) -> Dict[str, Any]:
+    """Validates and coerces a backup configuration payload using BackupConfigSchema."""
+    if isinstance(payload, BackupConfigSchema):
+        return payload.model_dump(exclude_unset=True)
+    if isinstance(payload, dict):
+        return BackupConfigSchema.model_validate(payload).model_dump(exclude_unset=True)
+    raise ValueError("Invalid backup configuration payload")

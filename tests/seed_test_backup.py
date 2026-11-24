@@ -393,4 +393,5 @@ def seed_v5_test_backup(
     finally:
         conn.close()
 
+    t.invalidate_backups_index_cache()
     return {"backup_id": b_id, "schema_version": 5, "sqlite_path": sqlite_file.as_posix()}

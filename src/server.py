@@ -62,10 +62,11 @@ from utils.path_safety import (
     validate_backup_id,
     validate_snowflake,
 )
-from models.config_schemas import BackupConfigSchema, GlobalConfigSchema
-from db import audit_service, character_service, curation_service, status_service
+from models.config_schemas import BackupConfigSchema, GlobalConfigSchema, validate_backup_config_payload
+from db import audit_service, character_service, config_service, curation_service, status_service
 from db.serializers import clear_runtime_step_overrides
-from db.models import Step, Status, IssueResolution
+from db.models import BackupModel, Step, Status, IssueResolution, SyncStatus
+from db.session import db_session
 from sqlalchemy.exc import SQLAlchemyError
 
 
@@ -1547,7 +1548,29 @@ def _read_global_config_file() -> Dict[str, Any]:
 def get_global_config(user = Depends(require_instance_admin)):
     _ensure_instance_admin(user)
     try:
-        return _read_global_config_file()
+        cfg = config_service.get_default_global_config()
+        config_path = (Path(get_project_root()) / 'res' / 'config.json').as_posix()
+        if os.path.exists(config_path):
+            try:
+                raw = _read_global_config_file()
+                if isinstance(raw, dict):
+                    raw_admin = raw.get("admin")
+                    if isinstance(raw_admin, dict):
+                        raw_verb = raw_admin.get("verbosity")
+                        if isinstance(raw_verb, dict):
+                            for k in cfg["admin"]["verbosity"]:
+                                if k in raw_verb:
+                                    cfg["admin"]["verbosity"][k] = bool(raw_verb[k])
+                        for k, v in raw_admin.items():
+                            if k != "verbosity" and k in cfg["admin"]:
+                                cfg["admin"][k] = v
+                    for k, v in raw.items():
+                        if k not in ("admin", "rbac"):
+                            cfg[k] = v
+            except Exception as read_err:
+                t.global_log("warning", f"get_global_config: failed to read global defaults file: {read_err}")
+        cfg.pop("rbac", None)
+        return cfg
     except Exception as e:
         raise _internal_error("get_global_config", e)
 
@@ -1744,15 +1767,15 @@ def get_backup_discord_roles(backup_id: str, user = Depends(get_current_user)):
 @app.get("/api/backups/{backup_id}/rbac")
 def get_backup_rbac(backup_id: str, user = Depends(get_current_user)):
     base_path = get_authorized_backup_path(backup_id, user, min_role="server_admin")
-    return rbac.load_backup_rbac_config(base_path)
+    return rbac.load_backup_rbac_config(base_path, backup_id=backup_id)
 
 
 @app.put("/api/backups/{backup_id}/rbac")
 def update_backup_rbac(backup_id: str, req: rbac.RbacConfigSchema, user = Depends(get_current_user)):
     base_path, actor, role_name, _, entry = resolve_authorized_backup(backup_id, user, min_role="server_admin")
     guild_id = str(entry.get("server_id") or "").strip() or None
-    before_rbac = rbac.load_backup_rbac_config(base_path)
-    saved = rbac.save_backup_rbac_config(base_path, req.model_dump(), guild_id=guild_id)
+    before_rbac = rbac.load_backup_rbac_config(base_path, backup_id=backup_id)
+    saved = rbac.save_backup_rbac_config(base_path, req.model_dump(), guild_id=guild_id, backup_id=backup_id)
     _audit(
         action="rbac.update",
         target_type="rbac",
@@ -1803,30 +1826,30 @@ def get_backup_audit_logs(
 @app.get("/api/backups/{backup_id}/config")
 def get_backup_config(backup_id: str, user = Depends(get_current_user)):
     base_path = get_authorized_backup_path(backup_id, user, min_role="server_admin")
-    config_path = safe_join_within(base_path, 'backup_config.json').as_posix()
-    if not Path(config_path).exists():
-        # Fallback to global config if local doesn't exist yet
-        try:
-            return _read_global_config_file()
-        except Exception as e:
-            raise _internal_error(f"get_backup_config({backup_id})", e, backup_id=backup_id)
-    with open(config_path, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    try:
+        cfg = config_service.load_backup_config_dict(backup_id=backup_id, backup_path=base_path)
+        if isinstance(cfg, dict):
+            cfg.pop("rbac", None)
+        return cfg
+    except Exception as e:
+        raise _internal_error(f"get_backup_config({backup_id})", e, backup_id=backup_id)
 
 
-def _save_backup_config_preserving_rbac(base_path: str, config: Dict[str, Any]) -> None:
-    config_path = safe_join_within(base_path, 'backup_config.json').as_posix()
-    Path(config_path).parent.mkdir(parents=True, exist_ok=True)
+def _save_backup_config_preserving_rbac(
+    base_path: str,
+    config: Dict[str, Any],
+    backup_id: Optional[str] = None,
+) -> Dict[str, Any]:
     cfg_to_save = dict(config)
-    if "rbac" not in cfg_to_save and Path(config_path).exists():
-        try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                existing_cfg = json.load(f)
-            if isinstance(existing_cfg, dict) and "rbac" in existing_cfg:
-                cfg_to_save["rbac"] = existing_cfg["rbac"]
-        except Exception:
-            pass
-    t.save_json_atomic(cfg_to_save, config_path)
+    cfg_to_save.pop("rbac", None)
+    saved = config_service.save_backup_config_dict(
+        backup_id=backup_id,
+        backup_path=base_path,
+        config_data=cfg_to_save,
+        create_db_if_missing=True,
+    )
+    t.invalidate_backups_index_cache()
+    return saved
 
 
 def _extract_storage_mode(payload: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -1846,18 +1869,23 @@ def _extract_storage_mode(payload: Optional[Dict[str, Any]]) -> Optional[str]:
 @app.put("/api/backups/{backup_id}/config")
 def update_backup_config(backup_id: str, config: BackupConfigSchema, user = Depends(get_current_user)):
     base_path, actor, role_name, _, _ = resolve_authorized_backup(backup_id, user, min_role="server_admin")
-    payload = _coerce_config_payload(config, BackupConfigSchema)
-    config_path = safe_join_within(base_path, 'backup_config.json').as_posix()
-    before_cfg = None
-    if Path(config_path).exists():
-        try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                before_cfg = json.load(f)
-        except Exception:
-            before_cfg = None
     try:
-        _save_backup_config_preserving_rbac(base_path, payload)
-        new_mode = _extract_storage_mode(payload)
+        safe_payload = validate_backup_config_payload(config)
+        safe_payload.pop("rbac", None)
+    except Exception:
+        raise HTTPException(status_code=422, detail="Invalid configuration payload")
+
+    before_cfg = None
+    try:
+        before_cfg = config_service.load_backup_config_dict(backup_id=backup_id, backup_path=base_path)
+        if isinstance(before_cfg, dict):
+            before_cfg.pop("rbac", None)
+    except Exception:
+        before_cfg = None
+
+    try:
+        _save_backup_config_preserving_rbac(base_path, safe_payload, backup_id=backup_id)
+        new_mode = _extract_storage_mode(safe_payload)
         if new_mode:
             status_service.update_backup_storage_mode(backup_id, base_path, new_mode)
         _audit(
@@ -1869,7 +1897,7 @@ def update_backup_config(backup_id: str, config: BackupConfigSchema, user = Depe
             backup_id=str(backup_id),
             backup_dir=base_path,
             before=before_cfg,
-            after=payload,
+            after=safe_payload,
         )
         return {"status": "success"}
     except Exception as e:
@@ -2097,7 +2125,7 @@ def sync_backup(
     payload = _coerce_config_payload(req_obj.config, BackupConfigSchema) if req_obj.config is not None else None
     if payload:
         try:
-            _save_backup_config_preserving_rbac(base_path, payload)
+            _save_backup_config_preserving_rbac(base_path, payload, backup_id=backup_id)
             new_mode = _extract_storage_mode(payload)
             if new_mode:
                 status_service.update_backup_storage_mode(backup_id, base_path, new_mode)
@@ -2165,7 +2193,7 @@ def run_backup(
     payload = _coerce_config_payload(config, BackupConfigSchema) if config is not None else None
     if payload:
         try:
-            _save_backup_config_preserving_rbac(base_path, payload)
+            _save_backup_config_preserving_rbac(base_path, payload, backup_id=backup_id)
             new_mode = _extract_storage_mode(payload)
             if new_mode:
                 status_service.update_backup_storage_mode(backup_id, base_path, new_mode)
@@ -2235,61 +2263,132 @@ def reindex_backup(
 
 
 @app.post("/api/backups")
-def create_new_backup(config: GlobalConfigSchema, background_tasks: BackgroundTasks, user = Depends(require_instance_admin)):
+def create_new_backup(
+    config: BackupConfigSchema,
+    background_tasks: BackgroundTasks = None,
+    user = Depends(require_instance_admin),
+):
     actor = _ensure_instance_admin(user)
-    payload = _coerce_config_payload(config, GlobalConfigSchema)
-    admin_section = payload.get("admin")
-    if isinstance(admin_section, dict):
-        raw_path = admin_section.get("path")
-        if raw_path:
-            try:
-                ensure_safe_backup_path(raw_path, get_data_root())
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid backup path")
-        else:
-            slug = sanitize_backup_slug(
-                admin_section.get("backupName") or admin_section.get("serverName") or payload.get("server_name")
-            )
-            admin_section["path"] = f"Backups/{slug}"
-            try:
-                ensure_safe_backup_path(admin_section["path"], get_data_root())
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid backup path")
-
-    global_config_path = (Path(get_project_root()) / 'res' / 'config.json').as_posix()
-    before_cfg = None
     try:
-        before_cfg = _read_global_config_file()
+        safe_payload = validate_backup_config_payload(config)
     except Exception:
-        before_cfg = None
+        raise HTTPException(status_code=422, detail="Invalid configuration payload")
+
+    admin_cfg = safe_payload.get("admin")
+    if not isinstance(admin_cfg, dict):
+        admin_cfg = {}
+        safe_payload["admin"] = admin_cfg
+
+    data_root = get_data_root()
+    raw_path = admin_cfg.get("path")
+    if raw_path:
+        try:
+            ensure_safe_backup_path(raw_path, data_root)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid backup path")
+        base_slug = sanitize_backup_slug(Path(str(raw_path)).name, default=f"backup_{int(time.time())}")
+    else:
+        raw_name = (
+            admin_cfg.get("backupName")
+            or admin_cfg.get("serverName")
+            or safe_payload.get("backup_name")
+            or safe_payload.get("server_name")
+            or f"backup_{int(time.time())}"
+        )
+        base_slug = sanitize_backup_slug(raw_name, default=f"backup_{int(time.time())}")
+
+    existing_index = t.get_backups_index()
+    existing_ids = {str(b.get("backup_id")) for b in existing_index if b.get("backup_id") is not None}
+    existing_paths = {
+        str(b.get("path") or "").replace("\\", "/").lower()
+        for b in existing_index
+        if b.get("path")
+    }
+
+    backups_root = Path(data_root) / "Backups"
+    backups_root.mkdir(parents=True, exist_ok=True)
+    folder_name = base_slug
+    suffix = 2
+    while (backups_root / folder_name).exists() or f"backups/{folder_name.lower()}" in existing_paths:
+        folder_name = f"{base_slug[:58]}_{suffix}"
+        suffix += 1
+
+    bid_int = int(time.time())
+    while str(bid_int) in existing_ids:
+        bid_int += 1
+    backup_id = str(bid_int)
+
+    rel_path = f"Backups/{folder_name}"
     try:
-        t.save_json_atomic(payload, global_config_path)
+        abs_path = ensure_safe_backup_path(rel_path, data_root).as_posix()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid backup path")
+
+    os.makedirs(abs_path, exist_ok=True)
+    os.makedirs((Path(abs_path) / "Info").as_posix(), exist_ok=True)
+
+    admin_cfg["path"] = rel_path
+    admin_cfg["backupName"] = (
+        admin_cfg.get("backupName")
+        or admin_cfg.get("serverName")
+        or safe_payload.get("backup_name")
+        or safe_payload.get("server_name")
+        or folder_name
+    )
+    if not admin_cfg.get("serverId") and safe_payload.get("server_id"):
+        admin_cfg["serverId"] = safe_payload["server_id"]
+    if not admin_cfg.get("serverName") and safe_payload.get("server_name"):
+        admin_cfg["serverName"] = safe_payload["server_name"]
+
+    try:
+        config_service.save_backup_config_dict(
+            backup_id=backup_id,
+            backup_path=abs_path,
+            config_data=safe_payload,
+            create_db_if_missing=True,
+        )
+        now_utc = datetime.now(timezone.utc)
+        with db_session(backup_id=backup_id, backup_path=abs_path) as session:
+            b_row = session.query(BackupModel).filter(BackupModel.backup_id == str(backup_id)).first()
+            if b_row is not None:
+                if b_row.created_at is None:
+                    b_row.created_at = now_utc
+                b_row.sync_status = SyncStatus.SYNCING.value
+                b_row.sync_started_at = now_utc
+                b_row.sync_error = None
+        status_service.update_step_status(
+            backup_id,
+            abs_path,
+            Step.UPDATE.value,
+            Status.RUNNING.value,
+            write_snapshot=False,
+        )
+        from db.session import is_sqlite_tmp_cache_enabled, sync_dirty_sqlite_dbs
+        if is_sqlite_tmp_cache_enabled():
+            sync_dirty_sqlite_dbs(force=True)
+        t.invalidate_backups_index_cache()
     except Exception as e:
-        raise _internal_error("create_new_backup save_global_config", e)
-        
-    t.global_log("info", f"API: Creating new backup pipeline from global config...")
-    python_exec = sys.executable
-    project_root = get_project_root()
-    src_dir = (Path(project_root) / 'src').resolve().as_posix()
-    script_path = safe_join_within(src_dir, 'backup_server.py').as_posix()
-    env = scrub_sensitive_env(os.environ, keep_discord_token=True)
-    existing_pythonpath = env.get("PYTHONPATH", "")
-    paths = [src_dir, project_root]
-    if existing_pythonpath:
-        paths.append(existing_pythonpath)
-    env["PYTHONPATH"] = os.pathsep.join(paths)
-    subprocess.Popen([python_exec, script_path], cwd=project_root, env=env)
+        raise _internal_error("create_new_backup initialize_sql", e)
+
+    t.global_log("info", f"API: Created new backup '{backup_id}' at {rel_path}; launching initial sync...")
+    if background_tasks is not None:
+        background_tasks.add_task(run_script_in_background, "backup_server.py", backup_id)
+    else:
+        run_script_in_background("backup_server.py", backup_id)
+
     _audit(
         action="backup.create",
         target_type="backup",
+        target_id=backup_id,
         actor=actor,
         actor_role="instance_admin",
+        backup_id=backup_id,
+        backup_dir=abs_path,
         write_global=True,
-        before=before_cfg,
-        after=payload,
+        after=safe_payload,
     )
-    
-    return {"status": "started", "detail": "Starting new backup pipeline. Check global logs."}
+
+    return {"status": "started", "backup_id": backup_id, "path": rel_path}
 
 
 # --- CHARACTER ENDPOINTS ---

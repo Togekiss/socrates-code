@@ -1,6 +1,8 @@
 from .models import (
     Base,
     BackupModel,
+    BackupCategoryConfigModel,
+    BackupRbacEntryModel,
     ChannelModel,
     WriterModel,
     WriterAliasModel,
@@ -22,6 +24,9 @@ from .models import (
     Status,
     SyncStatus,
     StorageMode,
+    CategoryConfigKind,
+    RbacTargetType,
+    RbacAccessLevel,
     SceneStatus,
     SceneKind,
     IssueKind,
@@ -62,6 +67,7 @@ from .serializers import (
     build_character_list_dict,
 )
 from .snapshots import (
+    export_backup_config_snapshot,
     export_backup_info_snapshot,
     export_character_list_snapshot,
 )
@@ -77,6 +83,8 @@ from .status_service import (
 __all__ = [
     "Base",
     "BackupModel",
+    "BackupCategoryConfigModel",
+    "BackupRbacEntryModel",
     "ChannelModel",
     "WriterModel",
     "WriterAliasModel",
@@ -104,6 +112,9 @@ __all__ = [
     "Status",
     "SyncStatus",
     "StorageMode",
+    "CategoryConfigKind",
+    "RbacTargetType",
+    "RbacAccessLevel",
     "SceneStatus",
     "SceneKind",
     "IssueKind",
@@ -131,6 +142,7 @@ __all__ = [
     "has_sqlite_db",
     "build_backup_info_dict",
     "build_character_list_dict",
+    "export_backup_config_snapshot",
     "export_backup_info_snapshot",
     "export_character_list_snapshot",
     "sync_channels_to_db",

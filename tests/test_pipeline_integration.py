@@ -1573,6 +1573,316 @@ class TestNativeDiscordExtractorAndSyncModes(unittest.TestCase):
             finally:
                 close_all_engines()
 
+    def test_snowflake_id_category_configs_and_legacy_name_promotion(self):
+        """
+        Verifies Snowflake ID category matching in topology filtering, backup_server(), and index_scenes(),
+        strict keepMode filtering (chatroom/event tags do not bypass keepMode), and automatic promotion
+        of legacy category names in backup_category_configs to live Discord Snowflake IDs.
+        """
+        from db.config_service import load_backup_config_dict, save_backup_config_dict
+        from db.models import BackupCategoryConfigModel, CategoryConfigKind
+        from utils.path_safety import SNOWFLAKE_RE, category_matches
+
+        # 1. Unit assertions for category_matches
+        self.assertFalse(category_matches("1019770957172326470", "The Twisted Viper Bar", set()))
+        self.assertTrue(category_matches("1019770957172326470", "Renamed Bar", {"1019770957172326470"}))
+        self.assertTrue(category_matches(" 1019770957172326470 ", "Renamed Bar", {"1019770957172326470"}))
+        self.assertTrue(category_matches("999", "14# The Twisted Viper Bar", {"The Twisted Viper Bar"}))
+        self.assertFalse(category_matches("999", "Other", {"1019770957172326470", "The Twisted Viper Bar"}))
+
+        mock_discord = ElysiumMockDiscordServer(DATA_ROOT / "Backups" / "Elysium-sql-tests-clean", include_update=False)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            try:
+                # 2. Pure SQLite config using Snowflake IDs (no backup_config.json on disk)
+                bid = "777000109"
+                bpath = (Path(tmp_dir) / f"backup_{bid}").as_posix()
+                Path(bpath).mkdir(parents=True, exist_ok=True)
+                sql_cfg = {
+                    "admin": {
+                        "serverName": "(+18) Diabolik: Elysium",
+                        "serverId": ElysiumMockDiscordServer.GUILD_ID,
+                        "storageMode": "backupless",
+                        "keepMode": True,
+                        "categoriesToKeep": [
+                            "1019770957172326470",  # The Twisted Viper Bar
+                            "1106268351220678767",  # Group Chats
+                            "1008065547155558431",  # CURRENT EVENT
+                            "987749861963214878",   # EVENT STORAGE
+                        ],
+                        "categoriesToIgnore": [],
+                        "chatroomCategories": ["1106268351220678767"],
+                        "eventCategories": ["1008065547155558431", "987749861963214878"],
+                        "backupName": f"backup_{bid}",
+                        "path": bpath,
+                        "verbosity": {"info": True, "debug": False, "console": False, "log": False, "debugFiles": False},
+                    }
+                }
+                save_backup_config_dict(
+                    backup_id=bid,
+                    backup_path=bpath,
+                    config_data=sql_cfg,
+                    create_db_if_missing=True,
+                )
+                self.assertFalse((Path(bpath) / "backup_config.json").exists())
+
+                ctx = BackupContext.create(backup_id=bid, backup_path=bpath)
+                with use_socket_free_asyncio():
+                    with BackupContext.activate(context=ctx):
+                        res = backup_server(
+                            backup_id=bid,
+                            backup_path=bpath,
+                            token="test-bot-token",
+                            transport=mock_discord.make_transport(),
+                        )
+                self.assertEqual(res["status"], "idle")
+
+                with db_session(backup_id=bid, backup_path=bpath) as session:
+                    self.assertEqual(session.query(SceneModel).filter_by(backup_id=bid, kind=SceneKind.SCENE.value).count(), 13)
+                    self.assertEqual(session.query(SceneModel).filter_by(backup_id=bid, kind=SceneKind.SESSION.value).count(), 121)
+                    self.assertGreaterEqual(session.query(EventModel).filter_by(backup_id=bid).count(), 4)
+
+                # Re-running index_scenes directly with Snowflake IDs in chatroom/event config must preserve counts
+                with BackupContext.activate(context=ctx):
+                    index_scenes(backup_id=bid, backup_path=bpath, rescan_json=False)
+                with db_session(backup_id=bid, backup_path=bpath) as session:
+                    self.assertEqual(session.query(SceneModel).filter_by(backup_id=bid, kind=SceneKind.SCENE.value).count(), 13)
+                    self.assertEqual(session.query(SceneModel).filter_by(backup_id=bid, kind=SceneKind.SESSION.value).count(), 121)
+                    self.assertGreaterEqual(session.query(EventModel).filter_by(backup_id=bid).count(), 4)
+
+                # 3. Legacy category names in config are auto-promoted to Snowflake IDs during backup_server()
+                bid2, bpath2 = self._create_isolated_backup(tmp_dir, storage_mode="backupless", backup_id="777000110")
+                cfg2_path = Path(bpath2) / "backup_config.json"
+                cfg2 = json.loads(cfg2_path.read_text(encoding="utf-8"))
+                cfg2["admin"]["categoriesToKeep"] = [
+                    "14# The Twisted Viper Bar",
+                    "Group Chats",
+                    "CURRENT EVENT",
+                ]
+                # Deliberately tag EVENT STORAGE as an event category even though it is NOT in categoriesToKeep:
+                # keepMode must strictly exclude EVENT STORAGE while still promoting its name -> Snowflake ID.
+                cfg2["admin"]["categoriesToIgnore"] = ["OOC"]
+                cfg2["admin"]["chatroomCategories"] = ["7# Group Chats"]
+                cfg2["admin"]["eventCategories"] = ["6# CURRENT EVENT", "28# EVENT STORAGE"]
+                cfg2["admin"]["keepMode"] = True
+                cfg2_path.write_text(json.dumps(cfg2, indent=4), encoding="utf-8")
+
+                ctx2 = BackupContext.create(backup_id=bid2, backup_path=bpath2)
+                with use_socket_free_asyncio():
+                    with BackupContext.activate(context=ctx2):
+                        res2 = backup_server(
+                            backup_id=bid2,
+                            backup_path=bpath2,
+                            token="test-bot-token",
+                            transport=mock_discord.make_transport(),
+                        )
+                self.assertEqual(res2["status"], "idle")
+
+                loaded2 = load_backup_config_dict(backup_id=bid2, backup_path=bpath2)
+                self.assertEqual(
+                    loaded2["admin"]["categoriesToKeep"],
+                    ["1019770957172326470", "1106268351220678767", "1008065547155558431"],
+                )
+                self.assertEqual(loaded2["admin"]["chatroomCategories"], ["1106268351220678767"])
+                self.assertEqual(
+                    loaded2["admin"]["eventCategories"],
+                    ["1008065547155558431", "987749861963214878"],
+                )
+                with db_session(backup_id=bid2, backup_path=bpath2) as session:
+                    cat_rows = session.query(BackupCategoryConfigModel).filter_by(backup_id=bid2).all()
+                    for cr in cat_rows:
+                        self.assertRegex(cr.category_ref, SNOWFLAKE_RE)
+                    # EVENT STORAGE was NOT in categoriesToKeep, so eventCategories must NOT bypass keepMode
+                    self.assertIsNone(
+                        session.query(ChannelModel).filter_by(backup_id=bid2, discord_id="1008065664034025533").first()
+                    )
+            finally:
+                close_all_engines()
+
+    def test_unselected_category_preservation_on_incremental_sync_and_rescan_reset(self):
+        """
+        Verifies:
+        1. Incremental sync (rescan_discord=False) skips unselected categories/channels without marking
+           them or their threads is_deleted=True, and preserves existing RP scenes and unselected
+           event categories' events (e.g. EVENT STORAGE alongside CURRENT EVENT).
+        2. Full Discord Rescan (rescan_discord=True) resets strictly to the active keep/ignore config,
+           marking unselected categories/channels/threads as is_deleted=True.
+        """
+        from db.config_service import load_backup_config_dict, save_backup_config_dict
+
+        mock_discord = ElysiumMockDiscordServer(DATA_ROOT / "Backups" / "Elysium-sql-tests-clean", include_update=False)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            try:
+                bid = "777000112"
+                bpath = (Path(tmp_dir) / f"backup_{bid}").as_posix()
+                Path(bpath).mkdir(parents=True, exist_ok=True)
+                initial_cfg = {
+                    "admin": {
+                        "serverName": "(+18) Diabolik: Elysium",
+                        "serverId": ElysiumMockDiscordServer.GUILD_ID,
+                        "storageMode": "backupless",
+                        "keepMode": True,
+                        "categoriesToKeep": [
+                            "1019770957172326470",  # The Twisted Viper Bar
+                            "1106268351220678767",  # Group Chats
+                            "1008065547155558431",  # CURRENT EVENT
+                            "987749861963214878",   # EVENT STORAGE
+                        ],
+                        "categoriesToIgnore": [],
+                        "chatroomCategories": ["1106268351220678767"],
+                        "eventCategories": ["1008065547155558431", "987749861963214878"],
+                        "backupName": f"backup_{bid}",
+                        "path": bpath,
+                        "verbosity": {"info": True, "debug": False, "console": False, "log": False, "debugFiles": False},
+                    }
+                }
+                save_backup_config_dict(
+                    backup_id=bid,
+                    backup_path=bpath,
+                    config_data=initial_cfg,
+                    create_db_if_missing=True,
+                )
+
+                # 1. Initial full sync of all 4 categories
+                with use_socket_free_asyncio():
+                    res1 = backup_server(
+                        backup_id=bid,
+                        backup_path=bpath,
+                        token="test-bot-token",
+                        transport=mock_discord.make_transport(),
+                    )
+                self.assertEqual(res1["status"], "idle")
+
+                with db_session(backup_id=bid, backup_path=bpath) as session:
+                    self.assertEqual(session.query(SceneModel).filter_by(backup_id=bid, kind=SceneKind.SCENE.value).count(), 13)
+                    self.assertEqual(session.query(SceneModel).filter_by(backup_id=bid, kind=SceneKind.SESSION.value).count(), 121)
+                    initial_ev_cnt = session.query(EventModel).filter_by(backup_id=bid).count()
+                    self.assertGreaterEqual(initial_ev_cnt, 4)
+                    med_tent = session.query(ChannelModel).filter_by(backup_id=bid, discord_id="1008065664034025533").one()
+                    self.assertGreater(
+                        session.query(SceneModel).filter_by(backup_id=bid, channel_pk=med_tent.pk, kind=SceneKind.EVENT.value).count(),
+                        0,
+                    )
+
+                # 2. Unselect The Twisted Viper Bar and EVENT STORAGE in SQLite config
+                updated_cfg = load_backup_config_dict(backup_id=bid, backup_path=bpath)
+                updated_cfg["admin"]["categoriesToKeep"] = [
+                    "1106268351220678767",  # Group Chats
+                    "1008065547155558431",  # CURRENT EVENT
+                ]
+                save_backup_config_dict(backup_id=bid, backup_path=bpath, config_data=updated_cfg)
+
+                # 3. Incremental sync (rescan_discord=False) must skip & preserve unselected categories
+                mock_discord.fetched_channel_history_ids.clear()
+                with use_socket_free_asyncio():
+                    res2 = backup_server(
+                        backup_id=bid,
+                        backup_path=bpath,
+                        token="test-bot-token",
+                        transport=mock_discord.make_transport(),
+                        rescan_discord=False,
+                    )
+                self.assertEqual(res2["status"], "idle")
+
+                unselected_ids = {
+                    "1019770957172326470",  # The Twisted Viper Bar (cat)
+                    "1013915163423932496",  # barside
+                    "1019771259896205382",  # back-of-bar
+                    "1019771317303644261",  # bar-tables
+                    "1141818382782574645",  # A Toast to Emnity thread
+                    "1158294831097970738",  # Conversation thread
+                    "1008065664034025533",  # medical-tent (EVENT STORAGE)
+                    "1131989202465210569",  # Room 4 thread (EVENT STORAGE)
+                }
+                for uid in unselected_ids:
+                    self.assertNotIn(uid, mock_discord.fetched_channel_history_ids)
+
+                with db_session(backup_id=bid, backup_path=bpath) as session:
+                    for did in unselected_ids | {"events_category"}:
+                        ch_row = session.query(ChannelModel).filter_by(backup_id=bid, discord_id=did).one()
+                        self.assertFalse(ch_row.is_deleted, f"Channel {did} must stay is_deleted=False on incremental sync")
+
+                    self.assertEqual(session.query(SceneModel).filter_by(backup_id=bid, kind=SceneKind.SCENE.value).count(), 13)
+                    self.assertEqual(session.query(EventModel).filter_by(backup_id=bid).count(), initial_ev_cnt)
+                    med_tent = session.query(ChannelModel).filter_by(backup_id=bid, discord_id="1008065664034025533").one()
+                    self.assertGreater(
+                        session.query(SceneModel).filter_by(backup_id=bid, channel_pk=med_tent.pk, kind=SceneKind.EVENT.value).count(),
+                        0,
+                    )
+
+                # 3b. Genuinely deleting an unselected channel on Discord during incremental sync (rescan_discord=False)
+                # must mark that channel is_deleted=True while keeping live unselected sibling channels/threads intact.
+                mock_discord.channels = [
+                    ch for ch in mock_discord.channels if str(ch.get("id")) != "1019771317303644261"
+                ]
+                with use_socket_free_asyncio():
+                    res2b = backup_server(
+                        backup_id=bid,
+                        backup_path=bpath,
+                        token="test-bot-token",
+                        transport=mock_discord.make_transport(),
+                        rescan_discord=False,
+                    )
+                self.assertEqual(res2b["status"], "idle")
+
+                with db_session(backup_id=bid, backup_path=bpath) as session:
+                    deleted_bar_tables = session.query(ChannelModel).filter_by(
+                        backup_id=bid, discord_id="1019771317303644261"
+                    ).one()
+                    self.assertTrue(deleted_bar_tables.is_deleted)
+                    for still_live_did in (unselected_ids - {"1019771317303644261"}) | {"events_category"}:
+                        ch_row = session.query(ChannelModel).filter_by(backup_id=bid, discord_id=still_live_did).one()
+                        self.assertFalse(ch_row.is_deleted, f"Live channel {still_live_did} must stay is_deleted=False")
+
+                # 4. Full Discord Rescan (rescan_discord=True) resets strictly to current keep/ignore config
+                with use_socket_free_asyncio():
+                    res3 = backup_server(
+                        backup_id=bid,
+                        backup_path=bpath,
+                        token="test-bot-token",
+                        transport=mock_discord.make_transport(),
+                        rescan_discord=True,
+                    )
+                self.assertEqual(res3["status"], "idle")
+
+                with db_session(backup_id=bid, backup_path=bpath) as session:
+                    for did in unselected_ids:
+                        ch_row = session.query(ChannelModel).filter_by(backup_id=bid, discord_id=did).one()
+                        self.assertTrue(ch_row.is_deleted, f"Channel {did} must be marked is_deleted=True on rescan_discord=True")
+                    for selected_did in ("1106268351220678767", "858215486272962581", "events_category", "1008065681998221352"):
+                        ch_row = session.query(ChannelModel).filter_by(backup_id=bid, discord_id=selected_did).one()
+                        self.assertFalse(ch_row.is_deleted)
+                    med_tent = session.query(ChannelModel).filter_by(backup_id=bid, discord_id="1008065664034025533").one()
+                    self.assertEqual(
+                        session.query(SceneModel).filter_by(backup_id=bid, channel_pk=med_tent.pk, kind=SceneKind.EVENT.value).count(),
+                        0,
+                    )
+
+                # 5. Full Discord Rescan (rescan_discord=True) with all event categories unselected clears events
+                no_events_cfg = load_backup_config_dict(backup_id=bid, backup_path=bpath)
+                no_events_cfg["admin"]["categoriesToKeep"] = ["1106268351220678767"]
+                save_backup_config_dict(backup_id=bid, backup_path=bpath, config_data=no_events_cfg)
+
+                with use_socket_free_asyncio():
+                    res4 = backup_server(
+                        backup_id=bid,
+                        backup_path=bpath,
+                        token="test-bot-token",
+                        transport=mock_discord.make_transport(),
+                        rescan_discord=True,
+                    )
+                self.assertEqual(res4["status"], "idle")
+
+                with db_session(backup_id=bid, backup_path=bpath) as session:
+                    ev_cat = session.query(ChannelModel).filter_by(backup_id=bid, discord_id="events_category").one()
+                    self.assertTrue(ev_cat.is_deleted)
+                    self.assertEqual(session.query(EventModel).filter_by(backup_id=bid).count(), 0)
+                    self.assertEqual(
+                        session.query(SceneModel).filter_by(backup_id=bid, kind=SceneKind.EVENT.value).count(),
+                        0,
+                    )
+            finally:
+                close_all_engines()
+
 
 if __name__ == "__main__":
     unittest.main()

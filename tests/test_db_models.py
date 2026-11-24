@@ -13,14 +13,20 @@ for p in (SRC_DIR.as_posix(), PROJECT_ROOT.as_posix()):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
-from tests.test_env import skip_in_production_or_missing_live_backups
+from tests.test_env import skip_in_production_or_missing_fixture, skip_in_production_or_missing_live_backups
 
 # pyrefly: ignore [missing-import]
 from db.models import (
     Base,
     BackupModel,
+    BackupCategoryConfigModel,
+    BackupRbacEntryModel,
+    CategoryConfigKind,
+    RbacTargetType,
+    RbacAccessLevel,
     ChannelModel,
     WriterModel,
     WriterAliasModel,
@@ -63,7 +69,9 @@ from db.skeleton_models import (
 # pyrefly: ignore [missing-import]
 from db.session import init_db, get_db_schema_version, has_db, require_db, close_all_engines
 # pyrefly: ignore [missing-import]
-from db import status_service, character_service
+from db import status_service, character_service, config_service
+# pyrefly: ignore [missing-import]
+from db.test_backup_service import seed_test_backup
 # pyrefly: ignore [missing-import]
 from db.upgrade import extract_database_data, populate_schema
 # pyrefly: ignore [missing-import]
@@ -88,6 +96,8 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
         tables = set(inspector.get_table_names())
         expected_tables = {
             "backups",
+            "backup_category_configs",
+            "backup_rbac_entries",
             "channels",
             "writers",
             "writer_aliases",
@@ -291,9 +301,9 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
 
     def test_schema_version_tracking(self):
         """Verifies that schema_version table correctly tracks CURRENT_SCHEMA_VERSION."""
-        self.assertEqual(CURRENT_SCHEMA_VERSION, 6)
+        self.assertEqual(CURRENT_SCHEMA_VERSION, 7)
         current_ver = get_db_schema_version(self.engine)
-        self.assertEqual(current_ver, 6)
+        self.assertEqual(current_ver, 7)
 
         with self.Session() as session:
             record = session.query(SchemaVersionModel).filter_by(version=CURRENT_SCHEMA_VERSION).first()
@@ -457,6 +467,678 @@ class TestDatabaseSchemaAndModels(unittest.TestCase):
                 finally:
                     close_all_engines()
 
+    def test_backup_category_config_and_rbac_models_constraints_and_cascade(self):
+        """Verifies Schema v7 BackupCategoryConfigModel & BackupRbacEntryModel constraints, columns, and cascade delete."""
+        with self.Session() as session:
+            backup = BackupModel(
+                backup_id="cfg_v7_1",
+                backup_name="Config V7 Backup",
+                server_id="857848490683269161",
+                server_name="Elysium",
+                path="Backups/Elysium",
+                keep_mode=True,
+                log_info=True,
+                log_debug=False,
+                log_console=True,
+                log_file=False,
+                debug_files=True,
+            )
+            session.add(backup)
+            session.flush()
+
+            cat_entry = BackupCategoryConfigModel(
+                backup_id="cfg_v7_1",
+                kind=CategoryConfigKind.KEEP.value,
+                category_ref="1019770957172326470",
+            )
+            rbac_entry = BackupRbacEntryModel(
+                backup_id="cfg_v7_1",
+                target_type=RbacTargetType.ROLE.value,
+                access_level=RbacAccessLevel.ADMIN.value,
+                discord_id="100000000000000001",
+            )
+            session.add_all([cat_entry, rbac_entry])
+            session.commit()
+
+        # Verify unique constraint on backup_category_configs
+        with self.Session() as session:
+            session.add(
+                BackupCategoryConfigModel(
+                    backup_id="cfg_v7_1",
+                    kind=CategoryConfigKind.KEEP.value,
+                    category_ref="1019770957172326470",
+                )
+            )
+            with self.assertRaises(IntegrityError):
+                session.commit()
+            session.rollback()
+
+        # Verify unique constraint on backup_rbac_entries
+        with self.Session() as session:
+            session.add(
+                BackupRbacEntryModel(
+                    backup_id="cfg_v7_1",
+                    target_type=RbacTargetType.ROLE.value,
+                    access_level=RbacAccessLevel.ADMIN.value,
+                    discord_id="100000000000000001",
+                )
+            )
+            with self.assertRaises(IntegrityError):
+                session.commit()
+            session.rollback()
+
+        # Verify ON DELETE CASCADE when parent BackupModel is deleted
+        with self.Session() as session:
+            session.execute(text("PRAGMA foreign_keys=ON"))
+            loaded = session.query(BackupModel).filter_by(backup_id="cfg_v7_1").first()
+            self.assertIsNotNone(loaded)
+            self.assertTrue(loaded.keep_mode)
+            self.assertFalse(loaded.log_debug)
+            self.assertTrue(loaded.debug_files)
+            self.assertEqual(len(loaded.category_configs), 1)
+            self.assertEqual(len(loaded.rbac_entries), 1)
+            session.delete(loaded)
+            session.commit()
+
+        with self.Session() as session:
+            self.assertEqual(session.query(BackupCategoryConfigModel).count(), 0)
+            self.assertEqual(session.query(BackupRbacEntryModel).count(), 0)
+
+    def test_config_service_roundtrip_rbac_and_upgrade_category_ids(self):
+        """Verifies config_service SQL roundtrip, RBAC persistence, debug snapshot, and category ID promotion."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            backup_dir = Path(tmpdir) / "Backups" / "CfgRoundtrip"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            b_id = "cfg_rt_1"
+            b_path = backup_dir.as_posix()
+
+            try:
+                cfg_payload = {
+                    "admin": {
+                        "serverName": "Roundtrip Guild",
+                        "serverId": "857848490683269161",
+                        "storageMode": "full",
+                        "backupName": "CfgRoundtrip",
+                        "path": "Backups/CfgRoundtrip",
+                        "keepMode": True,
+                        "categoriesToKeep": ["14# The Twisted Viper Bar", "1019770957172326470", "Group Chats"],
+                        "categoriesToIgnore": ["1# Staff Only"],
+                        "chatroomCategories": ["Group Chats"],
+                        "eventCategories": ["CURRENT EVENT"],
+                        "verbosity": {
+                            "info": True,
+                            "debug": False,
+                            "console": True,
+                            "log": False,
+                            "debugFiles": True,
+                        },
+                    },
+                    "rbac": {
+                        "adminRoleIds": ["100000000000000001"],
+                        "curatorRoleIds": ["100000000000000002"],
+                        "participantRoleIds": [],
+                        "restrictedUserIds": ["200000000000000001"],
+                        "blockedUserIds": [],
+                    },
+                }
+
+                saved = config_service.save_backup_config_dict(
+                    backup_id=b_id,
+                    backup_path=b_path,
+                    config_data=cfg_payload,
+                    create_db_if_missing=True,
+                )
+                self.assertEqual(saved["admin"]["serverId"], "857848490683269161")
+                self.assertEqual(saved["admin"]["storageMode"], "full")
+                self.assertTrue(saved["admin"]["keepMode"])
+                self.assertEqual(saved["admin"]["categoriesToKeep"], ["The Twisted Viper Bar", "1019770957172326470", "Group Chats"])
+                self.assertEqual(saved["admin"]["categoriesToIgnore"], ["Staff Only"])
+                self.assertEqual(saved["admin"]["verbosity"]["debug"], False)
+                self.assertEqual(saved["admin"]["verbosity"]["debugFiles"], True)
+                self.assertTrue((backup_dir / "Info" / "backup_config.json").is_file())
+
+                loaded = config_service.load_backup_config_dict(backup_id=b_id, backup_path=b_path)
+                self.assertEqual(loaded, saved)
+
+                # Updating config without "rbac" key preserves existing RBAC rows
+                updated_no_rbac = {
+                    "admin": {
+                        **saved["admin"],
+                        "keepMode": False,
+                    }
+                }
+                config_service.save_backup_config_dict(
+                    backup_id=b_id,
+                    backup_path=b_path,
+                    config_data=updated_no_rbac,
+                )
+                loaded_rbac = config_service.load_rbac_config_dict(backup_id=b_id, backup_path=b_path)
+                self.assertEqual(loaded_rbac["adminRoleIds"], ["100000000000000001"])
+                self.assertEqual(loaded_rbac["restrictedUserIds"], ["200000000000000001"])
+
+                # save_rbac_config_dict updates RBAC cleanly
+                new_rbac = {
+                    "adminRoleIds": ["100000000000000009"],
+                    "curatorRoleIds": [],
+                    "participantRoleIds": ["100000000000000003"],
+                    "restrictedUserIds": [],
+                    "blockedUserIds": ["200000000000000099"],
+                }
+                saved_rbac = config_service.save_rbac_config_dict(
+                    backup_id=b_id,
+                    backup_path=b_path,
+                    rbac_data=new_rbac,
+                )
+                self.assertEqual(saved_rbac, new_rbac)
+                self.assertEqual(config_service.load_rbac_config_dict(backup_id=b_id, backup_path=b_path), new_rbac)
+
+                # upgrade_category_names_to_ids promotes names & collapses duplicates
+                from db.session import db_session
+                with db_session(backup_id=b_id, backup_path=b_path) as session:
+                    upgraded = config_service.upgrade_category_names_to_ids(
+                        session,
+                        b_id,
+                        {
+                            "The Twisted Viper Bar": "1019770957172326470",
+                            "7# Group Chats": "1106268351220678767",
+                        },
+                    )
+                    self.assertEqual(upgraded, 3)  # collapsed "The Twisted Viper Bar" keep + updated Group Chats keep & chatroom
+
+                after_upgrade = config_service.load_backup_config_dict(backup_id=b_id, backup_path=b_path)
+                self.assertEqual(after_upgrade["admin"]["categoriesToKeep"], ["1019770957172326470", "1106268351220678767"])
+                self.assertEqual(after_upgrade["admin"]["chatroomCategories"], ["1106268351220678767"])
+                self.assertEqual(after_upgrade["admin"]["categoriesToIgnore"], ["Staff Only"])
+                self.assertEqual(after_upgrade["admin"]["eventCategories"], ["CURRENT EVENT"])
+
+                # Auto-import fallback when DB exists with empty config/RBAC tables and backup_config.json is on disk
+                legacy_dir = Path(tmpdir) / "Backups" / "LegacyJsonAutoImport"
+                legacy_dir.mkdir(parents=True, exist_ok=True)
+                t.save_json_atomic(
+                    {
+                        "admin": {
+                            "serverName": "AutoImport",
+                            "serverId": "857848490683269161",
+                            "keepMode": True,
+                            "categoriesToKeep": ["14# The Twisted Viper Bar"],
+                        },
+                        "rbac": {
+                            "adminRoleIds": ["100000000000000011"],
+                            "curatorRoleIds": [],
+                            "participantRoleIds": [],
+                            "restrictedUserIds": [],
+                            "blockedUserIds": [],
+                        },
+                    },
+                    (legacy_dir / "backup_config.json").as_posix(),
+                )
+                status_service.init_backup_export(
+                    backup_id="legacy_auto_1",
+                    backup_path=legacy_dir.as_posix(),
+                    backup_name="AutoImport",
+                )
+                auto_loaded = config_service.load_backup_config_dict(
+                    backup_id="legacy_auto_1",
+                    backup_path=legacy_dir.as_posix(),
+                )
+                self.assertTrue(auto_loaded["admin"]["keepMode"])
+                self.assertEqual(auto_loaded["admin"]["categoriesToKeep"], ["The Twisted Viper Bar"])
+                self.assertEqual(auto_loaded["rbac"]["adminRoleIds"], ["100000000000000011"])
+            finally:
+                close_all_engines()
+
+
+
+
+    def test_config_service_central_database_url_empty_init_and_roundtrip(self):
+        """Verifies config_service initializes an empty central DB (DATABASE_URL) when create_db_if_missing=True."""
+        from unittest.mock import patch
+
+        close_all_engines()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            central_db_path = Path(tmpdir) / "central_cfg.db"
+            central_url = f"sqlite:///{central_db_path.as_posix()}"
+
+            with patch.dict(os.environ, {"DATABASE_URL": central_url}):
+                close_all_engines()
+                try:
+                    saved = config_service.save_backup_config_dict(
+                        backup_id="central_cfg_1",
+                        backup_path=None,
+                        config_data={
+                            "admin": {
+                                "serverName": "Central Guild",
+                                "serverId": "857848490683269161",
+                                "storageMode": "backupless",
+                                "backupName": "CentralCfg",
+                                "path": "Backups/CentralCfg",
+                                "keepMode": True,
+                                "categoriesToKeep": ["1019770957172326470"],
+                                "verbosity": {
+                                    "info": True,
+                                    "debug": True,
+                                    "console": False,
+                                    "log": True,
+                                    "debugFiles": False,
+                                },
+                            },
+                            "rbac": {
+                                "adminRoleIds": ["100000000000000001"],
+                                "curatorRoleIds": [],
+                                "participantRoleIds": [],
+                                "restrictedUserIds": [],
+                                "blockedUserIds": [],
+                            },
+                        },
+                        create_db_if_missing=True,
+                    )
+                    self.assertEqual(saved["admin"]["backupName"], "CentralCfg")
+                    self.assertEqual(saved["admin"]["categoriesToKeep"], ["1019770957172326470"])
+                    self.assertEqual(saved["rbac"]["adminRoleIds"], ["100000000000000001"])
+
+                    loaded = config_service.load_backup_config_dict(backup_id="central_cfg_1", backup_path=None)
+                    self.assertEqual(loaded, saved)
+
+                    loaded_rbac = config_service.load_rbac_config_dict(backup_id="central_cfg_1", backup_path=None)
+                    self.assertEqual(loaded_rbac["adminRoleIds"], ["100000000000000001"])
+                finally:
+                    close_all_engines()
+
+    @skip_in_production_or_missing_fixture()
+    def test_seed_test_backup_populates_v7_config_and_category_ids(self):
+        """Verifies seed_test_backup() populates BackupModel v7 columns and resolves category names to IDs."""
+        data_root = Path(os.environ.get("SOCRATES_DATA_DIR") or PROJECT_ROOT.as_posix())
+        clean_dir = data_root / "Backups" / "Elysium-sql-tests-clean"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_backup = Path(tmpdir) / "Elysium-v7-seed"
+            shutil.copytree(clean_dir, tmp_backup)
+            try:
+                seed_test_backup(
+                    backup_id="seed_v7_test",
+                    backup_path=tmp_backup.as_posix(),
+                    backup={
+                        "backup_id": "seed_v7_test",
+                        "backup_name": "Elysium-sql-tests",
+                        "server_id": "857848490683269161",
+                        "server_name": "(+18) Diabolik: Elysium",
+                        "path": "Backups/Elysium-sql-tests",
+                    },
+                    include_scenes=False,
+                    include_skeletons=False,
+                )
+                loaded = config_service.load_backup_config_dict(
+                    backup_id="seed_v7_test",
+                    backup_path=tmp_backup.as_posix(),
+                )
+                self.assertTrue(loaded["admin"]["keepMode"])
+                self.assertEqual(loaded["admin"]["path"], "Backups/Elysium-sql-tests")
+                self.assertIn("1019770957172326470", loaded["admin"]["categoriesToKeep"])
+                self.assertIn("1106268351220678767", loaded["admin"]["categoriesToKeep"])
+                self.assertIn("1106268351220678767", loaded["admin"]["chatroomCategories"])
+                self.assertFalse(loaded["admin"]["verbosity"]["debugFiles"])
+            finally:
+                close_all_engines()
+
+
+class TestAutoDiscoveryBackupContextAndRbacSql(unittest.TestCase):
+    """Step 3 tests: SQLite/Postgres auto-discovery registry, BackupContext SQL loading, and RBAC SQL integration."""
+
+    def tearDown(self):
+        close_all_engines()
+        t.invalidate_backups_index_cache()
+
+    def test_get_backups_index_auto_discovery_caching_and_exclusions(self):
+        from unittest.mock import patch
+        from db.session import db_session
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                root = Path(tmpdir)
+                backups_dir = root / "Backups"
+                (backups_dir / "Elysium-sql-tests-clean").mkdir(parents=True)
+                (backups_dir / "Elysium-sql-tests-clean" / "backup_config.json").write_text("{}", encoding="utf-8")
+
+                # Nested subfolder backup.sqlite must NOT be discovered
+                nested_dir = backups_dir / "archived" / "OldBackup"
+                nested_dir.mkdir(parents=True)
+                init_db(backup_id="nested_1", backup_path=nested_dir.as_posix())
+                with db_session(backup_id="nested_1", backup_path=nested_dir.as_posix()) as session:
+                    session.add(
+                        BackupModel(
+                            backup_id="nested_1",
+                            backup_name="NestedOld",
+                            server_id="999000111222333444",
+                            server_name="Old Guild",
+                            path="Backups/archived/OldBackup",
+                        )
+                    )
+
+                # Pre-v7 SQLite DB (without path column) in direct child directory must be discovered gracefully
+                legacy_dir = backups_dir / "LegacyV6"
+                legacy_dir.mkdir(parents=True)
+                conn = sqlite3.connect((legacy_dir / "backup.sqlite").as_posix())
+                try:
+                    conn.execute(
+                        "CREATE TABLE backups (backup_id VARCHAR(64) PRIMARY KEY, backup_name VARCHAR(128) NOT NULL, server_id VARCHAR(20), server_name VARCHAR(128))"
+                    )
+                    conn.execute(
+                        "INSERT INTO backups (backup_id, backup_name, server_id, server_name) VALUES (?, ?, ?, ?)",
+                        ("legacy_6", "Legacy V6", "111222333444555666", "Legacy Guild"),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                with patch.dict(os.environ, {"SOCRATES_DATA_DIR": root.as_posix()}, clear=False):
+                    t.invalidate_backups_index_cache()
+
+                    # add_backup_to_index creates v7 backup.sqlite without writing backups_index.json
+                    created_id = t.add_backup_to_index(
+                        backup_name="Alpha Backup",
+                        server_id="222333444555666777",
+                        server_name="Alpha Guild",
+                        path="Backups/AlphaBackup",
+                        backup_id="alpha_7",
+                    )
+                    self.assertEqual(created_id, "alpha_7")
+                    self.assertFalse((backups_dir / "backups_index.json").exists())
+
+                    index = t.get_backups_index()
+                    ids = {b["backup_id"] for b in index}
+                    self.assertEqual(ids, {"alpha_7", "legacy_6"})
+
+                    alpha_entry = next(b for b in index if b["backup_id"] == "alpha_7")
+                    self.assertEqual(alpha_entry["path"], "Backups/AlphaBackup")
+                    self.assertEqual(alpha_entry["server_id"], "222333444555666777")
+
+                    legacy_entry = next(b for b in index if b["backup_id"] == "legacy_6")
+                    self.assertEqual(legacy_entry["path"], "Backups/LegacyV6")
+
+                    # Second call uses in-memory cache (does not re-open SQLite)
+                    with patch("utils.tricks._read_backup_index_entry_from_sqlite") as mock_read:
+                        cached = t.get_backups_index()
+                        self.assertEqual(len(cached), 2)
+                        mock_read.assert_not_called()
+
+                    # Explicit invalidation forces re-read
+                    t.invalidate_backups_index_cache()
+                    with patch("utils.tricks._read_backup_index_entry_from_sqlite", wraps=t._read_backup_index_entry_from_sqlite) as mock_read_again:
+                        refreshed = t.get_backups_index()
+                        self.assertEqual(len(refreshed), 2)
+                        self.assertEqual(mock_read_again.call_count, 2)
+
+                    # Resetting Elysium-sql-tests (folder exists without backup.sqlite) keeps ID 1791895360 resolvable
+                    test_dir = backups_dir / "Elysium-sql-tests"
+                    (test_dir / "Info").mkdir(parents=True)
+                    t.invalidate_backups_index_cache()
+                    with_fixture = t.get_backups_index()
+                    self.assertIn("1791895360", {b["backup_id"] for b in with_fixture})
+                    self.assertTrue(t.get_backup_path("1791895360").endswith("Backups/Elysium-sql-tests"))
+            finally:
+                close_all_engines()
+
+    def test_get_backups_index_central_database_url_and_legacy_json_fallback(self):
+        import json
+        from unittest.mock import patch
+        from db.session import db_session
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            backups_dir = root / "Backups"
+            backups_dir.mkdir(parents=True)
+
+            # 1. Legacy JSON fallback when zero backup.sqlite files exist
+            (backups_dir / "backups_index.json").write_text(
+                json.dumps([
+                    {
+                        "backup_id": "json_only_1",
+                        "backup_name": "JsonOnly",
+                        "server_id": "333444555666777888",
+                        "server_name": "JSON Guild",
+                        "path": "Backups/JsonOnly",
+                    }
+                ]),
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"SOCRATES_DATA_DIR": root.as_posix()}, clear=False):
+                t.invalidate_backups_index_cache()
+                fallback_idx = t.get_backups_index()
+                self.assertEqual([b["backup_id"] for b in fallback_idx], ["json_only_1"])
+
+            # 2. Central DATABASE_URL mode queries BackupModel directly
+            central_db = root / "central.sqlite"
+            with patch.dict(
+                os.environ,
+                {
+                    "SOCRATES_DATA_DIR": root.as_posix(),
+                    "DATABASE_URL": f"sqlite:///{central_db.as_posix()}",
+                },
+                clear=False,
+            ):
+                close_all_engines()
+                t.invalidate_backups_index_cache()
+                try:
+                    self.assertEqual(t.get_backups_index(), [])
+                    init_db(backup_id="pg_1")
+                    with db_session(backup_id="pg_1") as session:
+                        session.add(
+                            BackupModel(
+                                backup_id="pg_1",
+                                backup_name="Postgres Backup",
+                                server_id="444555666777888999",
+                                server_name="Postgres Guild",
+                                path="Backups/PostgresBackup",
+                            )
+                        )
+                    pg_idx = t.get_backups_index()
+                    self.assertEqual(len(pg_idx), 1)
+                    self.assertEqual(pg_idx[0]["backup_id"], "pg_1")
+                    self.assertEqual(pg_idx[0]["backup_name"], "Postgres Backup")
+                    self.assertEqual(pg_idx[0]["path"], "Backups/PostgresBackup")
+                finally:
+                    close_all_engines()
+
+    def test_backup_context_loads_from_sqlite_without_backup_config_json(self):
+        import json
+        from unittest.mock import patch
+        from models.backup_context import BackupContext
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                root = Path(tmpdir)
+                b_dir = root / "Backups" / "SqlOnlyBackup"
+                b_dir.mkdir(parents=True)
+                b_id = "ctx_sql_7"
+
+                config_service.save_backup_config_dict(
+                    backup_id=b_id,
+                    backup_path=b_dir.as_posix(),
+                    create_db_if_missing=True,
+                    config_data={
+                        "admin": {
+                            "serverName": "SQL Guild",
+                            "serverId": "555666777888999000",
+                            "storageMode": "full",
+                            "backupName": "SqlOnlyBackup",
+                            "path": "Backups/SqlOnlyBackup",
+                            "keepMode": True,
+                            "categoriesToKeep": ["1019770957172326470"],
+                            "categoriesToIgnore": ["1019770957172326471"],
+                            "chatroomCategories": ["1106268351220678767"],
+                            "eventCategories": ["1106268351220678768"],
+                            "verbosity": {
+                                "info": False,
+                                "debug": True,
+                                "console": False,
+                                "log": True,
+                                "debugFiles": False,
+                            },
+                        },
+                        "rbac": {
+                            "adminRoleIds": ["900000000000000001"],
+                            "curatorRoleIds": [],
+                            "participantRoleIds": [],
+                            "restrictedUserIds": [],
+                            "blockedUserIds": [],
+                        },
+                    },
+                )
+                self.assertFalse((b_dir / "backup_config.json").exists())
+
+                with patch.dict(os.environ, {"SOCRATES_DATA_DIR": root.as_posix()}, clear=False):
+                    t.invalidate_backups_index_cache()
+                    ctx = BackupContext.create(backup_id=b_id)
+                    self.assertEqual(ctx.backup_id, b_id)
+                    self.assertEqual(ctx.server_id, "555666777888999000")
+                    self.assertEqual(ctx.server_name, "SQL Guild")
+                    self.assertEqual(ctx.backup_name, "SqlOnlyBackup")
+                    self.assertTrue(ctx.keep_mode)
+                    self.assertEqual(ctx.categories_to_keep, {"1019770957172326470"})
+                    self.assertEqual(ctx.categories_to_ignore, {"1019770957172326471"})
+                    self.assertEqual(ctx.chatroom_categories, ["1106268351220678767"])
+                    self.assertEqual(ctx.event_categories, ["1106268351220678768"])
+                    self.assertFalse(ctx.info)
+                    self.assertTrue(ctx.debug)
+                    self.assertFalse(ctx.console)
+                    self.assertTrue(ctx.log)
+                    self.assertFalse(ctx.debug_files)
+                    self.assertFalse(ctx.dry_run)
+                    self.assertEqual(ctx.dm_categories, [])
+
+                    # Explicit config_path overrides SQL loading
+                    custom_cfg = root / "custom.json"
+                    custom_cfg.write_text(
+                        json.dumps({"admin": {"serverName": "Custom Override", "verbosity": {"dryRun": True}}}),
+                        encoding="utf-8",
+                    )
+                    ctx_override = BackupContext.create(
+                        backup_id=b_id,
+                        backup_path=b_dir.as_posix(),
+                        config_path=custom_cfg.as_posix(),
+                    )
+                    self.assertEqual(ctx_override.server_name, "Custom Override")
+                    self.assertTrue(ctx_override.dry_run)
+            finally:
+                close_all_engines()
+
+    def test_rbac_sql_persistence_and_per_user_role_grants(self):
+        from unittest.mock import patch
+        from fastapi import HTTPException
+        import rbac
+        from db.session import db_session
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            b_dir = root / "Backups" / "RbacSqlTest"
+            b_dir.mkdir(parents=True)
+            b_id = "rbac_sql_1"
+            guild_id = "666777888999000111"
+
+            rbac.clear_rbac_caches()
+            try:
+                init_db(backup_id=b_id, backup_path=b_dir.as_posix())
+                with db_session(backup_id=b_id, backup_path=b_dir.as_posix()) as session:
+                    session.add(
+                        BackupModel(
+                            backup_id=b_id,
+                            backup_name="RbacSqlTest",
+                            server_id=guild_id,
+                            server_name="RBAC SQL Guild",
+                            path="Backups/RbacSqlTest",
+                        )
+                    )
+
+                saved = rbac.save_backup_rbac_config(
+                    b_dir.as_posix(),
+                    {
+                        "adminRoleIds": ["700000000000000001"],
+                        "curatorRoleIds": ["700000000000000002"],
+                        "participantRoleIds": ["700000000000000003"],
+                        "restrictedUserIds": ["800000000000000004"],
+                        "blockedUserIds": ["800000000000000005"],
+                    },
+                    guild_id=guild_id,
+                    backup_id=b_id,
+                )
+                self.assertEqual(saved["adminRoleIds"], ["700000000000000001"])
+                self.assertFalse((b_dir / "backup_config.json").exists())
+
+                loaded = rbac.load_backup_rbac_config(b_dir.as_posix(), backup_id=b_id)
+                self.assertEqual(
+                    set(loaded.keys()),
+                    {"adminRoleIds", "curatorRoleIds", "participantRoleIds", "restrictedUserIds", "blockedUserIds"},
+                )
+                self.assertEqual(loaded["curatorRoleIds"], ["700000000000000002"])
+
+                # Add per-user admin / curator / participant grants directly in BackupRbacEntryModel
+                with db_session(backup_id=b_id, backup_path=b_dir.as_posix()) as session:
+                    session.add_all([
+                        BackupRbacEntryModel(
+                            backup_id=b_id,
+                            target_type=RbacTargetType.USER.value,
+                            access_level=RbacAccessLevel.ADMIN.value,
+                            discord_id="800000000000000001",
+                        ),
+                        BackupRbacEntryModel(
+                            backup_id=b_id,
+                            target_type=RbacTargetType.USER.value,
+                            access_level=RbacAccessLevel.CURATOR.value,
+                            discord_id="800000000000000002",
+                        ),
+                        BackupRbacEntryModel(
+                            backup_id=b_id,
+                            target_type=RbacTargetType.USER.value,
+                            access_level=RbacAccessLevel.PARTICIPANT.value,
+                            discord_id="800000000000000003",
+                        ),
+                        BackupRbacEntryModel(
+                            backup_id=b_id,
+                            target_type=RbacTargetType.USER.value,
+                            access_level=RbacAccessLevel.CURATOR.value,
+                            discord_id="800000000000000004",  # also in restrictedUserIds -> capped to viewer
+                        ),
+                    ])
+
+                # Standard 5-key load still omits extended user role keys for endpoint schema compatibility
+                standard_loaded = rbac.load_backup_rbac_config(b_dir.as_posix(), backup_id=b_id)
+                self.assertNotIn("adminUserIds", standard_loaded)
+
+                entry = {"backup_id": b_id, "server_id": guild_id}
+
+                def actor_for(uid: str) -> dict:
+                    return {
+                        "sub": uid,
+                        "auth_method": "discord",
+                        "authorized_guilds": [{"id": guild_id, "owner": False, "permissions": 0}],
+                    }
+
+                with patch.object(rbac, "fetch_guild_member_roles", return_value=set()):
+                    def resolve(uid: str):
+                        return rbac.resolve_backup_role(
+                            backup_id=b_id,
+                            entry=entry,
+                            base_path=b_dir.as_posix(),
+                            actor=actor_for(uid),
+                            is_instance_admin_fn=lambda _a: False,
+                            effective_bot_guilds_fn=lambda _a: {guild_id},
+                            extract_user_guild_ids_fn=lambda _a: {guild_id},
+                            bot_token="fake",
+                            is_production=True,
+                            socrates_env="production",
+                        )
+
+                    self.assertEqual(resolve("800000000000000001")[0], "server_admin")
+                    self.assertEqual(resolve("800000000000000002")[0], "curator")
+                    self.assertEqual(resolve("800000000000000003")[0], "participant")
+                    self.assertEqual(resolve("800000000000000004")[0], "viewer")
+                    self.assertEqual(resolve("800000000000000099")[0], "viewer")
+                    with self.assertRaises(HTTPException) as ctx_exc:
+                        resolve("800000000000000005")
+                    self.assertEqual(ctx_exc.exception.status_code, 403)
+            finally:
+                rbac.clear_rbac_caches()
+                close_all_engines()
+
 
 class TestAtomicUtilities(unittest.TestCase):
     """Tests atomic file persistence and path resolution helpers."""
@@ -531,6 +1213,8 @@ class TestSqliteWalCheckpointing(unittest.TestCase):
                 self.assertEqual(rows, [("idle",)])
             finally:
                 close_all_engines()
+
+
 
 
 class TestSqliteTmpCacheAndSync(unittest.TestCase):
@@ -1120,6 +1804,9 @@ class TestSkeletonModelsAndSession(unittest.TestCase):
             finally:
                 close_all_engines()
 
+
+
+
     def test_compute_skeleton_flags_all_14_bits(self):
         # 1. Default tupper with start + end + short end + online + apology
         m1 = {
@@ -1233,6 +1920,8 @@ class TestSkeletonModelsAndSession(unittest.TestCase):
                 self.assertFalse(has_skeleton_db(backup_path=b_dir.as_posix()))
             finally:
                 close_all_engines()
+
+
 
 
 if __name__ == "__main__":

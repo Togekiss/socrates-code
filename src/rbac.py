@@ -103,16 +103,21 @@ def _dedupe_str_list(values: Any) -> List[str]:
     return out
 
 
-def normalize_rbac_config(raw: Any) -> Dict[str, List[str]]:
+def normalize_rbac_config(raw: Any, include_user_roles: bool = False) -> Dict[str, List[str]]:
     """Normalizes a backup's RBAC mapping object with safe empty-list defaults."""
     src = raw if isinstance(raw, dict) else {}
-    return {
+    normalized = {
         "adminRoleIds": _dedupe_str_list(src.get("adminRoleIds")),
         "curatorRoleIds": _dedupe_str_list(src.get("curatorRoleIds")),
         "participantRoleIds": _dedupe_str_list(src.get("participantRoleIds")),
         "restrictedUserIds": _dedupe_str_list(src.get("restrictedUserIds")),
         "blockedUserIds": _dedupe_str_list(src.get("blockedUserIds")),
     }
+    if include_user_roles:
+        normalized["adminUserIds"] = _dedupe_str_list(src.get("adminUserIds"))
+        normalized["curatorUserIds"] = _dedupe_str_list(src.get("curatorUserIds"))
+        normalized["participantUserIds"] = _dedupe_str_list(src.get("participantUserIds"))
+    return normalized
 
 
 class RbacConfigSchema(BaseModel):
@@ -154,51 +159,57 @@ class RbacConfigSchema(BaseModel):
         return result
 
 
-def load_backup_rbac_config(base_path: str) -> Dict[str, List[str]]:
-    """Reads normalized RBAC config from a backup's backup_config.json."""
-    config_path = Path(base_path) / "backup_config.json"
-    if not config_path.exists():
-        return normalize_rbac_config({})
-    try:
-        import json
+def _resolve_rbac_target(
+    base_path: Optional[str] = None,
+    backup_id: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    b_id = str(backup_id).strip() if backup_id is not None and str(backup_id).strip() else None
+    b_path = str(base_path).strip() if base_path is not None and str(base_path).strip() else None
+    if b_id is None and b_path is not None:
+        if "/" not in b_path and "\\" not in b_path and not Path(b_path).exists():
+            b_id = b_path
+            b_path = None
+    return b_id, b_path
 
-        with open(config_path.as_posix(), "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            return normalize_rbac_config({})
-        return normalize_rbac_config(data.get("rbac"))
+
+def load_backup_rbac_config(
+    base_path: Optional[str] = None,
+    backup_id: Optional[str] = None,
+    include_user_roles: bool = False,
+) -> Dict[str, List[str]]:
+    """Reads normalized RBAC config from SQL (BackupRbacEntryModel) or backup_config.json fallback."""
+    from db.config_service import load_rbac_config_dict
+
+    b_id, b_path = _resolve_rbac_target(base_path=base_path, backup_id=backup_id)
+    try:
+        return load_rbac_config_dict(
+            backup_id=b_id,
+            backup_path=b_path,
+            include_user_roles=include_user_roles,
+        )
     except Exception as e:
-        t.global_log("warning", f"RBAC: Failed to read backup_config.json at {base_path}: {e}")
-        return normalize_rbac_config({})
+        t.global_log("warning", f"RBAC: Failed to load RBAC config for path={b_path} id={b_id}: {e}")
+        return normalize_rbac_config({}, include_user_roles=include_user_roles)
 
 
 def save_backup_rbac_config(
-    base_path: str,
-    rbac_data: Dict[str, List[str]],
+    base_path: Optional[str] = None,
+    rbac_data: Optional[Dict[str, Any]] = None,
     guild_id: Optional[str] = None,
+    backup_id: Optional[str] = None,
 ) -> Dict[str, List[str]]:
-    """Persists normalized RBAC config into backup_config.json and invalidates member caches."""
-    import json
+    """Persists normalized RBAC config into SQL (or backup_config.json fallback) and invalidates member caches."""
+    from db.config_service import save_rbac_config_dict
 
-    config_path = Path(base_path) / "backup_config.json"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-
-    existing: Dict[str, Any] = {}
-    if config_path.exists():
-        try:
-            with open(config_path.as_posix(), "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-                if isinstance(loaded, dict):
-                    existing = loaded
-        except Exception:
-            existing = {}
-
-    normalized = normalize_rbac_config(rbac_data)
-    existing["rbac"] = normalized
-    t.save_json_atomic(existing, config_path.as_posix())
+    b_id, b_path = _resolve_rbac_target(base_path=base_path, backup_id=backup_id)
+    has_ext_user_keys = isinstance(rbac_data, dict) and any(
+        k in rbac_data for k in ("adminUserIds", "curatorUserIds", "participantUserIds")
+    )
+    normalized = normalize_rbac_config(rbac_data, include_user_roles=has_ext_user_keys)
+    saved = save_rbac_config_dict(backup_id=b_id, backup_path=b_path, rbac_data=normalized)
     if guild_id:
         clear_rbac_caches(str(guild_id))
-    return normalized
+    return saved
 
 
 def _read_guild_roles_cache(gid: str, token: str, force_refresh: bool) -> Tuple[bool, List[Dict[str, Any]], bool]:
@@ -421,7 +432,7 @@ def resolve_backup_role(
     if server_id not in live_bot_guilds:
         raise HTTPException(status_code=403, detail="Bot is no longer in this backup's server")
 
-    rbac_cfg = load_backup_rbac_config(base_path)
+    rbac_cfg = load_backup_rbac_config(base_path, backup_id=backup_id, include_user_roles=True)
     user_id = str(actor.get("sub") or actor.get("id") or "").strip()
 
     if user_id and user_id in set(rbac_cfg["blockedUserIds"]):
@@ -447,16 +458,24 @@ def resolve_backup_role(
 
     member_roles = fetch_guild_member_roles(server_id, user_id, bot_token) or set()
 
-    if has_discord_admin_perm or (member_roles & set(rbac_cfg["adminRoleIds"])):
+    if (
+        has_discord_admin_perm
+        or (member_roles & set(rbac_cfg["adminRoleIds"]))
+        or (user_id and user_id in set(rbac_cfg.get("adminUserIds", [])))
+    ):
         return ("server_admin", ROLE_LEVELS["server_admin"])
 
     if user_id and user_id in set(rbac_cfg["restrictedUserIds"]):
         return ("viewer", ROLE_LEVELS["viewer"])
 
-    if member_roles & set(rbac_cfg["curatorRoleIds"]):
+    if (member_roles & set(rbac_cfg["curatorRoleIds"])) or (
+        user_id and user_id in set(rbac_cfg.get("curatorUserIds", []))
+    ):
         return ("curator", ROLE_LEVELS["curator"])
 
-    if member_roles & set(rbac_cfg["participantRoleIds"]):
+    if (member_roles & set(rbac_cfg["participantRoleIds"])) or (
+        user_id and user_id in set(rbac_cfg.get("participantUserIds", []))
+    ):
         return ("participant", ROLE_LEVELS["participant"])
 
     return ("viewer", ROLE_LEVELS["viewer"])

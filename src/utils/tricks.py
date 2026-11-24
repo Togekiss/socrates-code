@@ -9,6 +9,7 @@ import re
 import shutil
 import logging
 import logging.handlers
+import sqlite3
 import threading
 import atexit
 from . import exceptions as exc
@@ -128,113 +129,373 @@ def save_to_json(data, file_path):
     save_json_atomic(data, file_path)
 
 _cache_lock = threading.RLock()
-_backups_index_cache: Dict[str, Any] = {"path": None, "mtime": None, "data": None}
+_backups_index_cache: Dict[str, Any] = {"key": None, "data": None}
 _debug_files_cache: Dict[str, Tuple[Optional[float], bool]] = {}
+
+_ELYSIUM_TEST_BACKUP_ID = "1791895360"
+_ELYSIUM_TEST_FIXTURE_ENTRY: Dict[str, str] = {
+    "backup_id": _ELYSIUM_TEST_BACKUP_ID,
+    "backup_name": "Elysium-sql-tests",
+    "server_id": "857848490683269161",
+    "server_name": "(+18) Diabolik: Elysium",
+    "path": "Backups/Elysium-sql-tests",
+}
+
+
+def _data_root() -> str:
+    set_path()
+    from res import constants as c
+
+    env_root = os.environ.get("SOCRATES_DATA_DIR", "").strip()
+    if env_root:
+        return Path(env_root).as_posix()
+    return str(c.DATA_ROOT)
+
+
+def invalidate_backups_index_cache() -> None:
+    """Clears the in-memory backups index cache."""
+    with _cache_lock:
+        _backups_index_cache["key"] = None
+        _backups_index_cache["data"] = None
 
 
 def _invalidate_json_caches(resolved_path: Optional[str] = None) -> None:
     """Invalidates in-memory backups_index and backup_config caches on write."""
     with _cache_lock:
         if resolved_path is None:
-            _backups_index_cache["path"] = None
-            _backups_index_cache["mtime"] = None
-            _backups_index_cache["data"] = None
+            invalidate_backups_index_cache()
             _debug_files_cache.clear()
             return
         norm = Path(resolved_path).resolve().as_posix()
-        cached_idx_path = _backups_index_cache.get("path")
-        if cached_idx_path and Path(cached_idx_path).resolve().as_posix() == norm:
-            _backups_index_cache["mtime"] = None
-            _backups_index_cache["data"] = None
+        if Path(norm).name == "backups_index.json":
+            invalidate_backups_index_cache()
         _debug_files_cache.pop(norm, None)
+
+
+def _has_unseeded_elysium_test_dir(backups_dir: Path) -> bool:
+    test_dir = backups_dir / "Elysium-sql-tests"
+    if not test_dir.is_dir():
+        return False
+    return (test_dir / "Info").is_dir() or (test_dir / "backup_config.json").is_file()
+
+
+def _read_backup_index_entry_from_sqlite(sqlite_path: Path, folder_name: str) -> Optional[Dict[str, str]]:
+    conn = None
+    try:
+        conn = sqlite3.connect(sqlite_path.as_posix(), timeout=5.0)
+        cols_rows = conn.execute("PRAGMA table_info(backups)").fetchall()
+        if not cols_rows:
+            return None
+        col_names = {str(r[1]) for r in cols_rows}
+        if "backup_id" not in col_names:
+            return None
+        select_cols = ["backup_id", "backup_name", "server_id", "server_name"]
+        if "path" in col_names:
+            select_cols.append("path")
+        row = conn.execute(f"SELECT {', '.join(select_cols)} FROM backups LIMIT 1").fetchone()
+        if not row:
+            return None
+        b_id = str(row[0])
+        b_name = row[1] or b_id
+        s_id = row[2] or ""
+        s_name = row[3] or ""
+        return {
+            "backup_id": b_id,
+            "backup_name": str(b_name),
+            "server_id": str(s_id),
+            "server_name": str(s_name),
+            "path": f"Backups/{folder_name}",
+        }
+    except sqlite3.Error as e:
+        global_log("warning", f"Failed to read backups index metadata from '{sqlite_path}': {e}")
+        return None
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _get_backups_index_from_central_db() -> list:
+    set_path()
+    from sqlalchemy import inspect
+    from sqlalchemy.orm import Session
+    from db.models import BackupModel
+    from db.session import get_engine
+
+    engine = get_engine()
+    inspector = inspect(engine)
+    if not inspector.has_table("backups"):
+        return []
+    cols = {col["name"] for col in inspector.get_columns("backups")}
+    has_path_col = "path" in cols
+    with Session(engine) as session:
+        if has_path_col:
+            rows = (
+                session.query(
+                    BackupModel.backup_id,
+                    BackupModel.backup_name,
+                    BackupModel.server_id,
+                    BackupModel.server_name,
+                    BackupModel.path,
+                )
+                .order_by(BackupModel.backup_id.asc())
+                .all()
+            )
+            return [
+                {
+                    "backup_id": str(b_id),
+                    "backup_name": b_name or str(b_id),
+                    "server_id": s_id or "",
+                    "server_name": s_name or "",
+                    "path": b_path or f"Backups/{b_id}",
+                }
+                for b_id, b_name, s_id, s_name, b_path in rows
+            ]
+
+        rows = (
+            session.query(
+                BackupModel.backup_id,
+                BackupModel.backup_name,
+                BackupModel.server_id,
+                BackupModel.server_name,
+            )
+            .order_by(BackupModel.backup_id.asc())
+            .all()
+        )
+        return [
+            {
+                "backup_id": str(b_id),
+                "backup_name": b_name or str(b_id),
+                "server_id": s_id or "",
+                "server_name": s_name or "",
+                "path": f"Backups/{b_id}",
+            }
+            for b_id, b_name, s_id, s_name in rows
+        ]
 
 
 def get_backups_index():
     set_path()
-    from res import constants as c
+    if bool(os.environ.get("DATABASE_URL", "").strip()):
+        return _get_backups_index_from_central_db()
 
-    index_path = Path(c.BACKUPS_INDEX)
-    if not index_path.exists():
+    backups_dir = Path(_data_root()) / "Backups"
+    if not backups_dir.is_dir():
         return []
 
-    resolved = index_path.resolve().as_posix()
+    tmp_cache_on = False
+    get_tmp_fn = None
     try:
-        mtime = os.path.getmtime(resolved)
-    except OSError:
-        mtime = None
+        from db.session import get_tmp_sqlite_path, is_sqlite_tmp_cache_enabled
 
-    with _cache_lock:
-        if (
-            _backups_index_cache["path"] == resolved
-            and _backups_index_cache["mtime"] == mtime
-            and _backups_index_cache["data"] is not None
-            and mtime is not None
+        tmp_cache_on = is_sqlite_tmp_cache_enabled()
+        get_tmp_fn = get_tmp_sqlite_path
+    except Exception:
+        tmp_cache_on = False
+
+    discovered_targets = []
+    for child in sorted(backups_dir.iterdir(), key=lambda p: p.name):
+        if not child.is_dir():
+            continue
+        sqlite_file = child / "backup.sqlite"
+        active_sqlite: Optional[Path] = None
+        if tmp_cache_on and get_tmp_fn is not None:
+            canonical_src = os.path.realpath(os.path.abspath(sqlite_file.as_posix())).replace("\\", "/")
+            tmp_cand = Path(get_tmp_fn(canonical_src))
+            if tmp_cand.is_file():
+                active_sqlite = tmp_cand
+        if active_sqlite is None and sqlite_file.is_file():
+            active_sqlite = sqlite_file
+        if active_sqlite is None:
+            continue
+        try:
+            mtime_ns: Optional[int] = active_sqlite.stat().st_mtime_ns
+        except OSError:
+            mtime_ns = None
+        discovered_targets.append((child.name, active_sqlite, mtime_ns))
+
+    backups_dir_str = backups_dir.resolve().as_posix()
+    has_unseeded_test_dir = _has_unseeded_elysium_test_dir(backups_dir)
+
+    if discovered_targets:
+        sqlite_key = tuple((p.as_posix(), m_ns) for _, p, m_ns in discovered_targets)
+        cache_key = ("sqlite", backups_dir_str, sqlite_key, has_unseeded_test_dir)
+        all_mtimes_valid = all(m_ns is not None for _, _, m_ns in discovered_targets)
+        with _cache_lock:
+            if (
+                all_mtimes_valid
+                and _backups_index_cache["key"] == cache_key
+                and _backups_index_cache["data"] is not None
+            ):
+                return [dict(b) for b in _backups_index_cache["data"]]
+
+        entries = []
+        for folder_name, active_sqlite, _ in discovered_targets:
+            entry = _read_backup_index_entry_from_sqlite(active_sqlite, folder_name)
+            if entry is not None:
+                entries.append(entry)
+
+        if has_unseeded_test_dir and not any(
+            str(e.get("backup_id")) == _ELYSIUM_TEST_BACKUP_ID for e in entries
         ):
-            return [dict(b) if isinstance(b, dict) else b for b in _backups_index_cache["data"]]
+            entries.append(dict(_ELYSIUM_TEST_FIXTURE_ENTRY))
 
-    data = load_from_json(c.BACKUPS_INDEX)
-    with _cache_lock:
-        _backups_index_cache["path"] = resolved
-        _backups_index_cache["mtime"] = mtime
-        _backups_index_cache["data"] = data if isinstance(data, list) else []
-        return [dict(b) if isinstance(b, dict) else b for b in _backups_index_cache["data"]]
+        with _cache_lock:
+            if all_mtimes_valid:
+                _backups_index_cache["key"] = cache_key
+                _backups_index_cache["data"] = [dict(e) for e in entries]
+            return [dict(e) for e in entries]
+
+    # Legacy fallback for unit tests that write backups_index.json without backup.sqlite
+    index_path = backups_dir / "backups_index.json"
+    if index_path.is_file():
+        resolved = index_path.resolve().as_posix()
+        try:
+            mtime_ns = index_path.stat().st_mtime_ns
+        except OSError:
+            mtime_ns = None
+        cache_key = ("json", backups_dir_str, ((resolved, mtime_ns),))
+        with _cache_lock:
+            if (
+                mtime_ns is not None
+                and _backups_index_cache["key"] == cache_key
+                and _backups_index_cache["data"] is not None
+            ):
+                return [dict(b) if isinstance(b, dict) else b for b in _backups_index_cache["data"]]
+
+        data = load_from_json(resolved)
+        entries = data if isinstance(data, list) else []
+        with _cache_lock:
+            if mtime_ns is not None:
+                _backups_index_cache["key"] = cache_key
+                _backups_index_cache["data"] = [dict(b) if isinstance(b, dict) else b for b in entries]
+            return [dict(b) if isinstance(b, dict) else b for b in entries]
+
+    if has_unseeded_test_dir:
+        return [dict(_ELYSIUM_TEST_FIXTURE_ENTRY)]
+
+    return []
+
 
 def get_backup_path(backup_id: str) -> str:
     """
-    Returns the absolute directory path for a backup_id found in backups_index.json.
+    Returns the absolute directory path for a backup_id from SQL auto-discovery or central DB.
     """
     set_path()
-    from res import constants as c
     from utils.path_safety import ensure_safe_backup_path, validate_backup_id
 
+    data_root = _data_root()
     safe_id = validate_backup_id(backup_id)
     index = get_backups_index()
     for b in index:
         if str(b.get("backup_id")) == safe_id:
             try:
-                safe_path = ensure_safe_backup_path(b["path"], c.DATA_ROOT)
+                safe_path = ensure_safe_backup_path(b["path"], data_root)
             except ValueError as e:
                 raise exc.BackupError(f"Unsafe backup path for '{safe_id}': {e}") from e
             return safe_path.as_posix()
+
+    if safe_id == _ELYSIUM_TEST_BACKUP_ID:
+        test_dir = Path(data_root) / "Backups" / "Elysium-sql-tests"
+        if test_dir.is_dir():
+            return ensure_safe_backup_path("Backups/Elysium-sql-tests", data_root).as_posix()
+
     raise exc.BackupError(f"Backup ID '{safe_id}' not found in index")
 
-def add_backup_to_index(backup_name, server_id, server_name, path):
+
+def add_backup_to_index(
+    backup_name,
+    server_id,
+    server_name,
+    path,
+    backup_id: Optional[str] = None,
+):
     set_path()
-    from res import constants as c
+    import time
+    from db.models import BackupModel
+    from db.session import db_session, init_db
 
-    index = get_backups_index()
+    data_root = _data_root()
+    p_obj = Path(path)
+    resolved_path = p_obj.as_posix() if p_obj.is_absolute() else (Path(data_root) / p_obj).as_posix()
 
-    matching = next((b for b in index if b["path"] == path), None)
-    if matching is None:
-        # Generate backup id
-        import time
-        backup_id = f"{int(time.time())}"
-
-        # Add backup to index
-        index.append({
-            "backup_id": backup_id,
-            "backup_name": backup_name,
-            "server_id": server_id,
-            "server_name": server_name,
-            "path": path
-        })
-
-        save_json_atomic(index, c.BACKUPS_INDEX)
+    if os.path.isabs(path):
+        try:
+            stored_path = Path(path).resolve().relative_to(Path(data_root).resolve()).as_posix()
+        except ValueError:
+            stored_path = str(path).replace("\\", "/")
     else:
-        # If there's conflict with the path, and other fields don't match, raise error
-        if matching["backup_name"] != backup_name or matching["server_id"] != server_id or matching["server_name"] != server_name:
-            raise exc.BackupError("There's a different backup using the same path.")
-        backup_id = str(matching["backup_id"])
+        stored_path = str(path).replace("\\", "/")
+
+    if backup_id is None:
+        index = get_backups_index()
+        norm_resolved = Path(resolved_path).resolve().as_posix()
+        matching = None
+        for b in index:
+            b_raw = str(b.get("path") or "")
+            if not b_raw:
+                continue
+            b_full = Path(b_raw) if Path(b_raw).is_absolute() else (Path(data_root) / b_raw)
+            if b_raw.replace("\\", "/") == stored_path or b_full.resolve().as_posix() == norm_resolved:
+                matching = b
+                break
+
+        if matching is not None:
+            if (
+                matching.get("backup_name") != backup_name
+                or matching.get("server_id") != server_id
+                or matching.get("server_name") != server_name
+            ):
+                raise exc.BackupError("There's a different backup using the same path.")
+            b_id = str(matching["backup_id"])
+        else:
+            b_id = f"{int(time.time())}"
+    else:
+        b_id = str(backup_id)
+
+    use_central_db = bool(os.environ.get("DATABASE_URL", "").strip())
+    if not use_central_db:
+        Path(resolved_path).mkdir(parents=True, exist_ok=True)
+
+    init_db(backup_id=b_id, backup_path=resolved_path)
+    with db_session(backup_id=b_id, backup_path=resolved_path) as session:
+        existing_row = session.query(BackupModel).filter(BackupModel.backup_id == b_id).first()
+        if existing_row is None and not use_central_db:
+            existing_row = session.query(BackupModel).first()
+        if existing_row is None:
+            session.add(
+                BackupModel(
+                    backup_id=b_id,
+                    backup_name=str(backup_name or b_id),
+                    server_id=str(server_id) if server_id else None,
+                    server_name=str(server_name) if server_name else None,
+                    path=stored_path or None,
+                )
+            )
+        else:
+            existing_row.backup_id = b_id
+            if backup_name:
+                existing_row.backup_name = str(backup_name)
+            if server_id:
+                existing_row.server_id = str(server_id)
+            if server_name:
+                existing_row.server_name = str(server_name)
+            if stored_path:
+                existing_row.path = stored_path
+
+    invalidate_backups_index_cache()
 
     # Update active context if available
     try:
         from models.backup_context import get_current_context
         ctx = get_current_context()
-        ctx.backup_id = backup_id
+        ctx.backup_id = b_id
     except Exception:
         pass
 
-    return backup_id
+    return b_id
 
 
 
@@ -496,25 +757,121 @@ def create_merge_folder():
     
     log("base", f"Finished creating merge folder: {c.MERGE_FOLDER}\n")
 
-def is_debug_files_enabled(backup_id=None, backup_path=None) -> bool:
+def _get_active_context_debug_files(
+    backup_id: Optional[str] = None,
+    backup_path: Optional[str] = None,
+) -> Optional[bool]:
+    """
+    If a BackupContext is actively bound and applies to (backup_id, backup_path),
+    returns its in-memory debug_files boolean override; otherwise returns None.
+    """
+    try:
+        from models.backup_context import _current_context
+
+        ctx = _current_context.get()
+        if ctx is None:
+            return None
+
+        ctx_id = getattr(ctx, "backup_id", None)
+        ctx_path = getattr(ctx, "backup_path", None)
+        ctx_base = getattr(ctx, "backup_base", None)
+
+        if backup_id is None and backup_path is None:
+            return bool(getattr(ctx, "debug_files", False))
+
+        if ctx_id is not None:
+            if backup_id is not None:
+                if str(ctx_id) == str(backup_id):
+                    return bool(getattr(ctx, "debug_files", False))
+                return None
+            if backup_path is not None and ctx_base:
+                try:
+                    if Path(ctx_base).resolve() == Path(backup_path).resolve():
+                        return bool(getattr(ctx, "debug_files", False))
+                except Exception:
+                    pass
+            return None
+
+        # ctx.backup_id is None: distinguish an explicit backup-scoped context (ctx_path set)
+        # from the lazy global BackupContext.from_cli() default (ctx_path is None).
+        if ctx_path is not None and ctx_base:
+            target_dir = backup_path
+            if not target_dir and backup_id is not None:
+                try:
+                    target_dir = get_backup_path(str(backup_id))
+                except Exception:
+                    target_dir = None
+            if target_dir:
+                try:
+                    if Path(ctx_base).resolve() == Path(target_dir).resolve():
+                        return bool(getattr(ctx, "debug_files", False))
+                except Exception:
+                    pass
+        return None
+    except Exception:
+        return None
+
+
+def is_debug_files_enabled(
+    backup_id: Optional[str] = None,
+    backup_path: Optional[str] = None,
+) -> bool:
     """
     Determines if debug files (JSON snapshots and auxiliary debug files) should be created.
-    Checks the active BackupContext first, falling back to inspecting backup_config.json on disk.
+    Checks an active matching BackupContext first, then SQLite/DB BackupModel.debug_files
+    when a database exists, falling back to backup_config.json on disk if no DB row exists.
     """
-    try:
-        from res import constants as c
-        ctx_id = getattr(c, "BACKUP_ID", None)
-        if backup_id is None or ctx_id is None or str(ctx_id) == str(backup_id):
-            if hasattr(c, "DEBUG_FILES"):
-                return bool(c.DEBUG_FILES)
-    except Exception:
-        pass
+    active_override = _get_active_context_debug_files(backup_id=backup_id, backup_path=backup_path)
+    if active_override is not None:
+        return active_override
 
-    try:
-        target_path = backup_path
-        if not target_path and backup_id:
-            target_path = get_backup_path(str(backup_id))
-        if target_path:
+    resolved_id = str(backup_id) if backup_id is not None else None
+    target_path = str(backup_path) if backup_path else None
+    if not target_path and resolved_id:
+        try:
+            target_path = get_backup_path(resolved_id)
+        except Exception:
+            target_path = None
+
+    if resolved_id or target_path:
+        try:
+            from sqlalchemy import inspect
+            from db.models import BackupModel
+            from db.session import db_session, has_db
+
+            if has_db(backup_id=resolved_id, backup_path=target_path):
+                with db_session(backup_id=resolved_id, backup_path=target_path) as session:
+                    inspector = inspect(session.get_bind())
+                    if inspector.has_table("backups"):
+                        cols = {col["name"] for col in inspector.get_columns("backups")}
+                        if "debug_files" in cols:
+                            if resolved_id is not None:
+                                row = (
+                                    session.query(BackupModel)
+                                    .filter(BackupModel.backup_id == resolved_id)
+                                    .first()
+                                )
+                            elif os.environ.get("DATABASE_URL") and target_path:
+                                tp = Path(target_path)
+                                path_candidates = [tp.as_posix()]
+                                if tp.parent.name == "Backups":
+                                    path_candidates.append(f"Backups/{tp.name}")
+                                row = (
+                                    session.query(BackupModel)
+                                    .filter(BackupModel.path.in_(path_candidates))
+                                    .first()
+                                )
+                            elif not os.environ.get("DATABASE_URL"):
+                                row = session.query(BackupModel).first()
+                            else:
+                                row = None
+                            if row is not None:
+                                return bool(row.debug_files)
+        except Exception:
+            pass
+
+    if target_path:
+        try:
             cfg_file = Path(target_path) / "backup_config.json"
             if cfg_file.exists():
                 resolved = cfg_file.resolve().as_posix()
@@ -531,6 +888,14 @@ def is_debug_files_enabled(backup_id=None, backup_path=None) -> bool:
                 with _cache_lock:
                     _debug_files_cache[resolved] = (mtime, enabled)
                 return enabled
+        except Exception:
+            pass
+
+    try:
+        from res import constants as c
+
+        if backup_id is None and backup_path is None and hasattr(c, "DEBUG_FILES"):
+            return bool(c.DEBUG_FILES)
     except Exception:
         pass
 

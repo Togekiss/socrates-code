@@ -46,6 +46,30 @@ export const BackupCategorySelector: React.FC<BackupCategorySelectorProps> = ({
   loadingCategories,
   categoriesError,
 }) => {
+  const getAvailableCategories = (selected: string[]) => {
+    if (!serverCategories) return [];
+    const selectedSet = new Set(selected);
+    const selectedLowerSet = new Set(selected.map(s => s.toLowerCase()));
+    return serverCategories.filter(
+      c => !selectedSet.has(c.id) && !selectedSet.has(c.name) && !selectedLowerSet.has(c.name.toLowerCase())
+    );
+  };
+
+  const resolveCategoryLabel = (catRef: string): string => {
+    if (serverCategories && serverCategories.length > 0) {
+      const matched = serverCategories.find(
+        c => c.id === catRef || c.name.toLowerCase() === catRef.toLowerCase()
+      );
+      if (matched) return matched.name;
+      if (/^\d{17,20}$/.test(catRef)) return `Deleted Category (${catRef})`;
+    }
+    return catRef;
+  };
+
+  const availableFilterCategories = getAvailableCategories(categoriesList);
+  const availableChatroomCategories = getAvailableCategories(chatroomCategoriesList);
+  const availableEventCategories = getAvailableCategories(eventCategoriesList);
+
   return (
     <>
       {/* Categories Filter Mode (Keep vs Ignore) */}
@@ -91,9 +115,9 @@ export const BackupCategorySelector: React.FC<BackupCategorySelectorProps> = ({
               style={selectStyle}
             >
               <option value="" disabled>-- Select a category to filter --</option>
-              {serverCategories.map(cat => (
-                <option key={cat.id} value={cat.name} disabled={categoriesList.includes(cat.name)}>
-                  {cat.name} {categoriesList.includes(cat.name) ? '(Added)' : ''}
+              {availableFilterCategories.map(cat => (
+                <option key={cat.id} value={cat.id}>
+                  {cat.name}
                 </option>
               ))}
             </select>
@@ -119,7 +143,7 @@ export const BackupCategorySelector: React.FC<BackupCategorySelectorProps> = ({
                   color: 'var(--text-primary)',
                 }}
               >
-                {cat}
+                {resolveCategoryLabel(cat)}
                 <X size={14} style={{ cursor: 'pointer' }} onClick={() => removeCategory(cat)} />
               </span>
             ))}
@@ -151,9 +175,9 @@ export const BackupCategorySelector: React.FC<BackupCategorySelectorProps> = ({
               style={selectStyle}
             >
               <option value="" disabled>-- Select a chatroom category to add --</option>
-              {serverCategories.map(cat => (
-                <option key={cat.id} value={cat.name} disabled={chatroomCategoriesList.includes(cat.name)}>
-                  {cat.name} {chatroomCategoriesList.includes(cat.name) ? '(Added)' : ''}
+              {availableChatroomCategories.map(cat => (
+                <option key={cat.id} value={cat.id}>
+                  {cat.name}
                 </option>
               ))}
             </select>
@@ -179,7 +203,7 @@ export const BackupCategorySelector: React.FC<BackupCategorySelectorProps> = ({
                   gap: '0.4rem',
                 }}
               >
-                {cat}
+                {resolveCategoryLabel(cat)}
                 <X size={14} style={{ cursor: 'pointer' }} onClick={() => removeChatroomCategory(cat)} />
               </span>
             ))}
@@ -212,9 +236,9 @@ export const BackupCategorySelector: React.FC<BackupCategorySelectorProps> = ({
                 style={selectStyle}
               >
                 <option value="" disabled>-- Select an event category to add --</option>
-                {serverCategories.map(cat => (
-                  <option key={cat.id} value={cat.name} disabled={eventCategoriesList.includes(cat.name)}>
-                    {cat.name} {eventCategoriesList.includes(cat.name) ? '(Added)' : ''}
+                {availableEventCategories.map(cat => (
+                  <option key={cat.id} value={cat.id}>
+                    {cat.name}
                   </option>
                 ))}
               </select>
@@ -240,7 +264,7 @@ export const BackupCategorySelector: React.FC<BackupCategorySelectorProps> = ({
                   gap: '0.4rem',
                 }}
               >
-                {cat}
+                {resolveCategoryLabel(cat)}
                 <X size={14} style={{ cursor: 'pointer' }} onClick={() => removeEventCategory(cat)} />
               </span>
               ))}

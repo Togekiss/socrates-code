@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import utils.tricks as t
 import utils.exceptions as exc
+from utils.path_safety import category_matches, expand_category_names
 from find_character_scenes import (
     has_end_tag,
     has_start_tag,
@@ -356,12 +357,13 @@ def fix_bad_messages() -> None:
 
         all_flagged: List[Dict[str, Any]] = []
 
-        path_to_cat: Dict[str, str] = {}
+        path_to_cat: Dict[str, Tuple[str, str]] = {}
         for cat in backup.categories:
             for p in cat.get_all_paths():
-                path_to_cat[p] = cat.name
+                path_to_cat[p] = (str(cat.id or ""), str(cat.name or ""))
 
-        event_cat_names = set(getattr(c, "EVENT_CATEGORIES", []) or []) | {"Events"}
+        event_cat_targets = expand_category_names(getattr(c, "EVENT_CATEGORIES", []) or []) | {"events_category", "Events"}
+        chatroom_cat_targets = expand_category_names(getattr(c, "CHATROOM_CATEGORIES", []) or [])
 
         for path in backup.get_all_paths():
             file_path = (Path(c.DATA_FOLDER) / path).as_posix()
@@ -369,13 +371,16 @@ def fix_bad_messages() -> None:
                 continue
             t.log("log", f"\t    Analysing {file_path}...")
             raw_channel = t.load_from_json(file_path)
-            chan_cat = path_to_cat.get(path) or raw_channel.get("channel", {}).get("category") or ""
-            raw_cat = raw_channel.get("channel", {}).get("category") or ""
-            if chan_cat in c.CHATROOM_CATEGORIES or raw_cat in c.CHATROOM_CATEGORIES:
-                t.log("log", f"\t    Skipping chatroom category channel ({chan_cat}): {file_path}")
+            cat_id, chan_cat = path_to_cat.get(path, ("", ""))
+            raw_cat_id = str(raw_channel.get("channel", {}).get("categoryId") or "")
+            raw_cat = str(raw_channel.get("channel", {}).get("category") or "")
+            effective_cat_id = cat_id or raw_cat_id
+            effective_cat_name = chan_cat or raw_cat
+            if category_matches(effective_cat_id, effective_cat_name, chatroom_cat_targets):
+                t.log("log", f"\t    Skipping chatroom category channel ({effective_cat_name}): {file_path}")
                 continue
-            if chan_cat in event_cat_names or raw_cat in event_cat_names:
-                t.log("log", f"\t    Skipping event category channel ({chan_cat}): {file_path}")
+            if category_matches(effective_cat_id, effective_cat_name, event_cat_targets):
+                t.log("log", f"\t    Skipping event category channel ({effective_cat_name}): {file_path}")
                 continue
             raw_messages = raw_channel.get("messages", [])
             chan_id = raw_channel.get("channel", {}).get("id") or ""

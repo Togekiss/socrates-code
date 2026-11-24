@@ -23,6 +23,13 @@ GLOBAL_CONFIG = (Path(RES_DIR) / 'config.json').as_posix()
 _current_context: ContextVar[Optional['BackupContext']] = ContextVar('current_backup_context', default=None)
 
 
+def _active_data_root() -> str:
+    env_root = os.environ.get("SOCRATES_DATA_DIR", "").strip()
+    if env_root:
+        return Path(env_root).as_posix()
+    return DATA_ROOT
+
+
 @dataclass
 class BackupContext:
     """
@@ -75,7 +82,7 @@ class BackupContext:
     debug: bool = True
     console: bool = True
     log: bool = True
-    dry_run: bool = True
+    dry_run: bool = False
     debug_files: bool = False
 
     # Search parameters
@@ -134,45 +141,71 @@ class BackupContext:
         config: Optional[Dict[str, Any]] = None,
         config_file: Optional[str] = None,
         backup_path: Optional[str] = None,
+        config_path: Optional[str] = None,
     ) -> 'BackupContext':
-        _backup_id = backup_id
+        _backup_id = str(backup_id) if backup_id is not None else None
         _backup_path = backup_path
-        _config_file = config_file
+        _explicit_cfg_file = config_file or config_path
+
+        active_data_root = _active_data_root()
+        active_backups_dir = (Path(active_data_root) / "Backups").as_posix()
+        active_out_dir = (Path(active_data_root) / "out").as_posix()
+        active_backups_index = (Path(active_backups_dir) / "backups_index.json").as_posix()
+        active_global_log = (Path(active_out_dir) / "log.txt").as_posix()
 
         if _backup_id and not _backup_path:
-            if Path(BACKUPS_INDEX).exists():
-                try:
-                    with open(BACKUPS_INDEX, 'r', encoding='utf-8') as f:
-                        backups_index = json.load(f)
-                    entry = next((b for b in backups_index if str(b.get("backup_id")) == str(_backup_id)), None)
-                    if entry:
-                        _backup_path = entry.get('path')
-                except Exception as e:
-                    raise ValueError(f"Error reading backup index '{BACKUPS_INDEX}': {e}") from e
-            else:
-                raise ValueError(f"Backup index file '{BACKUPS_INDEX}' not found.")
+            from utils import tricks as t
+            try:
+                _backup_path = t.get_backup_path(_backup_id)
+            except Exception:
+                if not os.environ.get("DATABASE_URL", "").strip():
+                    raise
 
         # Determine BACKUP_BASE if _backup_path is available
         backup_base = None
         if _backup_path:
             path_obj = Path(_backup_path)
-            backup_base = path_obj.as_posix() if path_obj.is_absolute() else (Path(DATA_ROOT) / path_obj).as_posix()
+            backup_base = path_obj.as_posix() if path_obj.is_absolute() else (Path(active_data_root) / path_obj).as_posix()
 
-        # Determine CONFIG_FILE if not explicitly provided
-        if not _config_file:
-            if backup_base:
-                local_cfg = (Path(backup_base) / 'backup_config.json').as_posix()
-                _config_file = local_cfg if Path(local_cfg).exists() else GLOBAL_CONFIG
-            else:
-                _config_file = GLOBAL_CONFIG
+        # Auto-resolve _backup_id from auto-discovered backups index by matching backup_base
+        if not _backup_id and backup_base:
+            try:
+                from utils import tricks as t
+                norm_base = Path(backup_base).resolve().as_posix()
+                for b in t.get_backups_index():
+                    entry_path = b.get("path", "")
+                    if not entry_path:
+                        continue
+                    entry_full = Path(entry_path) if Path(entry_path).is_absolute() else (Path(active_data_root) / entry_path)
+                    if entry_full.resolve().as_posix() == norm_base:
+                        _backup_id = str(b.get("backup_id"))
+                        break
+            except Exception:
+                pass
 
-        # Load config dictionary if not explicitly provided
-        if config is None:
-            if Path(_config_file).exists():
-                with open(_config_file, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-            else:
-                config = {}
+        # Determine CONFIG_FILE and load config dictionary if not explicitly provided
+        if _explicit_cfg_file:
+            _config_file = _explicit_cfg_file
+            if config is None:
+                if Path(_config_file).exists():
+                    with open(_config_file, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                else:
+                    config = {}
+        elif _backup_id or backup_base:
+            local_cfg = (Path(backup_base) / 'backup_config.json').as_posix() if backup_base else GLOBAL_CONFIG
+            _config_file = local_cfg if (backup_base and Path(local_cfg).exists()) else GLOBAL_CONFIG
+            if config is None:
+                from db.config_service import load_backup_config_dict
+                config = load_backup_config_dict(backup_id=_backup_id, backup_path=backup_base)
+        else:
+            _config_file = GLOBAL_CONFIG
+            if config is None:
+                if Path(_config_file).exists():
+                    with open(_config_file, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                else:
+                    config = {}
 
         admin_cfg = config.get('admin', {})
         user_cfg = config.get('user', {})
@@ -187,24 +220,13 @@ class BackupContext:
         if not backup_base:
             if path_from_cfg:
                 cfg_path_obj = Path(path_from_cfg)
-                backup_base = cfg_path_obj.as_posix() if cfg_path_obj.is_absolute() else (Path(DATA_ROOT) / cfg_path_obj).as_posix()
+                backup_base = cfg_path_obj.as_posix() if cfg_path_obj.is_absolute() else (Path(active_data_root) / cfg_path_obj).as_posix()
+            elif backup_name:
+                backup_base = (Path(active_backups_dir) / backup_name).as_posix()
+            elif _backup_id:
+                backup_base = (Path(active_backups_dir) / _backup_id).as_posix()
             else:
-                backup_base = (Path(BACKUPS_DIR) / backup_name).as_posix()
-
-        # Auto-resolve _backup_id from backups_index.json by matching backup_base
-        if not _backup_id and backup_base and Path(BACKUPS_INDEX).exists():
-            try:
-                with open(BACKUPS_INDEX, 'r', encoding='utf-8') as f:
-                    backups_index = json.load(f)
-                norm_base = Path(backup_base).resolve().as_posix()
-                for b in backups_index:
-                    entry_path = b.get("path", "")
-                    entry_full = Path(entry_path) if Path(entry_path).is_absolute() else (Path(DATA_ROOT) / entry_path)
-                    if entry_full.resolve().as_posix() == norm_base:
-                        _backup_id = str(b.get("backup_id"))
-                        break
-            except Exception:
-                pass
+                backup_base = active_backups_dir
 
         info_folder = (Path(backup_base) / 'Info').as_posix()
         character = user_cfg.get('character', "")
@@ -245,7 +267,7 @@ class BackupContext:
             debug=verbosity.get('debug', True),
             console=verbosity.get('console', True),
             log=verbosity.get('log', True),
-            dry_run=verbosity.get('dryRun', True),
+            dry_run=bool(verbosity.get('dryRun', False)),
             debug_files=verbosity.get('debugFiles', False),
             search_folder=user_cfg.get('searchFolder', ""),
             character=character,
@@ -256,8 +278,13 @@ class BackupContext:
             status=filters.get('status', "all"),
             type=filters.get('type', "all"),
             mode=filters.get('mode', "end"),
-            output_scenes=(Path(OUT_DIR) / character / 'scenes.json').as_posix(),
-            output_links=(Path(OUT_DIR) / character / 'scene-links.txt').as_posix(),
+            output_scenes=(Path(active_out_dir) / character / 'scenes.json').as_posix(),
+            output_links=(Path(active_out_dir) / character / 'scene-links.txt').as_posix(),
+            DATA_ROOT=active_data_root,
+            BACKUPS_DIR=active_backups_dir,
+            BACKUPS_INDEX=active_backups_index,
+            OUT_DIR=active_out_dir,
+            GLOBAL_LOG_FILE=active_global_log,
         )
 
     @classmethod

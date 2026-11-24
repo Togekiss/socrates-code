@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import utils.tricks as t
 import utils.exceptions as exc
+from utils.path_safety import category_matches, expand_category_names
 from find_character_scenes import (
     message_info,
     scene_info,
@@ -543,9 +544,10 @@ def index_sessions(backup_id: Optional[str] = None, backup_path: Optional[str] =
             resolved_flags_map = get_resolved_flags_map(b_id, b_path)
 
         all_sessions: List[Dict[str, Any]] = []
+        chatroom_targets = expand_category_names(getattr(c, "CHATROOM_CATEGORIES", []) or [])
 
         for category in backup.categories:
-            if category.name in c.CHATROOM_CATEGORIES:
+            if category_matches(category.id, category.name, chatroom_targets):
                 sessions = find_sessions_in_category(
                     category=category,
                     resolved_decisions=resolved_decisions,

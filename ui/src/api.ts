@@ -189,7 +189,7 @@ export const api = {
   getAllBackupPaths: (): Promise<string[]> =>
     fetchWithAuth(`${API_BASE}/backups-paths`).then(res => res.json()),
 
-  createNewBackup: (config: BackupConfig): Promise<{ status: string; id: string }> =>
+  createNewBackup: (config: BackupConfig): Promise<{ status: string; backup_id?: string; path?: string }> =>
     fetchWithAuth(`${API_BASE}/backups`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

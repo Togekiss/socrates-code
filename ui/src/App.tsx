@@ -142,7 +142,7 @@ function NewBackupTab({
   onCancel,
 }: {
   user: User;
-  onStart: () => void;
+  onStart: (newBackupId?: string) => void;
   onCancel: () => void;
 }) {
   const [globalConfig, setGlobalConfig] = useState<GlobalConfig | null>(null);
@@ -179,8 +179,12 @@ function NewBackupTab({
             ...((globalConfig.admin as Record<string, unknown>) || {}),
             serverId: serverInfo.id,
             serverName: serverInfo.name,
+            backupName: serverInfo.name,
+            path: '',
             categoriesToKeep: [],
             categoriesToIgnore: [],
+            chatroomCategories: [],
+            eventCategories: [],
             dmCategories: [],
           },
         }
@@ -934,18 +938,24 @@ function AppContent() {
               isInstanceAdmin ? (
                 <NewBackupTab
                   user={user}
-                  onStart={() => {
-                    setTimeout(() => {
-                      api
-                        .getBackups()
-                        .then(data => {
-                          if (Array.isArray(data)) {
-                            setBackups(data);
-                          }
-                        })
-                        .catch(console.error);
-                    }, 1000);
-                    navigate('/');
+                  onStart={async (newBackupId?: string) => {
+                    try {
+                      const data = await api.getBackups();
+                      if (Array.isArray(data)) {
+                        setBackups(data);
+                        const targetId =
+                          newBackupId ||
+                          (data.length > 0
+                            ? data[data.length - 1].id || data[data.length - 1].backup_id || ''
+                            : '');
+                        if (targetId) {
+                          handleSelectBackup(targetId);
+                        }
+                      }
+                    } catch (err) {
+                      console.error(err);
+                    }
+                    navigate('/system/pipeline');
                   }}
                   onCancel={() => navigate('/')}
                 />

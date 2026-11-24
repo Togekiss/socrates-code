@@ -19,7 +19,7 @@ export const BackupForm = ({
   initialConfig: BackupConfig | null;
   globalConfig: GlobalConfig | null;
   hasDataFiles?: boolean;
-  onStart: () => void;
+  onStart?: (backupId?: string) => void;
   onCancel: () => void;
   onSave?: (savedConfig: BackupConfig) => void;
   isModal?: boolean;
@@ -110,6 +110,57 @@ export const BackupForm = ({
       .finally(() => setLoadingCategories(false));
   }, [admin.serverId]);
 
+  useEffect(() => {
+    if (!serverCategories || serverCategories.length === 0) return;
+    const nameToId = new Map<string, string>();
+    for (const cat of serverCategories) {
+      nameToId.set(cat.name.toLowerCase(), cat.id);
+    }
+    const normalizeList = (list?: string[]): string[] | undefined => {
+      if (!list) return list;
+      return Array.from(
+        new Set(
+          list.map(ref => {
+            const stripped = ref.replace(/^\d+#\s*/, '').trim();
+            return nameToId.get(ref.toLowerCase()) || nameToId.get(stripped.toLowerCase()) || ref;
+          })
+        )
+      );
+    };
+
+    setConfig(prev => {
+      if (!prev?.admin) return prev;
+      const a = prev.admin;
+      const nextKeep = normalizeList(a.categoriesToKeep);
+      const nextIgnore = normalizeList(a.categoriesToIgnore);
+      const nextChat = normalizeList(a.chatroomCategories);
+      const nextEvent = normalizeList(a.eventCategories);
+
+      const arraysEqual = (x?: string[], y?: string[]) =>
+        x === y || (Boolean(x && y) && x!.length === y!.length && x!.every((v, i) => v === y![i]));
+
+      if (
+        arraysEqual(a.categoriesToKeep, nextKeep) &&
+        arraysEqual(a.categoriesToIgnore, nextIgnore) &&
+        arraysEqual(a.chatroomCategories, nextChat) &&
+        arraysEqual(a.eventCategories, nextEvent)
+      ) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        admin: {
+          ...a,
+          categoriesToKeep: nextKeep,
+          categoriesToIgnore: nextIgnore,
+          chatroomCategories: nextChat,
+          eventCategories: nextEvent,
+        },
+      };
+    });
+  }, [serverCategories, initialConfig]);
+
   const handleSaveOnly = async () => {
     if (!config) return;
     setIsSaving(true);
@@ -132,7 +183,9 @@ export const BackupForm = ({
     setSaveError(null);
     try {
       if (backupId === 'New Backup') {
-        await api.createNewBackup(config);
+        const created = await api.createNewBackup(config);
+        if (onStart) onStart(created?.backup_id);
+        return;
       } else if (isModal && confirmModeConversion) {
         const currentMode: StorageMode = admin.storageMode === 'full' ? 'full' : 'backupless';
         const targetMode: StorageMode = currentMode === 'full' ? 'backupless' : 'full';
@@ -144,7 +197,7 @@ export const BackupForm = ({
       } else {
         await api.syncBackup(backupId, { mode: 'incremental', config });
       }
-      onStart();
+      if (onStart) onStart();
     } catch (err: unknown) {
       console.error('Failed to start backup:', err);
       setSaveError(err instanceof Error ? err.message : 'Failed to start backup');
@@ -211,7 +264,7 @@ export const BackupForm = ({
       const newIgnore = (admin.categoriesToIgnore || []).filter((c: string) => c !== val);
       const baseKeep = admin.categoriesToKeep || [];
       const nextKeep = isKeepMode
-        ? Array.from(new Set([...baseKeep, val, 'Events']))
+        ? Array.from(new Set([...baseKeep, val]))
         : baseKeep;
       setConfig({
         ...config,
@@ -402,10 +455,6 @@ export const BackupForm = ({
                   <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
                     <input type="checkbox" checked={admin.verbosity?.debugFiles || false} onChange={e => updateVerbosity('debugFiles', e.target.checked)} />
                     Keep debug files
-                  </label>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
-                    <input type="checkbox" checked={admin.verbosity?.dryRun || false} onChange={e => updateVerbosity('dryRun', e.target.checked)} />
-                    Dry run mode
                   </label>
                 </div>
               </div>

@@ -209,14 +209,6 @@ export const AdminTab = ({ onRefreshSummary }: AdminTabProps) => {
                   />
                   <span>Keep debug files</span>
                 </label>
-                <label className="flex-row items-center gap-xs" style={{ cursor: 'pointer', fontSize: '0.85rem' }}>
-                  <input
-                    type="checkbox"
-                    checked={Boolean(globalConfig.admin?.verbosity?.dryRun)}
-                    onChange={e => updateVerbosity('dryRun', e.target.checked)}
-                  />
-                  <span>Dry run mode</span>
-                </label>
               </div>
             </div>
           </div>

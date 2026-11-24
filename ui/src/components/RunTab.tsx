@@ -16,7 +16,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { BackupForm } from './BackupForm';
-import { PanelSurface, Button, Badge, LogConsole } from './ui';
+import { PanelSurface, Button, Badge, LogConsole, Modal } from './ui';
 import type { BackupConfig, BackupInfo, GlobalConfig } from '../types';
 import { getRoleLevel, ROLE_LEVELS } from '../utils/rbac';
 import { calcCompletionPct } from '../utils/formatters';
@@ -44,6 +44,7 @@ export const RunTab = ({
   const [localBackupInfo, setLocalBackupInfo] = useState<BackupInfo | null>(null);
   const [backupConfig, setBackupConfig] = useState<BackupConfig | null>(null);
   const [isFormOpen, setIsFormOpen] = useState<boolean>(false);
+  const [showRescanConfirmModal, setShowRescanConfirmModal] = useState(false);
   const [backupLogs, setBackupLogs] = useState<string[]>([]);
   const [loadingLogs, setLoadingLogs] = useState(false);
   const [isUpgrading, setIsUpgrading] = useState(false);
@@ -65,6 +66,7 @@ export const RunTab = ({
     setLocalBackupInfo(null);
     setBackupLogs([]);
     setIsFormOpen(false);
+    setShowRescanConfirmModal(false);
     setActiveAction(null);
     setActionError(null);
   }, [backupId]);
@@ -503,7 +505,7 @@ export const RunTab = ({
               <Button
                 variant="secondary"
                 size="xs"
-                onClick={() => handleSyncMode('rescan_discord')}
+                onClick={() => setShowRescanConfirmModal(true)}
                 disabled={isAnyRunning}
                 loading={isSyncing && activeAction === 'rescan_discord'}
                 icon={<RefreshCw size={12} />}
@@ -552,6 +554,51 @@ export const RunTab = ({
         title="Live Execution Console"
         emptyMessage="No execution log entries recorded."
       />
+
+      {/* Full Discord Rescan Confirmation Modal */}
+      <Modal
+        isOpen={showRescanConfirmModal}
+        onClose={() => setShowRescanConfirmModal(false)}
+        title={
+          <div className="flex-row items-center gap-xs">
+            <AlertTriangle size={18} style={{ color: 'var(--warning)' }} />
+            <span>Confirm Full Discord Rescan</span>
+          </div>
+        }
+        size="md"
+        footer={
+          <div className="flex-row items-center justify-end gap-sm">
+            <Button variant="ghost" onClick={() => setShowRescanConfirmModal(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                setShowRescanConfirmModal(false);
+                handleSyncMode('rescan_discord');
+              }}
+            >
+              Continue
+            </Button>
+          </div>
+        }
+      >
+        <div className="banner-warning mb-0 flex-col items-start gap-sm" role="alert">
+          <p style={{ margin: 0, fontSize: '0.875rem', lineHeight: 1.5 }}>
+            <strong>Full Discord Rescan</strong> acts as a reset button that re-fetches and resets
+            channels strictly according to your current Keep/Ignore category configuration.
+          </p>
+          <p style={{ margin: 0, fontSize: '0.85rem', lineHeight: 1.5 }}>
+            Any previously synced categories or channels that are no longer selected will be marked
+            as deleted in the index
+            {storageMode === 'full'
+              ? ' and unselected Data/*.json files will be pruned'
+              : ' (and unselected Data/*.json files are pruned in Full Backup mode)'}
+            . If you only want to fetch new messages while keeping previously synced unselected
+            categories intact, use <strong>Sync Updates</strong> instead.
+          </p>
+        </div>
+      </Modal>
 
       {/* Configuration Modal */}
       {canManageBackup && isFormOpen && (

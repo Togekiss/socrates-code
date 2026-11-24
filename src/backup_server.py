@@ -27,9 +27,14 @@ from sqlalchemy import BigInteger, cast, func
 
 import utils.exceptions as exc
 import utils.tricks as t
-from utils.path_safety import category_name_matches, expand_category_names
+from utils.path_safety import category_matches, expand_category_names
 from assign_ids import assign_ids_in_memory
 from db import curation_service
+from db.config_service import (
+    load_backup_config_dict,
+    save_backup_config_dict,
+    upgrade_category_names_to_ids,
+)
 from db.event_service import save_indexed_events
 from db.models import (
     BackupModel,
@@ -53,6 +58,7 @@ from db.session import (
     close_all_engines,
     db_session,
     get_skeleton_engine,
+    has_db,
     init_db,
     is_sqlite_tmp_cache_enabled,
     skeleton_db_session,
@@ -233,16 +239,21 @@ def _prune_orphan_data_jsons(data_dir: Path, active_rel_paths: Set[str]) -> int:
     return removed
 
 
-def _resolve_storage_mode(backup_path: str, existing_mode: Optional[str] = None) -> str:
-    cfg_file = Path(backup_path) / "backup_config.json"
-    if cfg_file.is_file():
-        try:
-            cfg = t.load_from_json(cfg_file.as_posix())
-            mode = (cfg.get("admin") or {}).get("storageMode") or cfg.get("storageMode")
-            if mode in (StorageMode.BACKUPLESS.value, StorageMode.FULL.value):
-                return str(mode)
-        except Exception:
-            pass
+def _read_backup_config(backup_path: str, backup_id: Optional[str] = None) -> Dict[str, Any]:
+    """Loads backup configuration from SQLite v7 (or JSON/defaults fallback)."""
+    return load_backup_config_dict(backup_id=backup_id, backup_path=backup_path)
+
+
+def _resolve_storage_mode(
+    backup_path: str,
+    existing_mode: Optional[str] = None,
+    backup_id: Optional[str] = None,
+    cfg: Optional[Dict[str, Any]] = None,
+) -> str:
+    loaded = cfg if isinstance(cfg, dict) else _read_backup_config(backup_path, backup_id=backup_id)
+    mode = (loaded.get("admin") or {}).get("storageMode") or loaded.get("storageMode")
+    if mode in (StorageMode.BACKUPLESS.value, StorageMode.FULL.value):
+        return str(mode)
     if existing_mode in (StorageMode.BACKUPLESS.value, StorageMode.FULL.value):
         return str(existing_mode)
     return StorageMode.BACKUPLESS.value
@@ -264,7 +275,8 @@ def _ensure_backup_bootstrap(
     info_dir.mkdir(parents=True, exist_ok=True)
 
     cfg_path = b_dir / "backup_config.json"
-    if not cfg_path.is_file() and Path(c.GLOBAL_CONFIG).is_file():
+    has_existing_db = has_db(backup_id=b_id or None, backup_path=b_path)
+    if not has_existing_db and not cfg_path.is_file() and Path(c.GLOBAL_CONFIG).is_file():
         shutil.copyfile(c.GLOBAL_CONFIG, cfg_path.as_posix())
 
     if not b_id:
@@ -290,6 +302,7 @@ def _sync_topology_to_db(
     *,
     is_resume: bool,
     storage_mode: str,
+    rescan_discord: bool = False,
 ) -> Tuple[Dict[str, ChannelModel], List[Tuple[str, str]]]:
     """
     Upserts categories, channels, and threads from `topology` into `channels` table.
@@ -394,9 +407,47 @@ def _sync_topology_to_db(
                         th_m.sync_status = "pending"
                         th_m.sync_error = None
 
+    unselected_live_chan_ids: Set[str] = set()
+    if not rescan_discord:
+        for raw_id, raw_ch in topology.channels_by_id.items():
+            if int(raw_ch.get("type", 0)) != 4 and str(raw_id) not in seen_ids:
+                unselected_live_chan_ids.add(str(raw_id))
+
+    pk_to_existing: Dict[int, ChannelModel] = {
+        int(ch.pk): ch for ch in existing if ch.pk is not None
+    }
+    events_cat_row: Optional[ChannelModel] = None
+
     for ch in existing:
-        if ch.discord_id not in seen_ids:
+        if ch.discord_id in seen_ids:
+            continue
+        if ch.discord_id == "events_category":
+            events_cat_row = ch
+            continue
+        if rescan_discord:
             ch.is_deleted = True
+            continue
+        if ch.discord_id in topology.channels_by_id:
+            # Still live on Discord, only excluded by keep/ignore filter
+            continue
+        if ch.type in ("GuildPublicThread", "GuildPrivateThread") and ch.parent_pk is not None:
+            parent_row = pk_to_existing.get(int(ch.parent_pk))
+            if parent_row is not None and parent_row.discord_id in unselected_live_chan_ids:
+                # Parent channel was excluded by keep/ignore, so threads were not fetched
+                continue
+        ch.is_deleted = True
+
+    if events_cat_row is not None and events_cat_row.discord_id not in seen_ids:
+        if rescan_discord:
+            events_cat_row.is_deleted = True
+        else:
+            has_live_event_child = any(
+                (not child.is_deleted) and child.discord_id in topology.channels_by_id
+                for child in existing
+                if child.parent_pk == events_cat_row.pk
+            )
+            if not has_live_event_child:
+                events_cat_row.is_deleted = True
 
     session.flush()
     return by_discord_id, path_renames
@@ -617,28 +668,65 @@ async def _run_sync_async(
     stop_event: Optional[threading.Event] = None,
     on_channel_committed: Optional[Callable[[SyncableChannelItem, int, int], None]] = None,
 ) -> Dict[str, Any]:
+    had_db_before = has_db(backup_id=backup_id, backup_path=backup_path)
+    cfg_file_exists = (Path(backup_path) / "backup_config.json").is_file()
+    cfg = _read_backup_config(backup_path, backup_id=backup_id)
+
     init_db(engine_or_backup_id=backup_id, backup_path=backup_path)
     get_skeleton_engine(backup_id=backup_id, backup_path=backup_path)
 
     _acquire_sync_lock(backup_path)
     try:
         stop_flag = stop_event or threading.Event()
-        server_id = str(getattr(c, "SERVER_ID", "") or "")
-        server_name = str(getattr(c, "SERVER_NAME", "") or "")
-        backup_name = str(getattr(c, "BACKUP_NAME", "") or backup_id)
-        categories_to_ignore = expand_category_names(getattr(c, "CATEGORIES_TO_IGNORE", set()))
-        categories_to_keep = expand_category_names(getattr(c, "CATEGORIES_TO_KEEP", set()))
-        keep_mode = bool(getattr(c, "KEEP_MODE", False))
-        event_cat_names = expand_category_names(getattr(c, "EVENT_CATEGORIES", []))
-        chatroom_cat_names = expand_category_names(getattr(c, "CHATROOM_CATEGORIES", []))
-        debug_files = bool(getattr(c, "DEBUG_FILES", False))
+        admin_cfg = cfg.get("admin") if isinstance(cfg.get("admin"), dict) else {}
+        if not had_db_before and not cfg_file_exists:
+            ctx_server_id = str(getattr(c, "SERVER_ID", "") or "")
+            if ctx_server_id or getattr(c, "CATEGORIES_TO_KEEP", None) or getattr(c, "CATEGORIES_TO_IGNORE", None):
+                cfg = {
+                    "admin": {
+                        "serverId": ctx_server_id,
+                        "serverName": str(getattr(c, "SERVER_NAME", "") or ""),
+                        "backupName": str(getattr(c, "BACKUP_NAME", "") or backup_id),
+                        "storageMode": str(getattr(c, "STORAGE_MODE", StorageMode.BACKUPLESS.value) or StorageMode.BACKUPLESS.value),
+                        "keepMode": bool(getattr(c, "KEEP_MODE", False)),
+                        "categoriesToIgnore": list(getattr(c, "CATEGORIES_TO_IGNORE", []) or []),
+                        "categoriesToKeep": list(getattr(c, "CATEGORIES_TO_KEEP", []) or []),
+                        "eventCategories": list(getattr(c, "EVENT_CATEGORIES", []) or []),
+                        "chatroomCategories": list(getattr(c, "CHATROOM_CATEGORIES", []) or []),
+                        "verbosity": {
+                            "info": bool(getattr(c, "INFO", True)),
+                            "debug": bool(getattr(c, "DEBUG", True)),
+                            "console": bool(getattr(c, "CONSOLE", True)),
+                            "log": bool(getattr(c, "LOG", True)),
+                            "debugFiles": bool(getattr(c, "DEBUG_FILES", False)),
+                        },
+                    },
+                    "rbac": cfg.get("rbac") or {},
+                }
+                admin_cfg = cfg["admin"]
+
+        server_id = str(admin_cfg.get("serverId") or getattr(c, "SERVER_ID", "") or "")
+        server_name = str(admin_cfg.get("serverName") or getattr(c, "SERVER_NAME", "") or "")
+        backup_name = str(admin_cfg.get("backupName") or getattr(c, "BACKUP_NAME", "") or backup_id)
+        categories_to_ignore = expand_category_names(admin_cfg.get("categoriesToIgnore") or set())
+        categories_to_keep = expand_category_names(admin_cfg.get("categoriesToKeep") or set())
+        keep_mode = bool(admin_cfg.get("keepMode", False))
+        event_cat_names = expand_category_names(admin_cfg.get("eventCategories") or [])
+        chatroom_cat_names = expand_category_names(admin_cfg.get("chatroomCategories") or [])
+        debug_files = t.is_debug_files_enabled(backup_id=backup_id, backup_path=backup_path)
 
         now_utc = datetime.now(timezone.utc)
         preexisting_sync_status = SyncStatus.IDLE.value
+        created_b_row = False
         with db_session(backup_id=backup_id, backup_path=backup_path) as session:
             b_row = session.query(BackupModel).filter(BackupModel.backup_id == str(backup_id)).first()
             existing_mode = b_row.storage_mode if b_row else None
-            storage_mode = _resolve_storage_mode(backup_path, existing_mode=existing_mode)
+            storage_mode = _resolve_storage_mode(
+                backup_path,
+                existing_mode=existing_mode,
+                backup_id=backup_id,
+                cfg=cfg,
+            )
             if b_row is None:
                 b_row = BackupModel(
                     backup_id=str(backup_id),
@@ -651,6 +739,7 @@ async def _run_sync_async(
                 )
                 session.add(b_row)
                 session.flush()
+                created_b_row = True
             else:
                 preexisting_sync_status = str(b_row.sync_status or SyncStatus.IDLE.value)
                 b_row.storage_mode = storage_mode
@@ -680,6 +769,10 @@ async def _run_sync_async(
                     "sync_status": ch.sync_status,
                     "is_event_thread": "Events/Threads/" in str(ch.path or ""),
                 }
+
+        if created_b_row:
+            save_backup_config_dict(backup_id=backup_id, backup_path=backup_path, config_data=cfg)
+            t.invalidate_backups_index_cache()
 
         if not server_id:
             if preexisting_sync_status == SyncStatus.SYNCING.value:
@@ -725,15 +818,28 @@ async def _run_sync_async(
                 if members_by_id:
                     t.log("info", f"  Loaded {len(members_by_id)} server member(s).")
 
+                live_cat_name_to_id: Dict[str, str] = {}
+                for ch_raw in topology.channels_by_id.values():
+                    if int(ch_raw.get("type", -1)) == 4:
+                        cname = str(ch_raw.get("name") or "").strip()
+                        cid = str(ch_raw.get("id") or "").strip()
+                        if cname and cid:
+                            live_cat_name_to_id[cname] = cid
+
                 with db_session(backup_id=backup_id, backup_path=backup_path) as session:
                     b_row = session.query(BackupModel).filter(BackupModel.backup_id == str(backup_id)).first()
                     b_row.server_name = topology.guild_meta["name"]
+                    if live_cat_name_to_id:
+                        promoted_cnt = upgrade_category_names_to_ids(session, backup_id, live_cat_name_to_id)
+                        if promoted_cnt > 0:
+                            t.log("info", f"  Promoted {promoted_cnt} legacy category config ref(s) to Discord Snowflake IDs.")
                     chan_by_did, path_renames = _sync_topology_to_db(
                         session,
                         backup_id,
                         topology,
                         is_resume=is_resume,
                         storage_mode=storage_mode,
+                        rescan_discord=rescan_discord,
                     )
                     reconcile_backup_scene_keys(session, backup_id)
                     if members_by_id:
@@ -923,10 +1029,13 @@ async def _run_sync_async(
                         # 4. Segment scenes / sessions & detect flagged messages
                         is_event = bool(
                             item.is_event
-                            or category_name_matches(item.category_name, event_cat_names)
+                            or category_matches(item.category_discord_id, item.category_name, event_cat_names)
+                            or item.category_discord_id == "events_category"
                             or item.category_name == "Events"
                         )
-                        is_chatroom = (not is_event) and category_name_matches(item.category_name, chatroom_cat_names)
+                        is_chatroom = (not is_event) and category_matches(
+                            item.category_discord_id, item.category_name, chatroom_cat_names
+                        )
 
                         for m in fetched_msgs:
                             mid_s = str(m.get("id") or "")
@@ -1074,10 +1183,34 @@ async def _run_sync_async(
                     t.log("info", f"  Pruned {pruned} stale/orphan JSON file(s) from Data/.")
 
             # 3. Post-channel Events Stage 2 & 3 pass
-            event_cats = [
-                cat for cat in topology.categories
-                if category_name_matches(cat.name, event_cat_names) or cat.id == "events_category" or cat.name == "Events"
-            ]
+            if rescan_discord:
+                event_cats = [
+                    cat for cat in topology.categories
+                    if category_matches(cat.id, cat.name, event_cat_names)
+                    or cat.id == "events_category"
+                    or cat.name == "Events"
+                ]
+            else:
+                sb = ServerBackup.load(scope="base", backup_id=backup_id, backup_path=backup_path)
+                event_cats = []
+                for cat in sb.categories:
+                    if getattr(cat, "is_deleted", False):
+                        continue
+                    if (
+                        cat.id == "events_category"
+                        or cat.name == "Events"
+                        or category_matches(cat.id, cat.name, event_cat_names)
+                    ):
+                        active_channels = []
+                        for ch in cat.channels:
+                            if getattr(ch, "is_deleted", False):
+                                continue
+                            ch.threads = [th for th in ch.threads if not getattr(th, "is_deleted", False)]
+                            active_channels.append(ch)
+                        if active_channels:
+                            cat.channels = active_channels
+                            event_cats.append(cat)
+
             event_clusters = []
             if event_cats:
                 t.log("info", f"  Indexing events across {len(event_cats)} event category(s)...")

@@ -26,7 +26,7 @@ from db.models import SceneStatus, IssueKind, SceneKind, SceneModel, SceneIssueM
 from db.session import has_db, has_skeleton_db, db_session
 from db.scene_service import load_channel_skeletons, upsert_channel_skeletons, snowflake_int
 from db.skeleton_models import SkeletonFlags
-from utils.path_safety import category_name_matches, expand_category_names
+from utils.path_safety import category_matches, expand_category_names
 t.set_path()
 from res import constants as c
 
@@ -909,14 +909,14 @@ def index_scenes(
 
         for category in backup.categories:
             if (
-                category_name_matches(category.name, event_cat_names)
+                category_matches(category.id, category.name, event_cat_names)
                 or category.id == "events_category"
                 or category.name == "Events"
             ):
                 event_cats.append(category)
                 continue
 
-            if category_name_matches(category.name, chatroom_cat_names):
+            if category_matches(category.id, category.name, chatroom_cat_names):
                 if rescan_json:
                     for ch in category.channels:
                         _rescan_json_channel_skeletons(

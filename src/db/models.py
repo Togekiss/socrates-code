@@ -1,3 +1,19 @@
+"""
+SQLAlchemy ORM models for Socrates per-backup and central databases.
+
+Schema Changelog:
+- Schema v6: Normalized backups, channels, writers, character_groups, characters,
+  events, scenes, scene_participants, scene_issues, flagged_messages, seen_discord_users,
+  plus external skeletons.sqlite.
+- Schema v7: Moves backup configuration and RBAC lists into SQL:
+  - `backups`: adds `path`, `keep_mode`, `log_info`, `log_debug`, `log_console`,
+    `log_file`, `debug_files` columns and `category_configs` / `rbac_entries` relationships.
+  - `backup_category_configs`: normalized per-backup category filters/tags (`keep`,
+    `ignore`, `chatroom`, `event`) storing Discord category Snowflake IDs (or legacy names).
+  - `backup_rbac_entries`: normalized per-backup RBAC role/user entries (`role`/`user`,
+    `admin`/`curator`/`participant`/`restricted`/`blocked`).
+"""
+
 from enum import StrEnum
 from typing import Optional
 from sqlalchemy import (
@@ -14,7 +30,27 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 
-CURRENT_SCHEMA_VERSION = 6  # See docs/database_design.md for full schema changelog
+CURRENT_SCHEMA_VERSION = 7  # See docs/database_design.md for full schema changelog
+
+
+class CategoryConfigKind(StrEnum):
+    KEEP = "keep"
+    IGNORE = "ignore"
+    CHATROOM = "chatroom"
+    EVENT = "event"
+
+
+class RbacTargetType(StrEnum):
+    ROLE = "role"
+    USER = "user"
+
+
+class RbacAccessLevel(StrEnum):
+    ADMIN = "admin"
+    CURATOR = "curator"
+    PARTICIPANT = "participant"
+    RESTRICTED = "restricted"
+    BLOCKED = "blocked"
 
 
 class SyncStatus(StrEnum):
@@ -145,8 +181,15 @@ class BackupModel(Base):
     backup_name = Column(String(128), nullable=False)
     server_id = Column(String(20), index=True, nullable=True)
     server_name = Column(String(128), nullable=True)
+    path = Column(String(255), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=True)
     storage_mode = Column(String(16), nullable=False, default=StorageMode.BACKUPLESS.value)
+    keep_mode = Column(Boolean, nullable=False, default=False)
+    log_info = Column(Boolean, nullable=False, default=True)
+    log_debug = Column(Boolean, nullable=False, default=True)
+    log_console = Column(Boolean, nullable=False, default=True)
+    log_file = Column(Boolean, nullable=False, default=True)
+    debug_files = Column(Boolean, nullable=False, default=False)
     sync_status = Column(String(16), nullable=False, default=SyncStatus.IDLE.value)
     sync_started_at = Column(DateTime(timezone=True), nullable=True)
     last_synced_at = Column(DateTime(timezone=True), nullable=True)
@@ -155,6 +198,8 @@ class BackupModel(Base):
     channels_done = Column(Integer, nullable=False, default=0)
 
     channels = relationship("ChannelModel", back_populates="backup", cascade="all, delete-orphan")
+    category_configs = relationship("BackupCategoryConfigModel", back_populates="backup", cascade="all, delete-orphan")
+    rbac_entries = relationship("BackupRbacEntryModel", back_populates="backup", cascade="all, delete-orphan")
     seen_users = relationship("SeenDiscordUserModel", back_populates="backup", cascade="all, delete-orphan")
     writers = relationship("WriterModel", back_populates="backup", cascade="all, delete-orphan")
     character_groups = relationship("CharacterGroupModel", back_populates="backup", cascade="all, delete-orphan")
@@ -162,6 +207,35 @@ class BackupModel(Base):
     events = relationship("EventModel", back_populates="backup", cascade="all, delete-orphan")
     scenes = relationship("SceneModel", back_populates="backup", cascade="all, delete-orphan")
     flagged_messages = relationship("FlaggedMessageModel", back_populates="backup", cascade="all, delete-orphan")
+
+
+class BackupCategoryConfigModel(Base):
+    __tablename__ = "backup_category_configs"
+    __table_args__ = (
+        UniqueConstraint("backup_id", "kind", "category_ref", name="uq_backup_category_config"),
+    )
+
+    pk = Column(Integer, primary_key=True, autoincrement=True)
+    backup_id = Column(String(64), ForeignKey("backups.backup_id", ondelete="CASCADE"), nullable=False, index=True)
+    kind = Column(String(16), nullable=False)
+    category_ref = Column(String(64), nullable=False)
+
+    backup = relationship("BackupModel", back_populates="category_configs")
+
+
+class BackupRbacEntryModel(Base):
+    __tablename__ = "backup_rbac_entries"
+    __table_args__ = (
+        UniqueConstraint("backup_id", "target_type", "access_level", "discord_id", name="uq_backup_rbac_entry"),
+    )
+
+    pk = Column(Integer, primary_key=True, autoincrement=True)
+    backup_id = Column(String(64), ForeignKey("backups.backup_id", ondelete="CASCADE"), nullable=False, index=True)
+    target_type = Column(String(16), nullable=False)
+    access_level = Column(String(24), nullable=False)
+    discord_id = Column(String(20), nullable=False)
+
+    backup = relationship("BackupModel", back_populates="rbac_entries")
 
 
 class ChannelModel(Base):
